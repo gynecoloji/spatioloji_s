@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-12-27 18:37:19",
+  "config": {
+    "alpha_neg_probe": 0.01,
+    "pct_counts_neg_max": 0.1,
+    "alpha_cell_area": 0.01,
+    "pct_counts_mt_max": 0.25,
+    "ratio_counts_genes_min": 1.0,
+    "total_counts_min": 20,
+    "gene_filter_method": "min_cells",
+    "gene_percentile_threshold": 50,
+    "gene_absolute_threshold": null,
+    "gene_min_cells": 50,
+    "output_dir": "./my_qc_output/",
+    "save_plots": true,
+    "data_dir": "./my_qc_output/data",
+    "analysis_dir": "./my_qc_output/analysis"
+  },
+  "metrics": {
+    "cells": {
+      "before": 39939,
+      "after": 25368,
+      "pct_kept": 63.516863216405014
+    },
+    "genes": {
+      "before": 960,
+      "after": 960,
+      "pct_kept": 100.0,
+      "method": "min_cells"
+    },
+    "fovs": {
+      "n_fovs": 20,
+      "total_cells": 39939,
+      "avg_cells_per_fov": 1996.95,
+      "avg_transcripts": 177.36552194312833
+    }
+  }
+}

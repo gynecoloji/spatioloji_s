@@ -1,11 +1,21 @@
+"""
+qc.py - Quality control module for spatioloji objects
+
+Provides comprehensive QC functionality that works with the new
+spatioloji data structure, including cell-level, gene-level, and
+FOV-level quality control.
+"""
+
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Dict, Tuple
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
+from pathlib import Path
 import os
+
 
 @dataclass
 class QCConfig:
@@ -24,7 +34,10 @@ class QCConfig:
     total_counts_min: float = 20
     
     # Gene filtering
-    gene_percentile_threshold: float = 50  # Percentile of negative probes
+    gene_filter_method: str = 'percentile'           # NEW: 'percentile', 'absolute', or 'min_cells'
+    gene_percentile_threshold: float = 50            # For 'percentile' method
+    gene_absolute_threshold: Optional[float] = None  # For 'absolute' method
+    gene_min_cells: Optional[int] = None             # For 'min_cells' method
     
     # Output settings
     output_dir: str = "./output/"
@@ -43,66 +56,135 @@ class spatioloji_qc:
     """
     Quality control module for spatioloji objects.
     
-    This class provides modular QC functions that can be run individually
-    or as a complete pipeline. Results are stored in the spatioloji object
-    and a filtered spatioloji object is returned.
+    Provides modular QC functions that work directly with the
+    spatioloji data structure. Results are stored in the expression
+    metadata (cell_meta and gene_meta).
+    
+    Key Features:
+    - Works directly with spatioloji expression and metadata
+    - Modular QC steps (run individually or as pipeline)
+    - Results stored in spatioloji.cell_meta and spatioloji.gene_meta
+    - Returns filtered spatioloji object
     """
     
-    def __init__(self, sp_obj, config: Optional[QCConfig] = None):
+    def __init__(self, sp, config: Optional[QCConfig] = None):
         """
         Initialize QC module with a spatioloji object.
         
         Parameters
         ----------
-        sp_obj : spatioloji
+        sp : spatioloji
             The spatioloji object to perform QC on
         config : QCConfig, optional
-            Configuration for QC thresholds. If None, uses defaults.
+            Configuration for QC thresholds
         """
-        self.sp = sp_obj
+        from .core import spatioloji
+        
+        if not isinstance(sp, spatioloji):
+            raise TypeError("Input must be a spatioloji object")
+        
+        self.sp = sp
         self.config = config or QCConfig()
         
-        # Validate that spatioloji has required data
+        # Validate input
         self._validate_input()
         
         # Initialize QC tracking
         self.qc_metrics = {}
-        self.qc_passed = True
         
-        # Prepare AnnData if not already prepared
-        self._prepare_adata()
+        # Add gene annotations if not present
+        self._prepare_gene_annotations()
+        
+        # Calculate QC metrics
+        self._calculate_qc_metrics()
     
     def _validate_input(self) -> None:
-        """Validate that spatioloji object has required components."""
-        if self.sp.adata is None:
-            raise ValueError("spatioloji object must have an AnnData object")
-        if self.sp.cell_meta is None:
-            raise ValueError("spatioloji object must have cell_meta")
+        """Validate spatioloji object has required components."""
+        if self.sp.expression is None:
+            raise ValueError("spatioloji must have expression data")
+        
+        if self.sp.n_cells == 0:
+            raise ValueError("spatioloji has no cells")
+        
+        if self.sp.n_genes == 0:
+            raise ValueError("spatioloji has no genes")
     
-    def _prepare_adata(self) -> None:
-        """Prepare AnnData object with gene annotations."""
-        adata = self.sp.adata
+    def _prepare_gene_annotations(self) -> None:
+        """Add gene annotations for QC."""
+        gene_meta = self.sp.gene_meta
         
-        # Add gene annotations if not already present
-        if 'mt' not in adata.var.columns:
-            adata.var['mt'] = adata.var_names.str.startswith("MT-")
-        if 'ribo' not in adata.var.columns:
-            adata.var['ribo'] = [name.startswith(("RPS", "RPL")) 
-                                 for name in adata.var_names]
-        if 'NegProbe' not in adata.var.columns:
-            adata.var['NegProbe'] = adata.var_names.str.startswith("Neg")
+        # Mitochondrial genes
+        if 'mt' not in gene_meta.columns:
+            gene_meta['mt'] = self.sp.gene_index.str.startswith("MT-")
         
-        # Calculate QC metrics if not already present
-        if 'total_counts' not in adata.obs.columns:
-            import scanpy as sc
-            sc.pp.calculate_qc_metrics(
-                adata, 
-                qc_vars=["mt", "ribo", "NegProbe"], 
-                inplace=True, 
-                log1p=True
+        # Ribosomal genes
+        if 'ribo' not in gene_meta.columns:
+            gene_meta['ribo'] = [name.startswith(("RPS", "RPL")) 
+                                 for name in self.sp.gene_index]
+        
+        # Negative probe genes
+        if 'NegProbe' not in gene_meta.columns:
+            gene_meta['NegProbe'] = self.sp.gene_index.str.startswith("Neg")
+    
+    def _calculate_qc_metrics(self) -> None:
+        """Calculate basic QC metrics."""
+        print("Calculating QC metrics...")
+        
+        # Get expression matrix
+        expr = self.sp.expression.get_dense()
+        
+        # Total counts per cell
+        total_counts = expr.sum(axis=1)
+        self.sp.cell_meta['total_counts'] = total_counts
+        
+        # Number of genes detected per cell
+        self.sp.cell_meta['n_genes_by_counts'] = (expr > 0).sum(axis=1)
+        
+        # Percentage counts in mitochondrial genes
+        mt_genes = self.sp.gene_meta['mt'].values
+        if mt_genes.any():
+            mt_counts = expr[:, mt_genes].sum(axis=1)
+            # FIX: Use np.divide with where parameter
+            self.sp.cell_meta['pct_counts_mt'] = np.divide(
+                mt_counts * 100, 
+                total_counts,
+                out=np.zeros_like(mt_counts, dtype=float),
+                where=total_counts != 0
             )
+        else:
+            self.sp.cell_meta['pct_counts_mt'] = 0.0
+        
+        # Percentage counts in ribosomal genes
+        ribo_genes = self.sp.gene_meta['ribo'].values
+        if ribo_genes.any():
+            ribo_counts = expr[:, ribo_genes].sum(axis=1)
+            # FIX: Safe division
+            self.sp.cell_meta['pct_counts_ribo'] = np.divide(
+                ribo_counts * 100,
+                total_counts,
+                out=np.zeros_like(ribo_counts, dtype=float),
+                where=total_counts != 0
+            )
+        else:
+            self.sp.cell_meta['pct_counts_ribo'] = 0.0
+        
+        # Percentage counts in negative probes
+        neg_genes = self.sp.gene_meta['NegProbe'].values
+        if neg_genes.any():
+            neg_counts = expr[:, neg_genes].sum(axis=1)
+            # FIX: Safe division
+            self.sp.cell_meta['pct_counts_NegProbe'] = np.divide(
+                neg_counts * 100,
+                total_counts,
+                out=np.zeros_like(neg_counts, dtype=float),
+                where=total_counts != 0
+            )
+        else:
+            self.sp.cell_meta['pct_counts_NegProbe'] = 0.0
+        
+        print(f"  ✓ Calculated metrics for {self.sp.n_cells} cells")
     
-    # ========== Statistical Helper Methods ==========
+    # ========== Statistical Tests ==========
     
     @staticmethod
     def grubbs_test(data: np.ndarray, alpha: float = 0.05) -> int:
@@ -112,14 +194,14 @@ class spatioloji_qc:
         Parameters
         ----------
         data : np.ndarray
-            Data to test for outliers
+            Data to test
         alpha : float
             Significance level
         
         Returns
         -------
         int
-            Index of outlier or -1 if no outlier detected
+            Index of outlier or -1 if none detected
         """
         data = np.array(data)
         n = len(data)
@@ -143,8 +225,11 @@ class spatioloji_qc:
     def _save_plot(self, filename: str) -> None:
         """Save plot to analysis directory."""
         if self.config.save_plots:
-            plt.savefig(os.path.join(self.config.analysis_dir, filename), 
-                       dpi=150, bbox_inches='tight')
+            plt.savefig(
+                os.path.join(self.config.analysis_dir, filename),
+                dpi=150,
+                bbox_inches='tight'
+            )
             plt.close()
         else:
             plt.show()
@@ -153,7 +238,7 @@ class spatioloji_qc:
     
     def qc_negative_probes(self, plot: bool = True) -> pd.DataFrame:
         """
-        Perform QC on negative probes.
+        Perform QC on negative probes using Grubbs test.
         
         Parameters
         ----------
@@ -163,25 +248,24 @@ class spatioloji_qc:
         Returns
         -------
         pd.DataFrame
-            QC results with outlier information
+            QC results
         """
-        adata = self.sp.adata
+        print("\n[QC] Negative Probes")
         
         # Get negative probe genes
-        neg_probes = adata.var[adata.var['NegProbe']].index.tolist()
+        neg_genes = self.sp.gene_meta['NegProbe'].values
         
-        if not neg_probes:
-            print("Warning: No negative probes found")
+        if not neg_genes.any():
+            print("  ⚠ No negative probes found")
             return pd.DataFrame()
         
-        # Get counts for negative probes
-        neg_probe_locs = [adata.var_names.get_loc(g) for g in neg_probes]
-        counts = adata.X[:, neg_probe_locs]
-        neg_counts = np.array(counts.sum(axis=1)).flatten()
+        # Get counts
+        expr = self.sp.expression.get_dense()
+        neg_counts = expr[:, neg_genes].sum(axis=1)
         
         # Detect outliers
         idx_neg = self.grubbs_test(
-            np.log1p(neg_counts), 
+            np.log1p(neg_counts),
             alpha=self.config.alpha_neg_probe
         )
         
@@ -190,18 +274,18 @@ class spatioloji_qc:
             'neg_probe_counts': neg_counts,
             'log1p_neg_counts': np.log1p(neg_counts),
             'is_outlier': False
-        }, index=adata.obs_names)
+        }, index=self.sp.cell_index)
         
         if idx_neg != -1:
-            outlier_cell = adata.obs_names[idx_neg]
+            outlier_cell = self.sp.cell_index[idx_neg]
             results.loc[outlier_cell, 'is_outlier'] = True
-            adata.obs['QC_NegProbe_outlier'] = results['is_outlier']
-            print(f"✗ Detected outlier cell for negative probes: {outlier_cell}")
+            self.sp.cell_meta['QC_NegProbe_outlier'] = results['is_outlier'].values
+            print(f"  ✗ Detected outlier: {outlier_cell}")
         else:
-            adata.obs['QC_NegProbe_outlier'] = False
-            print("✓ No negative probe outliers detected")
+            self.sp.cell_meta['QC_NegProbe_outlier'] = False
+            print(f"  ✓ No outliers detected")
         
-        # Plot if requested
+        # Plot
         if plot:
             self._plot_distribution(
                 np.log1p(neg_counts),
@@ -211,9 +295,7 @@ class spatioloji_qc:
                 outlier_idx=idx_neg if idx_neg != -1 else None
             )
         
-        # Store in qc_metrics
         self.qc_metrics['negative_probes'] = results
-        
         return results
     
     # ========== Cell Area QC ==========
@@ -232,30 +314,20 @@ class spatioloji_qc:
         Returns
         -------
         pd.DataFrame
-            QC results with outlier information
+            QC results
         """
-        cell_meta = self.sp.cell_meta
-        adata = self.sp.adata
+        print("\n[QC] Cell Area")
         
-        if area_column not in cell_meta.columns:
-            print(f"Warning: '{area_column}' not found in cell_meta")
+        if area_column not in self.sp.cell_meta.columns:
+            print(f"  ⚠ '{area_column}' not found in cell_meta")
             return pd.DataFrame()
         
-        # Get cell areas aligned with adata
-        cell_id_col = self.sp.config.cell_id_col
-        area_data = cell_meta.set_index(cell_id_col)[area_column]
-        
-        # Align with adata observations
-        if cell_id_col in adata.obs.columns:
-            cell_ids = adata.obs[cell_id_col]
-        else:
-            cell_ids = adata.obs_names
-        
-        areas = area_data.loc[cell_ids].values
+        # Get areas (already aligned to cell_index)
+        areas = self.sp.cell_meta[area_column].values
         
         # Detect outliers
         idx_area = self.grubbs_test(
-            np.log1p(areas), 
+            np.log1p(areas),
             alpha=self.config.alpha_cell_area
         )
         
@@ -264,18 +336,18 @@ class spatioloji_qc:
             'cell_area': areas,
             'log1p_area': np.log1p(areas),
             'is_outlier': False
-        }, index=adata.obs_names)
+        }, index=self.sp.cell_index)
         
         if idx_area != -1:
-            outlier_cell = adata.obs_names[idx_area]
+            outlier_cell = self.sp.cell_index[idx_area]
             results.loc[outlier_cell, 'is_outlier'] = True
-            adata.obs['QC_Area_outlier'] = results['is_outlier']
-            print(f"✗ Detected outlier cell area: {outlier_cell}")
+            self.sp.cell_meta['QC_Area_outlier'] = results['is_outlier'].values
+            print(f"  ✗ Detected outlier: {outlier_cell}")
         else:
-            adata.obs['QC_Area_outlier'] = False
-            print("✓ No cell area outliers detected")
+            self.sp.cell_meta['QC_Area_outlier'] = False
+            print(f"  ✓ No outliers detected")
         
-        # Plot if requested
+        # Plot
         if plot:
             self._plot_distribution(
                 np.log1p(areas),
@@ -285,21 +357,19 @@ class spatioloji_qc:
                 outlier_idx=idx_area if idx_area != -1 else None
             )
         
-        # Store in qc_metrics
         self.qc_metrics['cell_area'] = results
-        
         return results
     
-    def _plot_distribution(self, data: np.ndarray, title: str, 
+    def _plot_distribution(self, data: np.ndarray, title: str,
                           xlabel: str, filename: str,
                           outlier_idx: Optional[int] = None) -> None:
-        """Helper method to plot distributions with optional outlier marking."""
+        """Plot distribution with optional outlier marking."""
         plt.figure(figsize=(8, 5))
         plt.hist(data, bins=50, color='skyblue', edgecolor='black', alpha=0.7)
         
         if outlier_idx is not None:
-            plt.axvline(data[outlier_idx], color='red', 
-                       linestyle='--', linewidth=2, 
+            plt.axvline(data[outlier_idx], color='red',
+                       linestyle='--', linewidth=2,
                        label=f'Outlier: {data[outlier_idx]:.2f}')
             plt.legend()
         
@@ -315,12 +385,6 @@ class spatioloji_qc:
         """
         Perform QC on cell-level metrics.
         
-        Calculates and visualizes:
-        - Ratio of counts to genes
-        - Total counts
-        - Mitochondrial percentage
-        - Negative probe percentage
-        
         Parameters
         ----------
         plot : bool
@@ -329,72 +393,70 @@ class spatioloji_qc:
         Returns
         -------
         pd.DataFrame
-            Summary of cell metrics
+            Cell metrics summary
         """
-        adata = self.sp.adata
+        print("\n[QC] Cell Metrics")
         
-        # Calculate ratio of counts to genes
-        adata.obs['ratio_counts_genes'] = (
-            adata.obs['total_counts'] / adata.obs['n_genes_by_counts']
+        # Calculate ratio
+        self.sp.cell_meta['ratio_counts_genes'] = (
+            self.sp.cell_meta['total_counts'] /
+            self.sp.cell_meta['n_genes_by_counts']
         )
         
         # Metrics to analyze
         metrics = [
-            'ratio_counts_genes', 
-            'total_counts', 
-            'pct_counts_mt', 
+            'ratio_counts_genes',
+            'total_counts',
+            'pct_counts_mt',
             'pct_counts_NegProbe'
         ]
         
-        # Get metrics data
-        results = adata.obs[metrics].copy()
+        results = self.sp.cell_meta[metrics].copy()
         
-        # Plot distributions if requested
+        # Plot
         if plot:
             self._plot_cell_metrics(results, metrics)
         
-        # Store in qc_metrics
         self.qc_metrics['cell_metrics'] = results
         
-        # Print summary statistics
-        print("\n📊 Cell Metrics Summary:")
+        print("\n  Metrics Summary:")
         print(results.describe())
         
         return results
     
     def _plot_cell_metrics(self, data: pd.DataFrame, metrics: List[str]) -> None:
-        """Plot distributions for multiple cell metrics."""
+        """Plot cell metrics distributions."""
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         axes = axes.flatten()
         
         for idx, metric in enumerate(metrics):
             ax = axes[idx]
-            ax.hist(data[metric], bins=50, color='skyblue', 
+            ax.hist(data[metric], bins=50, color='skyblue',
                    edgecolor='black', alpha=0.7)
             ax.set_title(f'Distribution of {metric}')
             ax.set_xlabel(metric)
             ax.set_ylabel('Frequency')
             ax.grid(alpha=0.3)
             
-            # Add threshold lines if applicable
+            # Add threshold lines
             if metric == 'pct_counts_mt':
-                ax.axvline(self.config.pct_counts_mt_max, 
-                          color='red', linestyle='--', 
+                ax.axvline(self.config.pct_counts_mt_max,
+                          color='red', linestyle='--',
                           label=f'Threshold: {self.config.pct_counts_mt_max}')
                 ax.legend()
             elif metric == 'pct_counts_NegProbe':
-                ax.axvline(self.config.pct_counts_neg_max, 
-                          color='red', linestyle='--', 
+                ax.axvline(self.config.pct_counts_neg_max,
+                          color='red', linestyle='--',
                           label=f'Threshold: {self.config.pct_counts_neg_max}')
                 ax.legend()
             elif metric == 'ratio_counts_genes':
-                ax.axvline(self.config.ratio_counts_genes_min, 
-                          color='red', linestyle='--', 
+                ax.axvline(self.config.ratio_counts_genes_min,
+                          color='red', linestyle='--',
                           label=f'Threshold: {self.config.ratio_counts_genes_min}')
                 ax.legend()
             elif metric == 'total_counts':
-                ax.axvline(self.config.total_counts_min, 
-                          color='red', linestyle='--', 
+                ax.axvline(self.config.total_counts_min,
+                          color='red', linestyle='--',
                           label=f'Threshold: {self.config.total_counts_min}')
                 ax.legend()
         
@@ -403,78 +465,66 @@ class spatioloji_qc:
     
     # ========== Cell Filtering ==========
     
-    def filter_cells(self, 
+    def filter_cells(self,
                     custom_filters: Optional[dict] = None,
-                    return_mask: bool = False) -> pd.DataFrame:
+                    return_mask: bool = False) -> pd.Series:
         """
         Filter cells based on QC metrics.
         
         Parameters
         ----------
         custom_filters : dict, optional
-            Custom filter thresholds. Keys should be metric names,
-            values should be tuples of (comparison, threshold).
-            Example: {'total_counts': ('>', 50), 'pct_counts_mt': ('<', 0.2)}
+            Custom filters: {metric: (operator, threshold)}
         return_mask : bool
-            If True, return boolean mask instead of filtered data
+            If True, return boolean mask
         
         Returns
         -------
-        pd.DataFrame or pd.Series
-            Filtered cell observations or boolean mask
+        pd.Series
+            Boolean mask of cells passing QC
         """
-        adata = self.sp.adata
+        print("\n[QC] Filtering Cells")
         
         # Default filters
         mask = (
-            (adata.obs['pct_counts_NegProbe'] < self.config.pct_counts_neg_max) &
-            (adata.obs['pct_counts_mt'] < self.config.pct_counts_mt_max) &
-            (adata.obs['ratio_counts_genes'] > self.config.ratio_counts_genes_min) &
-            (adata.obs['total_counts'] > self.config.total_counts_min) &
-            (adata.obs['QC_Area_outlier'] == False)
+            (self.sp.cell_meta['pct_counts_NegProbe'] < self.config.pct_counts_neg_max) &
+            (self.sp.cell_meta['pct_counts_mt'] < self.config.pct_counts_mt_max) &
+            (self.sp.cell_meta['ratio_counts_genes'] > self.config.ratio_counts_genes_min) &
+            (self.sp.cell_meta['total_counts'] > self.config.total_counts_min)
         )
         
-        # Apply custom filters if provided
+        # Add area filter if available
+        if 'QC_Area_outlier' in self.sp.cell_meta.columns:
+            mask &= (self.sp.cell_meta['QC_Area_outlier'] == False)
+        
+        # Apply custom filters
         if custom_filters:
             for metric, (operator, threshold) in custom_filters.items():
-                if metric not in adata.obs.columns:
-                    print(f"Warning: Metric '{metric}' not found, skipping")
+                if metric not in self.sp.cell_meta.columns:
+                    print(f"  ⚠ Metric '{metric}' not found, skipping")
                     continue
                 
                 if operator == '>':
-                    mask &= (adata.obs[metric] > threshold)
+                    mask &= (self.sp.cell_meta[metric] > threshold)
                 elif operator == '<':
-                    mask &= (adata.obs[metric] < threshold)
+                    mask &= (self.sp.cell_meta[metric] < threshold)
                 elif operator == '>=':
-                    mask &= (adata.obs[metric] >= threshold)
+                    mask &= (self.sp.cell_meta[metric] >= threshold)
                 elif operator == '<=':
-                    mask &= (adata.obs[metric] <= threshold)
-                elif operator == '==':
-                    mask &= (adata.obs[metric] == threshold)
-                elif operator == '!=':
-                    mask &= (adata.obs[metric] != threshold)
+                    mask &= (self.sp.cell_meta[metric] <= threshold)
         
-        # Store filter mask
-        adata.obs['QC_pass'] = mask
+        # Store mask
+        self.sp.cell_meta['QC_pass'] = mask
         
-        if return_mask:
-            return mask
-        
-        # Get filtered observations
-        df_filtered = adata.obs[mask]
-        
-        # Print filtering summary
-        n_before = len(adata.obs)
-        n_after = len(df_filtered)
+        # Report
+        n_before = len(mask)
+        n_after = mask.sum()
         pct_kept = (n_after / n_before) * 100
         
-        print(f"\n🔍 Cell Filtering Results:")
-        print(f"  Before: {n_before} cells")
-        print(f"  After:  {n_after} cells")
+        print(f"  Before: {n_before:,} cells")
+        print(f"  After:  {n_after:,} cells")
         print(f"  Kept:   {pct_kept:.1f}%")
-        print(f"  Removed: {n_before - n_after} cells ({100-pct_kept:.1f}%)")
         
-        # Store in qc_metrics
         self.qc_metrics['cell_filtering'] = {
             'n_before': n_before,
             'n_after': n_after,
@@ -482,40 +532,23 @@ class spatioloji_qc:
             'filter_mask': mask
         }
         
-        return df_filtered
+        return mask if return_mask else mask
     
     def get_filtered_cell_ids(self) -> List[str]:
-        """
-        Get list of cell IDs that passed QC filters.
-        
-        Returns
-        -------
-        List[str]
-            Cell IDs that passed all QC filters
-        """
-        if 'QC_pass' not in self.sp.adata.obs.columns:
-            print("Warning: Run filter_cells() first")
+        """Get list of cell IDs that passed QC."""
+        if 'QC_pass' not in self.sp.cell_meta.columns:
+            print("  ⚠ Run filter_cells() first")
             return []
         
-        mask = self.sp.adata.obs['QC_pass']
-        
-        cell_id_col = self.sp.config.cell_id_col
-        if cell_id_col in self.sp.adata.obs.columns:
-            return self.sp.adata.obs.loc[mask, cell_id_col].tolist()
-        else:
-            return self.sp.adata.obs_names[mask].tolist()
+        mask = self.sp.cell_meta['QC_pass']
+        return self.sp.cell_index[mask].tolist()
     
-    # ========== FOV-Level QC ==========
+    # ========== FOV Metrics ==========
     
     def qc_fov_metrics(self, plot: bool = True) -> pd.DataFrame:
         """
         Perform QC on FOV-level metrics.
         
-        Analyzes:
-        - Average transcripts per cell by FOV
-        - 90th percentile of gene expression by FOV
-        - 50th percentile of negative probe expression by FOV
-        
         Parameters
         ----------
         plot : bool
@@ -524,988 +557,510 @@ class spatioloji_qc:
         Returns
         -------
         pd.DataFrame
-            Summary statistics for each FOV
+            FOV metrics summary
         """
-        adata = self.sp.adata
-        cell_meta = self.sp.cell_meta
+        print("\n[QC] FOV Metrics")
+        
         fov_col = self.sp.config.fov_id_col
         
-        # Get FOV IDs for each cell
-        fov_ids = self._get_fov_ids_for_cells()
-        adata.obs['fov'] = fov_ids
+        if fov_col not in self.sp.cell_meta.columns:
+            print(f"  ⚠ '{fov_col}' not in cell_meta")
+            return pd.DataFrame()
+        
+        # Get FOVs
+        fovs = self.sp.cell_meta[fov_col]
         
         # Calculate transcripts per cell
-        tx_per_cell = np.array(adata.X.sum(axis=1)).flatten()
-        adata.obs['tx_per_cell'] = tx_per_cell
+        tx_per_cell = self.sp.cell_meta['total_counts']
         
-        # Calculate FOV-level statistics
-        fov_summary = self._calculate_fov_statistics(adata, fov_ids)
+        # FOV statistics
+        fov_stats = pd.DataFrame({
+            'n_cells': fovs.value_counts(),
+            'avg_transcripts': fovs.groupby(fovs).apply(
+                lambda x: tx_per_cell.loc[x.index].mean()
+            ),
+            'median_transcripts': fovs.groupby(fovs).apply(
+                lambda x: tx_per_cell.loc[x.index].median()
+            )
+        })
         
-        # Plot if requested
+        # Plot
         if plot:
-            self._plot_fov_metrics(adata, fov_summary)
+            self._plot_fov_metrics(fovs, tx_per_cell, fov_stats)
         
-        # Store in qc_metrics
-        self.qc_metrics['fov_metrics'] = fov_summary
-        
-        # Save to file
+        # Save
         if self.config.save_plots:
-            fov_summary.to_csv(
+            fov_stats.to_csv(
                 os.path.join(self.config.data_dir, 'fov_metrics.csv')
             )
         
-        print(f"\n📍 FOV Metrics Summary:")
-        print(fov_summary)
+        self.qc_metrics['fov_metrics'] = fov_stats
         
-        return fov_summary
-    
-    def _get_fov_ids_for_cells(self) -> List[str]:
-        """Extract FOV IDs for each cell in adata."""
-        adata = self.sp.adata
-        cell_meta = self.sp.cell_meta
-        cell_id_col = self.sp.config.cell_id_col
-        fov_col = self.sp.config.fov_id_col
-        
-        # Get cell IDs from adata
-        if cell_id_col in adata.obs.columns:
-            cell_ids = adata.obs[cell_id_col]
-        else:
-            cell_ids = adata.obs_names
-        
-        # Map to FOV IDs
-        cell_to_fov = cell_meta.set_index(cell_id_col)[fov_col].to_dict()
-        fov_ids = [cell_to_fov.get(cid, 'Unknown') for cid in cell_ids]
-        
-        return fov_ids
-    
-    def _calculate_fov_statistics(self, adata, fov_ids: List[str]) -> pd.DataFrame:
-        """Calculate comprehensive FOV-level statistics."""
-        # Get gene and negative probe data
-        gene_mask = ~adata.var['NegProbe']
-        neg_mask = adata.var['NegProbe']
-        
-        gene_counts = np.array(adata.X[:, gene_mask].sum(axis=1)).flatten()
-        neg_counts = np.array(adata.X[:, neg_mask].sum(axis=1)).flatten()
-        
-        # Create DataFrame for analysis
-        df = pd.DataFrame({
-            'fov': fov_ids,
-            'tx_per_cell': adata.obs['tx_per_cell'].values,
-            'gene_counts': gene_counts,
-            'neg_counts': neg_counts,
-            'total_counts': adata.obs['total_counts'].values,
-            'n_genes': adata.obs['n_genes_by_counts'].values
-        })
-        
-        # Calculate statistics by FOV
-        fov_stats = df.groupby('fov').agg({
-            'tx_per_cell': ['mean', 'median', 'std'],
-            'gene_counts': lambda x: np.percentile(x, 90),
-            'neg_counts': lambda x: np.percentile(x, 50),
-            'total_counts': ['mean', 'median'],
-            'n_genes': ['mean', 'median']
-        }).round(2)
-        
-        # Flatten column names
-        fov_stats.columns = ['_'.join(col).strip() for col in fov_stats.columns.values]
-        fov_stats = fov_stats.rename(columns={
-            'gene_counts_<lambda>': '90_percentile_genes',
-            'neg_counts_<lambda>': '50_percentile_neg'
-        })
-        
-        # Add cell counts
-        fov_stats['n_cells'] = df.groupby('fov').size()
+        print(f"\n  FOV Summary:")
+        print(fov_stats)
         
         return fov_stats
     
-    def _plot_fov_metrics(self, adata, fov_summary: pd.DataFrame) -> None:
-        """Create visualizations for FOV-level metrics."""
-        # Plot 1: Transcripts per cell by FOV
-        fig, ax = plt.subplots(figsize=(12, 5))
+    def _plot_fov_metrics(self, fovs: pd.Series,
+                         tx_per_cell: pd.Series,
+                         fov_stats: pd.DataFrame) -> None:
+        """Plot FOV metrics."""
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
+        # Plot 1: Transcripts per cell by FOV
         df_plot = pd.DataFrame({
-            'fov': adata.obs['fov'],
-            'tx_per_cell': adata.obs['tx_per_cell']
+            'fov': fovs,
+            'transcripts': tx_per_cell
         })
         
-        sns.boxplot(data=df_plot, x='fov', y='tx_per_cell', ax=ax)
-        ax.set_title('Transcripts per Cell by FOV')
-        ax.set_xlabel('FOV')
-        ax.set_ylabel('Transcripts per Cell')
-        ax.tick_params(axis='x', rotation=45)
+        sns.boxplot(data=df_plot, x='fov', y='transcripts', ax=axes[0])
+        axes[0].set_title('Transcripts per Cell by FOV')
+        axes[0].set_xlabel('FOV')
+        axes[0].set_ylabel('Transcripts per Cell')
+        axes[0].tick_params(axis='x', rotation=45)
+        
+        # Plot 2: Cell counts by FOV
+        axes[1].bar(fov_stats.index, fov_stats['n_cells'])
+        axes[1].set_title('Number of Cells by FOV')
+        axes[1].set_xlabel('FOV')
+        axes[1].set_ylabel('Number of Cells')
+        axes[1].tick_params(axis='x', rotation=45)
+        
         plt.tight_layout()
-        self._save_plot('QC_fov_transcripts_per_cell.png')
-        
-        # Plot 2: 90th percentile genes vs 50th percentile negative probes
-        fig, ax = plt.subplots(figsize=(12, 5))
-        
-        df_percentiles = fov_summary[['90_percentile_genes', '50_percentile_neg']].reset_index()
-        df_melt = df_percentiles.melt(
-            id_vars='fov', 
-            var_name='metric', 
-            value_name='counts'
-        )
-        
-        sns.barplot(data=df_melt, x='fov', y='counts', hue='metric', ax=ax)
-        ax.set_title('90th Percentile Genes vs 50th Percentile Negative Probes by FOV')
-        ax.set_xlabel('FOV')
-        ax.set_ylabel('Counts')
-        ax.tick_params(axis='x', rotation=45)
-        plt.tight_layout()
-        self._save_plot('QC_fov_genes_vs_negprobes.png')
-        
-        # Plot 3: Cell counts by FOV
-        fig, ax = plt.subplots(figsize=(12, 5))
-        
-        sns.barplot(data=fov_summary.reset_index(), x='fov', y='n_cells', ax=ax)
-        ax.set_title('Number of Cells by FOV')
-        ax.set_xlabel('FOV')
-        ax.set_ylabel('Number of Cells')
-        ax.tick_params(axis='x', rotation=45)
-        plt.tight_layout()
-        self._save_plot('QC_fov_cell_counts.png')
-    
-    def filter_fovs(self, 
-                   min_cells: Optional[int] = None,
-                   min_avg_transcripts: Optional[float] = None,
-                   custom_filters: Optional[dict] = None) -> List[str]:
-        """
-        Filter FOVs based on quality metrics.
-        
-        Parameters
-        ----------
-        min_cells : int, optional
-            Minimum number of cells per FOV
-        min_avg_transcripts : float, optional
-            Minimum average transcripts per cell
-        custom_filters : dict, optional
-            Custom filter thresholds for FOV metrics
-        
-        Returns
-        -------
-        List[str]
-            FOV IDs that passed filters
-        """
-        if 'fov_metrics' not in self.qc_metrics:
-            print("Warning: Run qc_fov_metrics() first")
-            return []
-        
-        fov_summary = self.qc_metrics['fov_metrics']
-        mask = pd.Series(True, index=fov_summary.index)
-        
-        # Apply filters
-        if min_cells is not None:
-            mask &= (fov_summary['n_cells'] >= min_cells)
-        
-        if min_avg_transcripts is not None:
-            mask &= (fov_summary['tx_per_cell_mean'] >= min_avg_transcripts)
-        
-        if custom_filters:
-            for metric, (operator, threshold) in custom_filters.items():
-                if metric not in fov_summary.columns:
-                    print(f"Warning: Metric '{metric}' not found, skipping")
-                    continue
-                
-                if operator == '>':
-                    mask &= (fov_summary[metric] > threshold)
-                elif operator == '<':
-                    mask &= (fov_summary[metric] < threshold)
-                elif operator == '>=':
-                    mask &= (fov_summary[metric] >= threshold)
-                elif operator == '<=':
-                    mask &= (fov_summary[metric] <= threshold)
-        
-        passed_fovs = fov_summary[mask].index.tolist()
-        
-        print(f"\n🔍 FOV Filtering Results:")
-        print(f"  Before: {len(fov_summary)} FOVs")
-        print(f"  After:  {len(passed_fovs)} FOVs")
-        print(f"  Removed: {len(fov_summary) - len(passed_fovs)} FOVs")
-        
-        return passed_fovs
+        self._save_plot('QC_fov_metrics.png')
     
     # ========== Gene Filtering ==========
     
-    def filter_genes(self, 
-                    method: str = 'percentile',
+    def filter_genes(self,
+                    method: Optional[str] = None,
                     threshold: Optional[float] = None,
                     min_cells: Optional[int] = None,
-                    plot: bool = True) -> pd.DataFrame:
+                    plot: bool = True) -> pd.Series:
         """
-        Filter genes based on expression compared to negative probes.
+        Filter genes based on expression.
         
         Parameters
         ----------
-        method : str
-            Filtering method:
-            - 'percentile': Keep genes above percentile of negative probes
-            - 'absolute': Keep genes above absolute threshold
-            - 'min_cells': Keep genes expressed in minimum number of cells
+        method : str, optional
+            'percentile', 'absolute', or 'min_cells'
+            If None, uses config.gene_filter_method
         threshold : float, optional
-            Threshold value (percentile or absolute count)
+            Threshold value. If None, uses config values
         min_cells : int, optional
-            Minimum number of cells expressing the gene
+            Minimum cells expressing gene. If None, uses config.gene_min_cells
         plot : bool
             Whether to create visualizations
         
         Returns
         -------
-        pd.DataFrame
-            Gene filtering summary
+        pd.Series
+            Boolean mask of genes passing filter
         """
-        adata = self.sp.adata
+        # Use config defaults if not specified
+        method = method or self.config.gene_filter_method
         
-        # Separate genes and negative probes
-        gene_mask = ~adata.var['NegProbe']
-        neg_mask = adata.var['NegProbe']
+        print(f"\n[QC] Filtering Genes (method={method})")
         
-        gene_counts = np.array(adata.X[:, gene_mask].sum(axis=0)).flatten()
-        neg_counts = np.array(adata.X[:, neg_mask].sum(axis=0)).flatten()
+        expr = self.sp.expression.get_dense()
+        gene_mask = ~self.sp.gene_meta['NegProbe'].values
+        neg_mask = self.sp.gene_meta['NegProbe'].values
         
-        # Calculate threshold based on method
+        gene_counts = expr[:, gene_mask].sum(axis=0)
+        neg_counts = expr[:, neg_mask].sum(axis=0)
+        
+        # Apply filter method
         if method == 'percentile':
-            percentile = threshold or self.config.gene_percentile_threshold
+            # Use provided threshold or config default
+            percentile = threshold if threshold is not None else self.config.gene_percentile_threshold
             neg_threshold = np.percentile(neg_counts.sum(), percentile)
-            keep_genes = gene_counts > neg_threshold
-            filter_description = f"{percentile}th percentile of negative probes"
+            keep_genes_bool = gene_counts > neg_threshold
+            description = f"{percentile}th percentile of neg probes"
             
         elif method == 'absolute':
-            if threshold is None:
-                raise ValueError("threshold must be provided for absolute method")
-            keep_genes = gene_counts > threshold
-            filter_description = f"absolute threshold of {threshold}"
+            # Use provided threshold or config default
+            abs_threshold = threshold if threshold is not None else self.config.gene_absolute_threshold
+            if abs_threshold is None:
+                raise ValueError(
+                    "threshold required for absolute method. "
+                    "Provide via parameter or set config.gene_absolute_threshold"
+                )
+            keep_genes_bool = gene_counts > abs_threshold
+            description = f"absolute threshold of {abs_threshold}"
             
         elif method == 'min_cells':
-            if min_cells is None:
-                raise ValueError("min_cells must be provided for min_cells method")
-            n_cells_expressing = (adata.X[:, gene_mask] > 0).sum(axis=0)
-            keep_genes = np.array(n_cells_expressing > min_cells).flatten()
-            filter_description = f"expressed in >{min_cells} cells"
-            
+            # Use provided min_cells or config default
+            min_cells_threshold = min_cells if min_cells is not None else self.config.gene_min_cells
+            if min_cells_threshold is None:
+                raise ValueError(
+                    "min_cells required for min_cells method. "
+                    "Provide via parameter or set config.gene_min_cells"
+                )
+            n_cells_expressing = (expr[:, gene_mask] > 0).sum(axis=0)
+            keep_genes_bool = n_cells_expressing > min_cells_threshold
+            description = f"expressed in >{min_cells_threshold} cells"
         else:
-            raise ValueError(f"Unknown method: {method}")
+            raise ValueError(f"Unknown method: {method}. Use 'percentile', 'absolute', or 'min_cells'")
         
-        # Create summary DataFrame
-        gene_names = adata.var_names[gene_mask]
-        summary = pd.DataFrame({
-            'gene': gene_names,
-            'total_counts': gene_counts,
-            'n_cells_expressing': (adata.X[:, gene_mask] > 0).sum(axis=0).A1,
-            'pass_filter': keep_genes
-        })
+        # Create full mask (include all negative probes)
+        full_mask = np.zeros(self.sp.n_genes, dtype=bool)
+        full_mask[gene_mask] = keep_genes_bool
+        full_mask[neg_mask] = True  # Keep all negative probes
         
-        n_before = len(gene_names)
-        n_after = keep_genes.sum()
+        # Store
+        self.sp.gene_meta['QC_gene_pass'] = full_mask
+        
+        # Report
+        n_before = gene_mask.sum()
+        n_after = keep_genes_bool.sum()
         pct_kept = (n_after / n_before) * 100
         
-        print(f"\n🧬 Gene Filtering Results ({method}):")
-        print(f"  Filter: {filter_description}")
-        print(f"  Before: {n_before} genes")
-        print(f"  After:  {n_after} genes")
-        print(f"  Kept:   {pct_kept:.1f}%")
-        print(f"  Removed: {n_before - n_after} genes ({100-pct_kept:.1f}%)")
-        
-        # Plot if requested
-        if plot:
-            self._plot_gene_filtering(summary, neg_counts, method)
-        
-        # Store results
-        adata.var['QC_gene_pass'] = False
-        adata.var.loc[gene_mask, 'QC_gene_pass'] = keep_genes
+        print(f"  Filter: {description}")
+        print(f"  Before: {n_before:,} genes")
+        print(f"  After:  {n_after:,} genes ({pct_kept:.1f}%)")
         
         self.qc_metrics['gene_filtering'] = {
             'n_before': n_before,
             'n_after': n_after,
             'pct_kept': pct_kept,
-            'method': method,
-            'summary': summary
+            'method': method
         }
         
-        # Save to file
-        if self.config.save_plots:
-            summary.to_csv(
-                os.path.join(self.config.data_dir, 'gene_filtering_summary.csv'),
-                index=False
-            )
+        # Plot
+        if plot:
+            self._plot_gene_filtering(gene_counts, neg_counts, keep_genes_bool)
         
-        return summary
+        return full_mask
     
-    def _plot_gene_filtering(self, summary: pd.DataFrame, 
-                            neg_counts: np.ndarray, 
-                            method: str) -> None:
-        """Create visualizations for gene filtering."""
+    def _plot_gene_filtering(self, gene_counts: np.ndarray,
+                            neg_counts: np.ndarray,
+                            keep_genes: np.ndarray) -> None:
+        """Plot gene filtering results."""
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
-        # Plot 1: Gene count distribution
-        ax = axes[0]
-        ax.hist(np.log1p(summary['total_counts']), bins=50, 
-               color='skyblue', edgecolor='black', alpha=0.7, 
-               label='All genes')
+        # Plot 1: Distribution
+        axes[0].hist(np.log1p(gene_counts), bins=50,
+                    color='skyblue', alpha=0.7,
+                    label='All genes', edgecolor='black')
+        axes[0].hist(np.log1p(gene_counts[keep_genes]), bins=50,
+                    color='green', alpha=0.5,
+                    label='Kept genes', edgecolor='black')
+        axes[0].set_title('Gene Expression Distribution')
+        axes[0].set_xlabel('log1p(Total Counts)')
+        axes[0].set_ylabel('Frequency')
+        axes[0].legend()
+        axes[0].grid(alpha=0.3)
         
-        kept_genes = summary[summary['pass_filter']]
-        ax.hist(np.log1p(kept_genes['total_counts']), bins=50,
-               color='green', edgecolor='black', alpha=0.5,
-               label='Kept genes')
-        
-        ax.set_title('Gene Expression Distribution (log1p)')
-        ax.set_xlabel('log1p(Total Counts)')
-        ax.set_ylabel('Frequency')
-        ax.legend()
-        ax.grid(alpha=0.3)
-        
-        # Plot 2: Comparison with negative probes
-        ax = axes[1]
-        gene_sum = summary['total_counts'].sum()
+        # Plot 2: Comparison
+        gene_sum = gene_counts.sum()
         neg_sum = neg_counts.sum()
-        kept_sum = kept_genes['total_counts'].sum()
+        kept_sum = gene_counts[keep_genes].sum()
         
-        bars = ax.bar(
+        bars = axes[1].bar(
             ['Negative Probes', 'All Genes', 'Kept Genes'],
             [neg_sum, gene_sum, kept_sum],
             color=['red', 'skyblue', 'green'],
             alpha=0.7
         )
         
-        ax.set_title('Total Counts: Negative Probes vs Genes')
-        ax.set_ylabel('Total Counts')
-        ax.grid(alpha=0.3, axis='y')
+        axes[1].set_title('Total Counts Comparison')
+        axes[1].set_ylabel('Total Counts')
+        axes[1].grid(alpha=0.3, axis='y')
         
-        # Add values on bars
         for bar in bars:
             height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{int(height):,}',
-                   ha='center', va='bottom')
+            axes[1].text(bar.get_x() + bar.get_width()/2., height,
+                        f'{int(height):,}',
+                        ha='center', va='bottom')
         
         plt.tight_layout()
         self._save_plot('QC_gene_filtering.png')
     
     def get_filtered_gene_names(self) -> List[str]:
-        """
-        Get list of gene names that passed QC filters.
-        
-        Returns
-        -------
-        List[str]
-            Gene names that passed filters
-        """
-        if 'QC_gene_pass' not in self.sp.adata.var.columns:
-            print("Warning: Run filter_genes() first")
+        """Get list of gene names that passed QC."""
+        if 'QC_gene_pass' not in self.sp.gene_meta.columns:
+            print("  ⚠ Run filter_genes() first")
             return []
         
-        return self.sp.adata.var_names[self.sp.adata.var['QC_gene_pass']].tolist()
+        mask = self.sp.gene_meta['QC_gene_pass']
+        return self.sp.gene_index[mask].tolist()
     
-    # ========== QC Summary ==========
+    # ========== Pipeline & Apply ==========
     
-    def summarize_qc(self, plot: bool = True) -> dict:
-        """
-        Create comprehensive summary of all QC results.
-        
-        Parameters
-        ----------
-        plot : bool
-            Whether to create summary visualizations
-        
-        Returns
-        -------
-        dict
-            Dictionary containing all QC summaries
-        """
-        summary = {
-            'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'config': self.config.__dict__,
-            'qc_metrics': {}
-        }
-        
-        # Cell filtering summary
-        if 'cell_filtering' in self.qc_metrics:
-            cf = self.qc_metrics['cell_filtering']
-            summary['qc_metrics']['cells'] = {
-                'before': cf['n_before'],
-                'after': cf['n_after'],
-                'pct_kept': cf['pct_kept']
-            }
-        
-        # Gene filtering summary
-        if 'gene_filtering' in self.qc_metrics:
-            gf = self.qc_metrics['gene_filtering']
-            summary['qc_metrics']['genes'] = {
-                'before': gf['n_before'],
-                'after': gf['n_after'],
-                'pct_kept': gf['pct_kept'],
-                'method': gf['method']
-            }
-        
-        # FOV summary
-        if 'fov_metrics' in self.qc_metrics:
-            fov_stats = self.qc_metrics['fov_metrics']
-            summary['qc_metrics']['fovs'] = {
-                'n_fovs': len(fov_stats),
-                'total_cells': int(fov_stats['n_cells'].sum()),
-                'avg_cells_per_fov': float(fov_stats['n_cells'].mean()),
-                'avg_transcripts_per_cell': float(fov_stats['tx_per_cell_mean'].mean())
-            }
-        
-        # Plot summary if requested
-        if plot:
-            self._plot_qc_summary(summary)
-        
-        # Save summary to file
-        if self.config.save_plots:
-            import json
-            with open(os.path.join(self.config.data_dir, 'qc_summary.json'), 'w') as f:
-                json.dump(summary, f, indent=2)
-        
-        # Print summary
-        self._print_qc_summary(summary)
-        
-        return summary
-    
-    def _plot_qc_summary(self, summary: dict) -> None:
-        """Create visual summary of QC results."""
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        
-        # Plot 1: Cell filtering
-        if 'cells' in summary['qc_metrics']:
-            ax = axes[0]
-            cell_data = summary['qc_metrics']['cells']
-            
-            bars = ax.bar(
-                ['Before QC', 'After QC'],
-                [cell_data['before'], cell_data['after']],
-                color=['lightcoral', 'lightgreen'],
-                edgecolor='black'
-            )
-            
-            ax.set_title('Cell Filtering Summary')
-            ax.set_ylabel('Number of Cells')
-            ax.grid(alpha=0.3, axis='y')
-            
-            # Add values and percentages
-            for i, bar in enumerate(bars):
-                height = bar.get_height()
-                if i == 1:
-                    label = f'{int(height):,}\n({cell_data["pct_kept"]:.1f}%)'
-                else:
-                    label = f'{int(height):,}'
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       label, ha='center', va='bottom')
-        
-        # Plot 2: Gene filtering
-        if 'genes' in summary['qc_metrics']:
-            ax = axes[1]
-            gene_data = summary['qc_metrics']['genes']
-            
-            bars = ax.bar(
-                ['Before QC', 'After QC'],
-                [gene_data['before'], gene_data['after']],
-                color=['lightcoral', 'lightgreen'],
-                edgecolor='black'
-            )
-            
-            ax.set_title('Gene Filtering Summary')
-            ax.set_ylabel('Number of Genes')
-            ax.grid(alpha=0.3, axis='y')
-            
-            # Add values and percentages
-            for i, bar in enumerate(bars):
-                height = bar.get_height()
-                if i == 1:
-                    label = f'{int(height):,}\n({gene_data["pct_kept"]:.1f}%)'
-                else:
-                    label = f'{int(height):,}'
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       label, ha='center', va='bottom')
-        
-        plt.tight_layout()
-        self._save_plot('QC_summary.png')
-    
-    def _print_qc_summary(self, summary: dict) -> None:
-        """Print formatted QC summary."""
-        print("\n" + "="*60)
-        print("📊 QUALITY CONTROL SUMMARY")
-        print("="*60)
-        
-        if 'cells' in summary['qc_metrics']:
-            print("\n🔬 CELLS:")
-            cd = summary['qc_metrics']['cells']
-            print(f"  Before QC: {cd['before']:,} cells")
-            print(f"  After QC:  {cd['after']:,} cells ({cd['pct_kept']:.1f}% kept)")
-        
-        if 'genes' in summary['qc_metrics']:
-            print("\n🧬 GENES:")
-            gd = summary['qc_metrics']['genes']
-            print(f"  Before QC: {gd['before']:,} genes")
-            print(f"  After QC:  {gd['after']:,} genes ({gd['pct_kept']:.1f}% kept)")
-            print(f"  Method: {gd['method']}")
-        
-        if 'fovs' in summary['qc_metrics']:
-            print("\n📍 FOVs:")
-            fd = summary['qc_metrics']['fovs']
-            print(f"  Number of FOVs: {fd['n_fovs']}")
-            print(f"  Total cells: {fd['total_cells']:,}")
-            print(f"  Avg cells per FOV: {fd['avg_cells_per_fov']:.1f}")
-            print(f"  Avg transcripts per cell: {fd['avg_transcripts_per_cell']:.1f}")
-        
-        print("\n" + "="*60)
-    # ========== Complete QC Pipeline ==========
-    
-    def run_qc_pipeline(self, 
+    def run_qc_pipeline(self,
                        qc_steps: Optional[List[str]] = None,
                        plot: bool = True) -> 'spatioloji':
         """
-        Run complete QC pipeline and return filtered spatioloji object.
+        Run complete QC pipeline.
         
         Parameters
         ----------
-        qc_steps : List[str], optional
-            List of QC steps to run. If None, runs all steps.
-            Options: ['negative_probes', 'cell_area', 'cell_metrics', 
-                     'fov_metrics', 'filter_cells', 'filter_genes']
+        qc_steps : list, optional
+            QC steps to run. If None, runs all.
         plot : bool
             Whether to create visualizations
         
         Returns
         -------
         spatioloji
-            New spatioloji object with filtered data
+            Filtered spatioloji object
         """
-        print("\n" + "="*60)
-        print("🚀 STARTING QC PIPELINE")
-        print("="*60)
+        print("\n" + "="*70)
+        print("QC PIPELINE")
+        print("="*70)
         
-        # Default: run all steps
         if qc_steps is None:
             qc_steps = [
-                'negative_probes', 
-                'cell_area', 
+                'negative_probes',
+                'cell_area',
                 'cell_metrics',
                 'fov_metrics',
-                'filter_cells', 
+                'filter_cells',
                 'filter_genes'
             ]
         
-        # Run QC steps
+        # Run steps
         if 'negative_probes' in qc_steps:
-            print("\n[1/6] Running negative probe QC...")
             self.qc_negative_probes(plot=plot)
         
         if 'cell_area' in qc_steps:
-            print("\n[2/6] Running cell area QC...")
             self.qc_cell_area(plot=plot)
         
         if 'cell_metrics' in qc_steps:
-            print("\n[3/6] Running cell metrics QC...")
             self.qc_cell_metrics(plot=plot)
         
         if 'fov_metrics' in qc_steps:
-            print("\n[4/6] Running FOV metrics QC...")
             self.qc_fov_metrics(plot=plot)
         
         if 'filter_cells' in qc_steps:
-            print("\n[5/6] Filtering cells...")
             self.filter_cells()
         
         if 'filter_genes' in qc_steps:
-            print("\n[6/6] Filtering genes...")
             self.filter_genes(plot=plot)
         
         # Create summary
-        print("\n" + "-"*60)
-        summary = self.summarize_qc(plot=plot)
+        self.summarize_qc(plot=plot)
         
-        # Apply filters to spatioloji object
+        # Apply filters
         filtered_sp = self.apply_filters()
         
-        print("\n" + "="*60)
-        print("✅ QC PIPELINE COMPLETED")
-        print("="*60)
+        print("="*70)
+        print("✓ QC PIPELINE COMPLETED")
+        print("="*70 + "\n")
         
         return filtered_sp
     
-    def apply_filters(self, 
+    def apply_filters(self,
                      filter_cells: bool = True,
-                     filter_genes: bool = True,
-                     filter_fovs: bool = False,
-                     fov_ids: Optional[List[str]] = None) -> 'spatioloji':
+                     filter_genes: bool = True) -> 'spatioloji':
         """
-        Apply QC filters to create a new filtered spatioloji object.
+        Apply QC filters to create filtered spatioloji object.
         
         Parameters
         ----------
         filter_cells : bool
-            Whether to filter cells based on QC
+            Whether to filter cells
         filter_genes : bool
-            Whether to filter genes based on QC
-        filter_fovs : bool
-            Whether to filter FOVs
-        fov_ids : List[str], optional
-            Specific FOV IDs to keep (overrides filter_fovs)
+            Whether to filter genes
         
         Returns
         -------
         spatioloji
             New filtered spatioloji object
         """
-        print("\n🔧 Applying filters to spatioloji object...")
+        print("\nApplying filters to spatioloji...")
         
-        # Get filtered cell IDs
+        # Get filtered IDs
         if filter_cells:
             cell_ids = self.get_filtered_cell_ids()
             if not cell_ids:
-                print("Warning: No cells passed filters. Returning original object.")
+                print("  ⚠ No cells passed filters, returning original")
                 return self.sp
         else:
-            cell_id_col = self.sp.config.cell_id_col
-            if cell_id_col in self.sp.adata.obs.columns:
-                cell_ids = self.sp.adata.obs[cell_id_col].tolist()
-            else:
-                cell_ids = self.sp.adata.obs_names.tolist()
+            cell_ids = self.sp.cell_index.tolist()
         
-        # Subset by cells
-        filtered_sp = self.sp.subset_by_cells(cell_ids)
-        
-        # Filter genes in adata
         if filter_genes:
             gene_names = self.get_filtered_gene_names()
-            if gene_names:
-                filtered_sp.adata = filtered_sp.adata[:, gene_names].copy()
-                print(f"  ✓ Filtered to {len(gene_names)} genes")
-            else:
-                print("Warning: No genes passed filters. Keeping all genes.")
+            if not gene_names:
+                print("  ⚠ No genes passed filters, returning original")
+                return self.sp
+        else:
+            gene_names = self.sp.gene_index.tolist()
         
-        # Filter FOVs if specified
-        if fov_ids is not None:
-            filtered_sp = filtered_sp.subset_by_fovs(fov_ids)
-            print(f"  ✓ Filtered to {len(fov_ids)} FOVs")
+        # Subset
+        filtered_sp = self.sp.subset_by_cells(cell_ids)
+        filtered_sp = filtered_sp.subset_by_genes(gene_names)
         
-        # Add QC information to custom data
-        filtered_sp.add_custom('qc_summary', self.qc_metrics)
-        filtered_sp.add_custom('qc_config', self.config)
+        # Add QC metadata
+        filtered_sp.cell_meta['qc_filtered'] = True
+        filtered_sp.gene_meta['qc_filtered'] = True
         
-        print(f"\n📦 Filtered spatioloji object created:")
-        print(f"  Cells: {len(filtered_sp.cell_meta)}")
-        print(f"  Genes: {filtered_sp.adata.shape[1]}")
-        print(f"  FOVs: {len(filtered_sp.fov_positions)}")
+        print(f"\n✓ Filtered spatioloji:")
+        print(f"  Cells: {filtered_sp.n_cells:,}")
+        print(f"  Genes: {filtered_sp.n_genes:,}")
+        print(f"  FOVs:  {filtered_sp.n_fovs}")
         
         return filtered_sp
     
-    # ========== Export Methods ==========
-    
-    def export_qc_report(self, filepath: str = None) -> None:
+    def summarize_qc(self, plot: bool = True) -> dict:
         """
-        Export comprehensive QC report to HTML.
+        Create comprehensive QC summary.
         
         Parameters
         ----------
-        filepath : str, optional
-            Path to save HTML report. If None, uses default location.
-        """
-        if filepath is None:
-            filepath = os.path.join(self.config.analysis_dir, 'qc_report.html')
-        
-        # Create HTML report
-        html_content = self._generate_html_report()
-        
-        with open(filepath, 'w') as f:
-            f.write(html_content)
-        
-        print(f"\n📄 QC report saved to: {filepath}")
-    
-    def _generate_html_report(self) -> str:
-        """Generate HTML content for QC report."""
-        summary = self.summarize_qc(plot=False)
-        
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Spatioloji QC Report</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 40px; }}
-                h1 {{ color: #2c3e50; }}
-                h2 {{ color: #34495e; margin-top: 30px; }}
-                table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-                th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-                th {{ background-color: #3498db; color: white; }}
-                tr:nth-child(even) {{ background-color: #f2f2f2; }}
-                .metric {{ font-weight: bold; color: #2980b9; }}
-                .pass {{ color: green; }}
-                .fail {{ color: red; }}
-                img {{ max-width: 800px; margin: 20px 0; }}
-            </style>
-        </head>
-        <body>
-            <h1>🔬 Spatioloji QC Report</h1>
-            <p><strong>Generated:</strong> {summary['timestamp']}</p>
-            
-            <h2>Summary Statistics</h2>
-            <table>
-                <tr><th>Metric</th><th>Before QC</th><th>After QC</th><th>% Kept</th></tr>
-        """
-        
-        if 'cells' in summary['qc_metrics']:
-            cd = summary['qc_metrics']['cells']
-            html += f"""
-                <tr>
-                    <td class="metric">Cells</td>
-                    <td>{cd['before']:,}</td>
-                    <td>{cd['after']:,}</td>
-                    <td>{cd['pct_kept']:.1f}%</td>
-                </tr>
-            """
-        
-        if 'genes' in summary['qc_metrics']:
-            gd = summary['qc_metrics']['genes']
-            html += f"""
-                <tr>
-                    <td class="metric">Genes</td>
-                    <td>{gd['before']:,}</td>
-                    <td>{gd['after']:,}</td>
-                    <td>{gd['pct_kept']:.1f}%</td>
-                </tr>
-            """
-        
-        html += """
-            </table>
-            
-            <h2>QC Plots</h2>
-        """
-        
-        # Add images if they exist
-        plot_files = [
-            'QC_NegProbe_log1p.png',
-            'QC_cell_area_log1p.png',
-            'QC_cell_metrics.png',
-            'QC_fov_transcripts_per_cell.png',
-            'QC_gene_filtering.png',
-            'QC_summary.png'
-        ]
-        
-        for plot_file in plot_files:
-            plot_path = os.path.join(self.config.analysis_dir, plot_file)
-            if os.path.exists(plot_path):
-                html += f'<h3>{plot_file.replace("_", " ").replace(".png", "")}</h3>\n'
-                html += f'<img src="{plot_file}" alt="{plot_file}"><br>\n'
-        
-        html += """
-        </body>
-        </html>
-        """
-        
-        return html
-    
-    def save_filtered_data(self, 
-                          output_dir: str = None,
-                          save_adata: bool = True,
-                          save_metadata: bool = True) -> None:
-        """
-        Save filtered data to files.
-        
-        Parameters
-        ----------
-        output_dir : str, optional
-            Directory to save files. If None, uses config output_dir.
-        save_adata : bool
-            Whether to save AnnData object
-        save_metadata : bool
-            Whether to save metadata files
-        """
-        if output_dir is None:
-            output_dir = self.config.data_dir
-        
-        print(f"\n💾 Saving filtered data to: {output_dir}")
-        
-        # Get filtered spatioloji
-        filtered_sp = self.apply_filters()
-        
-        # Save AnnData
-        if save_adata:
-            adata_path = os.path.join(output_dir, 'filtered_adata.h5ad')
-            filtered_sp.adata.write_h5ad(adata_path)
-            print(f"  ✓ Saved AnnData: {adata_path}")
-        
-        # Save metadata
-        if save_metadata:
-            cell_meta_path = os.path.join(output_dir, 'filtered_cell_meta.csv')
-            filtered_sp.cell_meta.to_csv(cell_meta_path, index=False)
-            print(f"  ✓ Saved cell metadata: {cell_meta_path}")
-            
-            polygons_path = os.path.join(output_dir, 'filtered_polygons.csv')
-            filtered_sp.polygons.to_csv(polygons_path, index=False)
-            print(f"  ✓ Saved polygons: {polygons_path}")
-            
-            fov_path = os.path.join(output_dir, 'filtered_fov_positions.csv')
-            filtered_sp.fov_positions.to_csv(fov_path, index=False)
-            print(f"  ✓ Saved FOV positions: {fov_path}")
-        
-        # Save as pickle
-        pickle_path = os.path.join(output_dir, 'filtered_spatioloji.pkl')
-        filtered_sp.to_pickle(pickle_path)
-        print(f"  ✓ Saved spatioloji object: {pickle_path}")
-    # ========== Helper/Utility Methods ==========
-    
-    def get_qc_status(self) -> dict:
-        """
-        Get current QC status showing which steps have been run.
+        plot : bool
+            Whether to create summary plots
         
         Returns
         -------
         dict
-            Status of each QC step
+            QC summary statistics
         """
-        status = {
-            'negative_probes': 'negative_probes' in self.qc_metrics,
-            'cell_area': 'cell_area' in self.qc_metrics,
-            'cell_metrics': 'cell_metrics' in self.qc_metrics,
-            'fov_metrics': 'fov_metrics' in self.qc_metrics,
-            'cell_filtering': 'cell_filtering' in self.qc_metrics,
-            'gene_filtering': 'gene_filtering' in self.qc_metrics
+        summary = {
+            'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'config': self.config.__dict__,
+            'metrics': {}
         }
         
-        print("\n📋 QC Status:")
-        for step, completed in status.items():
-            symbol = "✓" if completed else "○"
-            print(f"  {symbol} {step.replace('_', ' ').title()}")
+        # Cell filtering
+        if 'cell_filtering' in self.qc_metrics:
+            cf = self.qc_metrics['cell_filtering']
+            summary['metrics']['cells'] = {
+                'before': cf['n_before'],
+                'after': cf['n_after'],
+                'pct_kept': cf['pct_kept']
+            }
         
-        return status
+        # Gene filtering
+        if 'gene_filtering' in self.qc_metrics:
+            gf = self.qc_metrics['gene_filtering']
+            summary['metrics']['genes'] = {
+                'before': gf['n_before'],
+                'after': gf['n_after'],
+                'pct_kept': gf['pct_kept'],
+                'method': gf['method']
+            }
+        
+        # FOV metrics
+        if 'fov_metrics' in self.qc_metrics:
+            fov_stats = self.qc_metrics['fov_metrics']
+            summary['metrics']['fovs'] = {
+                'n_fovs': len(fov_stats),
+                'total_cells': int(fov_stats['n_cells'].sum()),
+                'avg_cells_per_fov': float(fov_stats['n_cells'].mean()),
+                'avg_transcripts': float(fov_stats['avg_transcripts'].mean())
+            }
+        
+        # Plot
+        if plot:
+            self._plot_qc_summary(summary)
+        
+        # Save - USE CUSTOM CONVERTER
+        if self.config.save_plots:
+            import json
+            with open(os.path.join(self.config.data_dir, 'qc_summary.json'), 'w') as f:
+                json.dump(summary, f, indent=2, default=self._json_converter)
+        
+        # Print
+        self._print_qc_summary(summary)
+        
+        return summary
     
-    def compare_before_after(self) -> pd.DataFrame:
+    
+    def _json_converter(self, obj):
         """
-        Compare metrics before and after QC filtering.
+        Convert numpy/pandas types to JSON-serializable types.
+        
+        Parameters
+        ----------
+        obj : any
+            Object to convert
         
         Returns
         -------
-        pd.DataFrame
-            Comparison table
+        any
+            JSON-serializable version of obj
         """
-        if 'QC_pass' not in self.sp.adata.obs.columns:
-            print("Warning: Run filter_cells() first")
-            return pd.DataFrame()
-        
-        adata = self.sp.adata
-        before = adata.obs
-        after = adata.obs[adata.obs['QC_pass']]
-        
-        metrics = [
-            'total_counts', 
-            'n_genes_by_counts',
-            'pct_counts_mt',
-            'pct_counts_NegProbe'
-        ]
-        
-        comparison = pd.DataFrame({
-            'Metric': metrics,
-            'Before_Mean': [before[m].mean() for m in metrics],
-            'After_Mean': [after[m].mean() for m in metrics],
-            'Before_Median': [before[m].median() for m in metrics],
-            'After_Median': [after[m].median() for m in metrics]
-        })
-        
-        comparison['Change_%'] = (
-            (comparison['After_Mean'] - comparison['Before_Mean']) / 
-            comparison['Before_Mean'] * 100
-        ).round(2)
-        
-        print("\n📊 Before vs After Comparison:")
-        print(comparison.to_string(index=False))
-        
-        return comparison
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, pd.Series):
+            return obj.to_dict()
+        elif isinstance(obj, pd.DataFrame):
+            return obj.to_dict()
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
     
-    def plot_qc_overview(self) -> None:
-        """Create comprehensive overview plot of all QC metrics."""
-        fig = plt.figure(figsize=(16, 12))
-        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+    def _plot_qc_summary(self, summary: dict) -> None:
+        """Plot QC summary."""
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
-        adata = self.sp.adata
+        # Cells
+        if 'cells' in summary['metrics']:
+            cd = summary['metrics']['cells']
+            bars = axes[0].bar(
+                ['Before QC', 'After QC'],
+                [cd['before'], cd['after']],
+                color=['lightcoral', 'lightgreen'],
+                edgecolor='black'
+            )
+            axes[0].set_title('Cell Filtering')
+            axes[0].set_ylabel('Number of Cells')
+            axes[0].grid(alpha=0.3, axis='y')
+            
+            for i, bar in enumerate(bars):
+                height = bar.get_height()
+                label = f'{int(height):,}\n({cd["pct_kept"]:.1f}%)' if i == 1 else f'{int(height):,}'
+                axes[0].text(bar.get_x() + bar.get_width()/2., height,
+                           label, ha='center', va='bottom')
         
-        # Plot 1: Total counts distribution
-        ax1 = fig.add_subplot(gs[0, 0])
-        ax1.hist(np.log1p(adata.obs['total_counts']), bins=50, 
-                color='skyblue', edgecolor='black', alpha=0.7)
-        ax1.axvline(np.log1p(self.config.total_counts_min), 
-                   color='red', linestyle='--', label='Threshold')
-        ax1.set_title('Total Counts (log1p)')
-        ax1.set_xlabel('log1p(Counts)')
-        ax1.legend()
+        # Genes
+        if 'genes' in summary['metrics']:
+            gd = summary['metrics']['genes']
+            bars = axes[1].bar(
+                ['Before QC', 'After QC'],
+                [gd['before'], gd['after']],
+                color=['lightcoral', 'lightgreen'],
+                edgecolor='black'
+            )
+            axes[1].set_title('Gene Filtering')
+            axes[1].set_ylabel('Number of Genes')
+            axes[1].grid(alpha=0.3, axis='y')
+            
+            for i, bar in enumerate(bars):
+                height = bar.get_height()
+                label = f'{int(height):,}\n({gd["pct_kept"]:.1f}%)' if i == 1 else f'{int(height):,}'
+                axes[1].text(bar.get_x() + bar.get_width()/2., height,
+                           label, ha='center', va='bottom')
         
-        # Plot 2: MT percentage
-        ax2 = fig.add_subplot(gs[0, 1])
-        ax2.hist(adata.obs['pct_counts_mt'], bins=50,
-                color='salmon', edgecolor='black', alpha=0.7)
-        ax2.axvline(self.config.pct_counts_mt_max,
-                   color='red', linestyle='--', label='Threshold')
-        ax2.set_title('Mitochondrial %')
-        ax2.set_xlabel('% MT Counts')
-        ax2.legend()
+        plt.tight_layout()
+        self._save_plot('QC_summary.png')
+    
+    def _print_qc_summary(self, summary: dict) -> None:
+        """Print QC summary."""
+        print("\n" + "="*70)
+        print("QC SUMMARY")
+        print("="*70)
         
-        # Plot 3: Negative probe percentage
-        ax3 = fig.add_subplot(gs[0, 2])
-        ax3.hist(adata.obs['pct_counts_NegProbe'], bins=50,
-                color='lightcoral', edgecolor='black', alpha=0.7)
-        ax3.axvline(self.config.pct_counts_neg_max,
-                   color='red', linestyle='--', label='Threshold')
-        ax3.set_title('Negative Probe %')
-        ax3.set_xlabel('% Neg Counts')
-        ax3.legend()
+        if 'cells' in summary['metrics']:
+            cd = summary['metrics']['cells']
+            print(f"\nCells:")
+            print(f"  Before: {cd['before']:,}")
+            print(f"  After:  {cd['after']:,} ({cd['pct_kept']:.1f}%)")
         
-        # Plot 4: Ratio counts to genes
-        ax4 = fig.add_subplot(gs[1, 0])
-        if 'ratio_counts_genes' in adata.obs.columns:
-            ax4.hist(adata.obs['ratio_counts_genes'], bins=50,
-                    color='lightgreen', edgecolor='black', alpha=0.7)
-            ax4.axvline(self.config.ratio_counts_genes_min,
-                       color='red', linestyle='--', label='Threshold')
-            ax4.set_title('Ratio: Counts/Genes')
-            ax4.set_xlabel('Ratio')
-            ax4.legend()
+        if 'genes' in summary['metrics']:
+            gd = summary['metrics']['genes']
+            print(f"\nGenes:")
+            print(f"  Before: {gd['before']:,}")
+            print(f"  After:  {gd['after']:,} ({gd['pct_kept']:.1f}%)")
+            print(f"  Method: {gd['method']}")
         
-        # Plot 5: Cells per FOV
-        ax5 = fig.add_subplot(gs[1, 1])
-        if 'fov' in adata.obs.columns:
-            fov_counts = adata.obs['fov'].value_counts().sort_index()
-            ax5.bar(range(len(fov_counts)), fov_counts.values,
-                   color='plum', edgecolor='black', alpha=0.7)
-            ax5.set_title('Cells per FOV')
-            ax5.set_xlabel('FOV')
-            ax5.set_ylabel('Cell Count')
+        if 'fovs' in summary['metrics']:
+            fd = summary['metrics']['fovs']
+            print(f"\nFOVs:")
+            print(f"  Count: {fd['n_fovs']}")
+            print(f"  Avg cells/FOV: {fd['avg_cells_per_fov']:.1f}")
+            print(f"  Avg transcripts: {fd['avg_transcripts']:.1f}")
         
-        # Plot 6: Gene expression distribution
-        ax6 = fig.add_subplot(gs[1, 2])
-        gene_sums = np.array(adata.X.sum(axis=0)).flatten()
-        ax6.hist(np.log1p(gene_sums), bins=50,
-                color='wheat', edgecolor='black', alpha=0.7)
-        ax6.set_title('Gene Expression (log1p)')
-        ax6.set_xlabel('log1p(Total Counts)')
-        
-        # Plot 7: QC pass/fail
-        ax7 = fig.add_subplot(gs[2, 0])
-        if 'QC_pass' in adata.obs.columns:
-            qc_counts = adata.obs['QC_pass'].value_counts()
-            ax7.pie(qc_counts.values, labels=['Failed', 'Passed'],
-                   colors=['lightcoral', 'lightgreen'],
-                   autopct='%1.1f%%', startangle=90)
-            ax7.set_title('Cell QC Status')
-        
-        # Plot 8: Scatter: total counts vs genes
-        ax8 = fig.add_subplot(gs[2, 1])
-        scatter_data = adata.obs.sample(min(1000, len(adata.obs)))
-        ax8.scatter(scatter_data['n_genes_by_counts'],
-                   scatter_data['total_counts'],
-                   alpha=0.3, s=10, c='steelblue')
-        ax8.set_xlabel('N Genes')
-        ax8.set_ylabel('Total Counts')
-        ax8.set_title('Counts vs Genes')
-        ax8.set_yscale('log')
-        
-        # Plot 9: Gene QC pass/fail
-        ax9 = fig.add_subplot(gs[2, 2])
-        if 'QC_gene_pass' in adata.var.columns:
-            gene_qc = adata.var['QC_gene_pass'].value_counts()
-            ax9.pie(gene_qc.values, labels=['Failed', 'Passed'],
-                   colors=['lightcoral', 'lightgreen'],
-                   autopct='%1.1f%%', startangle=90)
-            ax9.set_title('Gene QC Status')
-        
-        plt.suptitle('Spatioloji QC Overview', fontsize=16, y=0.995)
-        self._save_plot('QC_comprehensive_overview.png')
+        print("="*70)
