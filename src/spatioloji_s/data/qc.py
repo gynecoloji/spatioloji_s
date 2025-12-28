@@ -5,7 +5,11 @@ Provides comprehensive QC functionality that works with the new
 spatioloji data structure, including cell-level, gene-level, and
 FOV-level quality control.
 """
+from __future__ import annotations
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from spatioloji_s.data.core import spatioloji
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
 import pandas as pd

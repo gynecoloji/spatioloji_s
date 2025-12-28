@@ -4,7 +4,12 @@ utils.py - Utility functions for spatioloji objects
 Provides helper functions for data conversion, export, and common
 operations that complement the core spatioloji functionality.
 """
+from __future__ import annotations
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    import anndata
+    from spatioloji_s.data.core import spatioloji
 from typing import List, Dict, Tuple, Optional, Union
 import pandas as pd
 import numpy as np

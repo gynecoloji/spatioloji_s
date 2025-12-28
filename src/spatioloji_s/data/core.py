@@ -4,7 +4,12 @@ core.py - Main spatioloji class for spatial transcriptomics data
 The spatioloji class is the core data structure for managing spatial 
 transcriptomics data with guaranteed consistency across all components.
 """
+from __future__ import annotations
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    import geopandas as gpd
+    import anndata
 from typing import Dict, List, Optional, Tuple, Union
 import pandas as pd
 import numpy as np
