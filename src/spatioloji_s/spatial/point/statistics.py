@@ -1,724 +1,412 @@
-# src/spatioloji_s/spatial/point/statistics.py
-
 """
-statistics.py - Spatial statistics and autocorrelation analysis
+statistics.py - Distance-based spatial statistics
 
-Provides methods for measuring spatial patterns and autocorrelation:
-- Moran's I: Global spatial autocorrelation
-- Geary's C: Local dissimilarity measure
-- Local Moran's I: Local spatial autocorrelation
-- Permutation tests: Statistical significance
-
-All functions work with spatial graphs that use global coordinates.
-For FOV-specific analysis, subset first and build a new graph:
-    sp_fov = sp.subset_by_fovs(['fov1'])
-    graph = sj.spatial.point.build_knn_graph(sp_fov, k=10)
-    result = sj.spatial.point.morans_i(sp_fov, graph, values)
+Direct distance calculations and tests between cells and cell types.
+Works from coordinates without requiring a pre-built graph (though
+some functions can optionally use one for efficiency).
 """
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
-    from .graph import SpatialGraph
 
-from typing import Optional, Union, Tuple, Dict
+from typing import Optional, List, Dict, Union, Tuple
 import numpy as np
 import pandas as pd
-from scipy import stats
-import warnings
+from scipy.spatial import KDTree
+
+from .graph import PointSpatialGraph
 
 
-def morans_i(sp: 'spatioloji',
-            graph: 'SpatialGraph',
-            values: Union[str, pd.Series, np.ndarray],
-            permutations: int = 999,
-            two_tailed: bool = True) -> Dict:
+def nearest_neighbor_distances(
+    sj: 'spatioloji',
+    coord_type: str = 'global',
+    cell_type_col: Optional[str] = None,
+    k: int = 1,
+    store: bool = True,
+) -> pd.DataFrame:
     """
-    Compute Moran's I statistic for spatial autocorrelation.
-    
-    Moran's I measures whether similar values cluster together in space.
-    - I > 0: Positive autocorrelation (similar values cluster)
-    - I ≈ 0: Random spatial pattern
-    - I < 0: Negative autocorrelation (dissimilar values cluster)
+    Compute distance to k-th nearest neighbor for each cell.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph defining neighborhoods (uses global coordinates)
-    values : str, pd.Series, or np.ndarray
-        Values to test for spatial autocorrelation.
-        - str: column name in cell_meta
-        - pd.Series: values indexed by cell IDs
-        - np.ndarray: values aligned with sp.cell_index
-    permutations : int, default=999
-        Number of permutations for significance testing
-    two_tailed : bool, default=True
-        If True, use two-tailed test
+    sj : spatioloji
+        spatioloji object.
+    coord_type : str
+        'global' or 'local'.
+    cell_type_col : str, optional
+        If provided, also compute summary statistics per cell type.
+    k : int
+        Which nearest neighbor (1 = closest, 2 = second closest, etc.).
+    store : bool
+        If True, add 'nnd' column to sj.cell_meta.
     
     Returns
     -------
-    dict
-        Results with keys:
-        - I: Moran's I statistic
-        - EI: Expected I under null hypothesis
-        - VI: Variance of I
-        - z_score: Standardized I
-        - p_value: P-value from permutation test
-        - p_norm: P-value from normal approximation
-    
-    Notes
-    -----
-    Moran's I formula:
-        I = (N / W) * Σ_i Σ_j w_ij * (x_i - x̄) * (x_j - x̄) / Σ_i (x_i - x̄)²
-    
-    where:
-        - N: number of observations
-        - W: sum of all spatial weights
-        - w_ij: spatial weight between i and j
-        - x_i, x_j: values at locations i and j
-        - x̄: mean of all values
-    
-    Examples
-    --------
-    >>> import spatioloji as sj
-    >>> 
-    >>> # Build spatial graph (uses global coordinates)
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> 
-    >>> # Test gene expression for spatial autocorrelation
-    >>> expr = sp.get_expression(gene_names='CD4', as_dataframe=True)['CD4']
-    >>> result = sj.spatial.point.morans_i(sp, graph, expr)
-    >>> print(f"Moran's I = {result['I']:.3f}, p = {result['p_value']:.3e}")
-    >>> 
-    >>> # Test from cell_meta column
-    >>> result = sj.spatial.point.morans_i(sp, graph, 'total_counts')
-    >>> 
-    >>> # FOV-specific analysis
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> graph_fov = sj.spatial.point.build_knn_graph(sp_fov, k=10)
-    >>> result_fov = sj.spatial.point.morans_i(sp_fov, graph_fov, expr)
-    >>> 
-    >>> # Identify spatially autocorrelated genes
-    >>> for gene in sp.gene_index[:100]:
-    ...     expr = sp.get_expression(gene_names=gene, as_dataframe=True)[gene]
-    ...     result = sj.spatial.point.morans_i(sp, graph, expr, permutations=99)
-    ...     if result['p_value'] < 0.05:
-    ...         print(f"{gene}: I={result['I']:.3f}")
+    pd.DataFrame with columns:
+        'nnd'       : nearest neighbor distance per cell
+        'nn_cell_id': cell ID of the nearest neighbor
+    Also prints per-type summary if cell_type_col is given.
     """
-    print(f"\n{'='*70}")
-    print(f"Computing Moran's I")
-    print(f"{'='*70}")
+    coords = sj.get_spatial_coords(coord_type=coord_type)
+    n_cells = len(coords)
     
-    # Get values
-    if isinstance(values, str):
-        if values not in sp.cell_meta.columns:
-            raise ValueError(f"Column '{values}' not found in cell_meta")
-        values_array = sp.cell_meta[values].values
-        values_name = values
-    elif isinstance(values, pd.Series):
-        values_array = values.reindex(sp.cell_index).values
-        values_name = values.name or 'values'
-    elif isinstance(values, np.ndarray):
-        values_array = values
-        values_name = 'values'
-    else:
-        raise TypeError("values must be str, pd.Series, or np.ndarray")
+    tree = KDTree(coords)
+    # k+1 because query includes self
+    dists, indices = tree.query(coords, k=k + 1)
     
-    print(f"Variable: {values_name}")
-    print(f"Permutations: {permutations}")
+    nnd = dists[:, k]           # k-th nearest neighbor distance
+    nn_idx = indices[:, k]      # index of k-th nearest neighbor
+    nn_ids = sj.cell_index[nn_idx]
     
-    # Remove NaN values
-    valid_mask = ~np.isnan(values_array)
-    if not valid_mask.all():
-        n_nan = (~valid_mask).sum()
-        print(f"⚠ Removing {n_nan} cells with NaN values")
-        values_array = values_array[valid_mask]
-        # Would need to filter graph too - for now, fill with mean
-        values_array = np.where(np.isnan(values_array), np.nanmean(values_array), values_array)
+    result = pd.DataFrame({
+        'nnd': nnd,
+        'nn_cell_id': nn_ids,
+    }, index=sj.cell_index)
     
-    n = len(values_array)
+    if store:
+        col_name = 'nnd' if k == 1 else f'nnd_k{k}'
+        sj.cell_meta[col_name] = nnd
     
-    # Get adjacency matrix
-    W = graph.adjacency.toarray()
-    W_sum = W.sum()
+    # Report
+    print(f"  ✓ Nearest neighbor distances (k={k}):")
+    print(f"    mean={nnd.mean():.2f}, median={np.median(nnd):.2f}, "
+          f"std={nnd.std():.2f}")
     
-    # Compute Moran's I
-    x_mean = values_array.mean()
-    x_centered = values_array - x_mean
-    
-    numerator = np.sum(W * np.outer(x_centered, x_centered))
-    denominator = np.sum(x_centered ** 2)
-    
-    I = (n / W_sum) * (numerator / denominator)
-    
-    # Expected I under null hypothesis
-    EI = -1.0 / (n - 1)
-    
-    # Variance of I (under randomization)
-    S1 = 0.5 * np.sum((W + W.T) ** 2)
-    S2 = np.sum((W.sum(axis=0) + W.sum(axis=1)) ** 2)
-    
-    b2 = (n * np.sum(x_centered ** 4)) / (np.sum(x_centered ** 2) ** 2)
-    
-    VI_num = n * ((n**2 - 3*n + 3) * S1 - n * S2 + 3 * W_sum**2)
-    VI_num -= b2 * ((n**2 - n) * S1 - 2*n * S2 + 6 * W_sum**2)
-    VI_denom = (n - 1) * (n - 2) * (n - 3) * W_sum**2
-    
-    VI = VI_num / VI_denom - EI**2
-    
-    # Z-score
-    z_score = (I - EI) / np.sqrt(VI)
-    
-    # P-value from normal approximation
-    if two_tailed:
-        p_norm = 2 * (1 - stats.norm.cdf(abs(z_score)))
-    else:
-        p_norm = 1 - stats.norm.cdf(z_score)
-    
-    print(f"\nComputing permutation test ({permutations} permutations)...")
-    
-    # Permutation test
-    I_perms = np.zeros(permutations)
-    for perm in range(permutations):
-        if perm % 200 == 0 and perm > 0:
-            print(f"  Permutation {perm}/{permutations}...")
+    # Per-type summary
+    if cell_type_col is not None:
+        if cell_type_col not in sj.cell_meta.columns:
+            raise ValueError(f"'{cell_type_col}' not found in cell_meta")
         
-        # Randomly permute values
-        values_perm = np.random.permutation(values_array)
-        x_centered_perm = values_perm - values_perm.mean()
+        labels = sj.cell_meta[cell_type_col].values
+        print(f"\n    Per-type summary:")
         
-        numerator_perm = np.sum(W * np.outer(x_centered_perm, x_centered_perm))
-        denominator_perm = np.sum(x_centered_perm ** 2)
-        
-        I_perms[perm] = (n / W_sum) * (numerator_perm / denominator_perm)
+        for ct in np.unique(labels):
+            mask = labels == ct
+            ct_nnd = nnd[mask]
+            print(f"      {ct:>20s}: mean={ct_nnd.mean():.2f}, "
+                  f"median={np.median(ct_nnd):.2f}, n={mask.sum()}")
     
-    # P-value from permutation test
-    if two_tailed:
-        p_value = np.sum(np.abs(I_perms) >= np.abs(I)) / permutations
+    return result
+
+def cross_type_distances(
+    sj: 'spatioloji',
+    cell_type_col: str,
+    source_type: str,
+    target_type: str,
+    coord_type: str = 'global',
+    k: int = 1,
+    store: bool = True,
+) -> pd.DataFrame:
+    """
+    Compute distance from each source-type cell to its nearest
+    target-type cell.
+    
+    Asymmetric: distance(A→B) != distance(B→A).
+    
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    cell_type_col : str
+        Column with cell type labels.
+    source_type : str
+        "From" cell type (each cell of this type gets a distance).
+    target_type : str
+        "To" cell type (nearest cell of this type is found).
+    coord_type : str
+        'global' or 'local'.
+    k : int
+        k-th nearest target (1 = closest).
+    store : bool
+        If True, add result column to sj.cell_meta.
+    
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by source cell IDs with columns:
+        'distance'       : distance to k-th nearest target
+        'target_cell_id' : cell ID of that target
+    """
+    if cell_type_col not in sj.cell_meta.columns:
+        raise ValueError(f"'{cell_type_col}' not found in cell_meta")
+    
+    labels = sj.cell_meta[cell_type_col].values
+    coords = sj.get_spatial_coords(coord_type=coord_type)
+    
+    source_mask = labels == source_type
+    target_mask = labels == target_type
+    
+    n_source = source_mask.sum()
+    n_target = target_mask.sum()
+    
+    if n_source == 0:
+        raise ValueError(f"No cells of source type '{source_type}'")
+    if n_target == 0:
+        raise ValueError(f"No cells of target type '{target_type}'")
+    if k > n_target:
+        raise ValueError(
+            f"k={k} but only {n_target} target cells exist"
+        )
+    
+    source_coords = coords[source_mask]
+    target_coords = coords[target_mask]
+    source_ids = sj.cell_index[source_mask]
+    target_ids = sj.cell_index[target_mask]
+    
+    # Build tree on targets, query sources
+    tree = KDTree(target_coords)
+    dists, indices = tree.query(source_coords, k=k)
+    
+    # Handle k=1 vs k>1 (query returns different shapes)
+    if k == 1:
+        nn_dists = dists
+        nn_target_ids = target_ids[indices]
     else:
-        p_value = np.sum(I_perms >= I) / permutations
+        nn_dists = dists[:, k - 1]
+        nn_target_ids = target_ids[indices[:, k - 1]]
     
-    # Pseudo p-value (add 1 to numerator and denominator)
-    p_value = (np.sum(np.abs(I_perms) >= np.abs(I)) + 1) / (permutations + 1)
+    result = pd.DataFrame({
+        'distance': nn_dists,
+        'target_cell_id': nn_target_ids,
+    }, index=source_ids)
     
-    results = {
-        'I': float(I),
-        'EI': float(EI),
-        'VI': float(VI),
-        'z_score': float(z_score),
-        'p_value': float(p_value),
-        'p_norm': float(p_norm),
-        'n_obs': n,
-        'variable': values_name
+    # Store in cell_meta (NaN for non-source cells)
+    if store:
+        col_name = f'dist_{source_type}_to_{target_type}'
+        sj.cell_meta[col_name] = np.nan
+        sj.cell_meta.loc[source_ids, col_name] = nn_dists
+    
+    print(f"  ✓ Cross-type distance ({source_type}→{target_type}):")
+    print(f"    n_source={n_source}, n_target={n_target}")
+    print(f"    mean={nn_dists.mean():.2f}, "
+          f"median={np.median(nn_dists):.2f}, "
+          f"std={nn_dists.std():.2f}")
+    
+    return result
+
+def proximity_score(
+    sj: 'spatioloji',
+    cell_type_col: str,
+    coord_type: str = 'global',
+    normalize: bool = True,
+    types: Optional[List[str]] = None,
+) -> dict:
+    """
+    Compute pairwise proximity scores between all cell types.
+    
+    For each pair (A, B), computes the median distance from A cells
+    to their nearest B cell. Optionally normalizes by self-distance.
+    
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    cell_type_col : str
+        Column with cell type labels.
+    coord_type : str
+        'global' or 'local'.
+    normalize : bool
+        If True, divide each pair distance by the source type's
+        self-distance (A→A). Scores <1 = closer than same-type.
+    types : list of str, optional
+        Cell types to include. If None, uses all types.
+    
+    Returns
+    -------
+    dict with keys:
+        'median_distance' : pd.DataFrame (n_types x n_types)
+        'normalized'      : pd.DataFrame or None (if normalize=True)
+        'mean_distance'   : pd.DataFrame (for reference)
+    """
+    if cell_type_col not in sj.cell_meta.columns:
+        raise ValueError(f"'{cell_type_col}' not found in cell_meta")
+    
+    labels = sj.cell_meta[cell_type_col].values
+    coords = sj.get_spatial_coords(coord_type=coord_type)
+    
+    if types is None:
+        types = list(np.unique(labels))
+    
+    n_types = len(types)
+    
+    # Build KDTree per type
+    trees = {}
+    type_ids = {}
+    for ct in types:
+        mask = labels == ct
+        trees[ct] = KDTree(coords[mask])
+        type_ids[ct] = np.where(mask)[0]
+    
+    # Compute pairwise median and mean distances
+    median_dist = np.zeros((n_types, n_types))
+    mean_dist = np.zeros((n_types, n_types))
+    
+    print(f"  Computing proximity for {n_types} types...")
+    
+    for i, src in enumerate(types):
+        src_coords = coords[type_ids[src]]
+        
+        for j, tgt in enumerate(types):
+            if src == tgt:
+                # Self-distance: use k=2 (skip self)
+                if len(type_ids[tgt]) < 2:
+                    median_dist[i, j] = np.nan
+                    mean_dist[i, j] = np.nan
+                    continue
+                dists, _ = trees[tgt].query(src_coords, k=2)
+                nn_dists = dists[:, 1]  # second nearest = nearest other
+            else:
+                dists, _ = trees[tgt].query(src_coords, k=1)
+                nn_dists = dists.flatten()
+            
+            median_dist[i, j] = np.median(nn_dists)
+            mean_dist[i, j] = nn_dists.mean()
+    
+    median_df = pd.DataFrame(median_dist, index=types, columns=types)
+    mean_df = pd.DataFrame(mean_dist, index=types, columns=types)
+    
+    # Normalize by self-distance
+    normalized_df = None
+    if normalize:
+        self_dists = np.diag(median_dist)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            norm_matrix = median_dist / self_dists[:, np.newaxis]
+            norm_matrix = np.nan_to_num(norm_matrix, nan=1.0)
+        normalized_df = pd.DataFrame(norm_matrix, index=types, columns=types)
+    
+    # Report
+    print(f"  ✓ Proximity scores: {n_types}×{n_types} matrix")
+    if normalize:
+        # Find closest pair (excluding self)
+        norm_vals = normalized_df.values.copy()
+        np.fill_diagonal(norm_vals, np.inf)
+        min_idx = np.unravel_index(norm_vals.argmin(), norm_vals.shape)
+        closest = (types[min_idx[0]], types[min_idx[1]])
+        print(f"    Closest pair: {closest[0]}→{closest[1]} "
+              f"(norm={normalized_df.iloc[min_idx[0], min_idx[1]]:.2f})")
+    
+    return {
+        'median_distance': median_df,
+        'mean_distance': mean_df,
+        'normalized': normalized_df,
     }
-    
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Moran's I = {I:.4f}")
-    print(f"  Expected I = {EI:.4f}")
-    print(f"  Z-score = {z_score:.4f}")
-    print(f"  P-value (permutation) = {p_value:.4e}")
-    print(f"  P-value (normal) = {p_norm:.4e}")
-    
-    if I > 0:
-        print(f"  → Positive spatial autocorrelation")
-    elif I < 0:
-        print(f"  → Negative spatial autocorrelation")
-    else:
-        print(f"  → No spatial autocorrelation")
-    
-    if p_value < 0.001:
-        print(f"  → Highly significant (p < 0.001)")
-    elif p_value < 0.01:
-        print(f"  → Very significant (p < 0.01)")
-    elif p_value < 0.05:
-        print(f"  → Significant (p < 0.05)")
-    else:
-        print(f"  → Not significant (p ≥ 0.05)")
-    
-    print(f"{'='*70}\n")
-    
-    return results
 
 
-def gearys_c(sp: 'spatioloji',
-            graph: 'SpatialGraph',
-            values: Union[str, pd.Series, np.ndarray],
-            permutations: int = 999) -> Dict:
+def permutation_test(
+    sj: 'spatioloji',
+    cell_type_col: str,
+    metric_fn,
+    n_permutations: int = 999,
+    seed: Optional[int] = None,
+    alternative: str = 'two-sided',
+    **metric_kwargs,
+) -> dict:
     """
-    Compute Geary's C statistic for spatial autocorrelation.
+    Generic permutation test for any spatial distance metric.
     
-    Geary's C measures local dissimilarity (complement of Moran's I).
-    - C < 1: Positive autocorrelation (similar values cluster)
-    - C ≈ 1: Random spatial pattern
-    - C > 1: Negative autocorrelation (dissimilar values cluster)
+    Shuffles cell type labels while keeping coordinates fixed,
+    recomputes the metric each time, and tests significance.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph (uses global coordinates)
-    values : str, pd.Series, or np.ndarray
-        Values to test
-    permutations : int, default=999
-        Number of permutations for significance testing
+    sj : spatioloji
+        spatioloji object.
+    cell_type_col : str
+        Column with cell type labels (will be shuffled).
+    metric_fn : callable
+        Function that computes the metric. Signature:
+        metric_fn(sj, cell_type_col, **kwargs) -> float
+    n_permutations : int
+        Number of label shuffles.
+    seed : int, optional
+        Random seed.
+    alternative : str
+        'two-sided', 'greater', or 'less'.
+    **metric_kwargs
+        Additional arguments passed to metric_fn.
     
     Returns
     -------
-    dict
-        Results with keys: C, EC, VC, z_score, p_value
-    
-    Notes
-    -----
-    Geary's C formula:
-        C = [(N-1) / (2W)] * Σ_i Σ_j w_ij * (x_i - x_j)² / Σ_i (x_i - x̄)²
-    
-    Geary's C is inversely related to Moran's I but emphasizes
-    differences between neighboring values rather than covariance.
+    dict with keys:
+        'observed'     : float, observed metric value
+        'null_dist'    : np.ndarray, permuted metric values
+        'expected'     : float, mean of null distribution
+        'zscore'       : float
+        'pvalue'       : float
+        'alternative'  : str
     
     Examples
     --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> expr = sp.get_expression(gene_names='CD8', as_dataframe=True)['CD8']
-    >>> result = sj.spatial.point.gearys_c(sp, graph, expr)
-    >>> print(f"Geary's C = {result['C']:.3f}, p = {result['p_value']:.3e}")
+    >>> # Test if median Tumor→Tcell distance is shorter than expected
+    >>> def median_tumor_tcell(sj, col):
+    ...     result = cross_type_distances(
+    ...         sj, col, 'Tumor', 'T cell', store=False)
+    ...     return result['distance'].median()
     >>> 
-    >>> # FOV-specific analysis
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> graph_fov = sj.spatial.point.build_knn_graph(sp_fov, k=10)
-    >>> result_fov = sj.spatial.point.gearys_c(sp_fov, graph_fov, expr)
+    >>> test = permutation_test(
+    ...     my_sj, 'cell_type', median_tumor_tcell,
+    ...     n_permutations=999, alternative='less')
     """
-    print(f"\n{'='*70}")
-    print(f"Computing Geary's C")
-    print(f"{'='*70}")
+    rng = np.random.default_rng(seed)
     
-    # Get values
-    if isinstance(values, str):
-        if values not in sp.cell_meta.columns:
-            raise ValueError(f"Column '{values}' not found in cell_meta")
-        values_array = sp.cell_meta[values].values
-        values_name = values
-    elif isinstance(values, pd.Series):
-        values_array = values.reindex(sp.cell_index).values
-        values_name = values.name or 'values'
-    elif isinstance(values, np.ndarray):
-        values_array = values
-        values_name = 'values'
-    else:
-        raise TypeError("values must be str, pd.Series, or np.ndarray")
+    if cell_type_col not in sj.cell_meta.columns:
+        raise ValueError(f"'{cell_type_col}' not found in cell_meta")
     
-    print(f"Variable: {values_name}")
-    print(f"Permutations: {permutations}")
+    # Store original labels
+    original_labels = sj.cell_meta[cell_type_col].values.copy()
     
-    # Handle NaN
-    values_array = np.where(np.isnan(values_array), np.nanmean(values_array), values_array)
+    # Observed metric
+    observed = metric_fn(sj, cell_type_col, **metric_kwargs)
     
-    n = len(values_array)
+    # Permutations
+    print(f"  Running {n_permutations} permutations...")
+    null_dist = np.empty(n_permutations)
     
-    # Get adjacency matrix
-    W = graph.adjacency.toarray()
-    W_sum = W.sum()
+    for i in range(n_permutations):
+        shuffled = rng.permutation(original_labels)
+        sj.cell_meta[cell_type_col] = shuffled
+        null_dist[i] = metric_fn(sj, cell_type_col, **metric_kwargs)
     
-    # Compute Geary's C
-    x_mean = values_array.mean()
+    # Restore original labels
+    sj.cell_meta[cell_type_col] = original_labels
     
-    numerator = 0
-    for i in range(n):
-        for j in range(n):
-            if W[i, j] > 0:
-                numerator += W[i, j] * (values_array[i] - values_array[j]) ** 2
+    # Statistics
+    null_mean = null_dist.mean()
+    null_std = null_dist.std()
     
-    denominator = 2 * W_sum * np.sum((values_array - x_mean) ** 2) / (n - 1)
-    
-    C = numerator / denominator
-    
-    # Expected C under null hypothesis
-    EC = 1.0
-    
-    # Variance of C (simplified)
-    VC = 1.0 / (2 * (n + 1) * W_sum)
-    
-    # Z-score
-    z_score = (C - EC) / np.sqrt(VC)
-    
-    print(f"\nComputing permutation test ({permutations} permutations)...")
-    
-    # Permutation test
-    C_perms = np.zeros(permutations)
-    for perm in range(permutations):
-        if perm % 200 == 0 and perm > 0:
-            print(f"  Permutation {perm}/{permutations}...")
-        
-        values_perm = np.random.permutation(values_array)
-        
-        numerator_perm = 0
-        for i in range(n):
-            for j in range(n):
-                if W[i, j] > 0:
-                    numerator_perm += W[i, j] * (values_perm[i] - values_perm[j]) ** 2
-        
-        denominator_perm = 2 * W_sum * np.sum((values_perm - values_perm.mean()) ** 2) / (n - 1)
-        
-        C_perms[perm] = numerator_perm / denominator_perm
+    zscore = (observed - null_mean) / null_std if null_std > 0 else 0.0
     
     # P-value
-    p_value = (np.sum(np.abs(C_perms - 1) >= np.abs(C - 1)) + 1) / (permutations + 1)
+    if alternative == 'two-sided':
+        extreme = np.sum(
+            np.abs(null_dist - null_mean) >= np.abs(observed - null_mean)
+        )
+    elif alternative == 'greater':
+        extreme = np.sum(null_dist >= observed)
+    elif alternative == 'less':
+        extreme = np.sum(null_dist <= observed)
+    else:
+        raise ValueError(
+            f"Unknown alternative: {alternative}. "
+            "Use 'two-sided', 'greater', or 'less'."
+        )
     
-    results = {
-        'C': float(C),
-        'EC': float(EC),
-        'VC': float(VC),
-        'z_score': float(z_score),
-        'p_value': float(p_value),
-        'n_obs': n,
-        'variable': values_name
+    pvalue = (extreme + 1) / (n_permutations + 1)
+    
+    # Report
+    sig = "significant" if pvalue < 0.05 else "not significant"
+    print(f"  ✓ Permutation test ({alternative}):")
+    print(f"    observed={observed:.4f}, expected={null_mean:.4f}")
+    print(f"    z={zscore:.2f}, p={pvalue:.4f} ({sig})")
+    
+    return {
+        'observed': observed,
+        'null_dist': null_dist,
+        'expected': null_mean,
+        'zscore': zscore,
+        'pvalue': pvalue,
+        'alternative': alternative,
     }
-    
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Geary's C = {C:.4f}")
-    print(f"  Expected C = {EC:.4f}")
-    print(f"  Z-score = {z_score:.4f}")
-    print(f"  P-value = {p_value:.4e}")
-    
-    if C < 1:
-        print(f"  → Positive spatial autocorrelation")
-    elif C > 1:
-        print(f"  → Negative spatial autocorrelation")
-    else:
-        print(f"  → No spatial autocorrelation")
-    
-    print(f"{'='*70}\n")
-    
-    return results
 
-
-def local_morans_i(sp: 'spatioloji',
-                  graph: 'SpatialGraph',
-                  values: Union[str, pd.Series, np.ndarray],
-                  permutations: int = 999) -> pd.DataFrame:
-    """
-    Compute Local Moran's I (LISA) for each cell.
-    
-    Local Moran's I identifies spatial clusters and outliers:
-    - High-High: High value surrounded by high values
-    - Low-Low: Low value surrounded by low values
-    - High-Low: High value surrounded by low values (outlier)
-    - Low-High: Low value surrounded by high values (outlier)
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph (uses global coordinates)
-    values : str, pd.Series, or np.ndarray
-        Values to analyze
-    permutations : int, default=999
-        Number of permutations for significance testing
-    
-    Returns
-    -------
-    pd.DataFrame
-        Local Moran's I results with columns:
-        - Ii: Local Moran's I statistic
-        - p_value: P-value from permutation test
-        - cluster_type: Cluster classification
-        - significant: Boolean (p < 0.05)
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> expr = sp.get_expression(gene_names='CD4', as_dataframe=True)['CD4']
-    >>> 
-    >>> # Compute local Moran's I
-    >>> local_i = sj.spatial.point.local_morans_i(sp, graph, expr)
-    >>> 
-    >>> # Add to cell metadata
-    >>> sp.cell_meta['local_morans_i'] = local_i['Ii']
-    >>> sp.cell_meta['cluster_type'] = local_i['cluster_type']
-    >>> 
-    >>> # Find significant spatial clusters
-    >>> high_high = local_i[
-    ...     (local_i['cluster_type'] == 'High-High') & 
-    ...     (local_i['significant'])
-    ... ]
-    >>> print(f"Found {len(high_high)} High-High clusters")
-    >>> 
-    >>> # FOV-specific analysis
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> graph_fov = sj.spatial.point.build_knn_graph(sp_fov, k=10)
-    >>> local_i_fov = sj.spatial.point.local_morans_i(sp_fov, graph_fov, expr)
-    """
-    print(f"\n{'='*70}")
-    print(f"Computing Local Moran's I (LISA)")
-    print(f"{'='*70}")
-    
-    # Get values
-    if isinstance(values, str):
-        if values not in sp.cell_meta.columns:
-            raise ValueError(f"Column '{values}' not found in cell_meta")
-        values_array = sp.cell_meta[values].values
-        values_name = values
-    elif isinstance(values, pd.Series):
-        values_array = values.reindex(sp.cell_index).values
-        values_name = values.name or 'values'
-    elif isinstance(values, np.ndarray):
-        values_array = values
-        values_name = 'values'
-    else:
-        raise TypeError("values must be str, pd.Series, or np.ndarray")
-    
-    print(f"Variable: {values_name}")
-    print(f"Permutations: {permutations}")
-    
-    # Handle NaN
-    values_array = np.where(np.isnan(values_array), np.nanmean(values_array), values_array)
-    
-    n = len(values_array)
-    x_mean = values_array.mean()
-    x_centered = values_array - x_mean
-    
-    # Standardize
-    x_std = x_centered / x_centered.std()
-    
-    # Get adjacency matrix
-    W = graph.adjacency.toarray()
-    
-    # Compute local Moran's I for each cell
-    Ii = np.zeros(n)
-    spatial_lag = np.zeros(n)
-    
-    print(f"\nComputing Local I for {n:,} cells...")
-    
-    for i in range(n):
-        # Get neighbors
-        neighbors = graph.get_neighbors(sp.cell_index[i])
-        
-        if len(neighbors) > 0:
-            # Spatial lag (weighted sum of neighbors)
-            w_i = W[i, neighbors]
-            w_i_sum = w_i.sum()
-            
-            if w_i_sum > 0:
-                spatial_lag[i] = np.sum(w_i * x_std[neighbors]) / w_i_sum
-                Ii[i] = x_std[i] * spatial_lag[i]
-    
-    # Classify cluster types
-    cluster_types = np.array(['Not significant'] * n, dtype=object)
-    
-    # Quadrants
-    high_value = x_std > 0
-    high_lag = spatial_lag > 0
-    
-    cluster_types[(high_value) & (high_lag)] = 'High-High'
-    cluster_types[(~high_value) & (~high_lag)] = 'Low-Low'
-    cluster_types[(high_value) & (~high_lag)] = 'High-Low'
-    cluster_types[(~high_value) & (high_lag)] = 'Low-High'
-    
-    print(f"\nComputing permutation test ({permutations} permutations)...")
-    
-    # Permutation test for each cell
-    p_values = np.ones(n)
-    
-    for i in range(n):
-        if i % 1000 == 0 and i > 0:
-            print(f"  Cell {i:,}/{n:,}...")
-        
-        neighbors = graph.get_neighbors(sp.cell_index[i])
-        
-        if len(neighbors) == 0:
-            continue
-        
-        w_i = W[i, neighbors]
-        w_i_sum = w_i.sum()
-        
-        if w_i_sum == 0:
-            continue
-        
-        # Permutation distribution
-        Ii_perms = np.zeros(permutations)
-        
-        for perm in range(permutations):
-            # Permute values
-            values_perm = np.random.permutation(values_array)
-            x_perm_centered = values_perm - values_perm.mean()
-            x_perm_std = x_perm_centered / x_perm_centered.std()
-            
-            # Compute local I for permutation
-            lag_perm = np.sum(w_i * x_perm_std[neighbors]) / w_i_sum
-            Ii_perms[perm] = x_perm_std[i] * lag_perm
-        
-        # P-value
-        p_values[i] = (np.sum(np.abs(Ii_perms) >= np.abs(Ii[i])) + 1) / (permutations + 1)
-    
-    # Create results DataFrame
-    results = pd.DataFrame({
-        'Ii': Ii,
-        'p_value': p_values,
-        'cluster_type': cluster_types,
-        'significant': p_values < 0.05,
-        'x_standardized': x_std,
-        'spatial_lag': spatial_lag
-    }, index=sp.cell_index)
-    
-    # Update cluster types for non-significant
-    results.loc[~results['significant'], 'cluster_type'] = 'Not significant'
-    
-    # Summary
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Total cells: {n:,}")
-    print(f"\nCluster types:")
-    for cluster_type in ['High-High', 'Low-Low', 'High-Low', 'Low-High', 'Not significant']:
-        count = (results['cluster_type'] == cluster_type).sum()
-        pct = 100 * count / n
-        print(f"  {cluster_type:20s}: {count:6,} ({pct:5.1f}%)")
-    
-    n_sig = results['significant'].sum()
-    print(f"\nSignificant cells: {n_sig:,} ({100*n_sig/n:.1f}%)")
-    print(f"{'='*70}\n")
-    
-    return results
-
-
-def test_spatial_autocorrelation_genes(sp: 'spatioloji',
-                                       graph: 'SpatialGraph',
-                                       gene_names: Optional[List[str]] = None,
-                                       layer: Optional[str] = None,
-                                       permutations: int = 99,
-                                       method: str = 'moran') -> pd.DataFrame:
-    """
-    Test multiple genes for spatial autocorrelation.
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph (uses global coordinates)
-    gene_names : list, optional
-        Genes to test. If None, tests all genes.
-    layer : str, optional
-        Expression layer to use
-    permutations : int, default=99
-        Number of permutations (use fewer for speed)
-    method : str, default='moran'
-        'moran' or 'geary'
-    
-    Returns
-    -------
-    pd.DataFrame
-        Results for each gene with columns: statistic, p_value, significant
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> 
-    >>> # Test top variable genes
-    >>> var_genes = sp.gene_meta.nlargest(100, 'variance').index
-    >>> results = sj.spatial.point.test_spatial_autocorrelation_genes(
-    ...     sp, graph, gene_names=var_genes, permutations=99
-    ... )
-    >>> 
-    >>> # Get spatially autocorrelated genes
-    >>> spatial_genes = results[results['significant']].index
-    >>> print(f"Found {len(spatial_genes)} spatially autocorrelated genes")
-    >>> 
-    >>> # FOV-specific analysis
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> graph_fov = sj.spatial.point.build_knn_graph(sp_fov, k=10)
-    >>> results_fov = sj.spatial.point.test_spatial_autocorrelation_genes(
-    ...     sp_fov, graph_fov, gene_names=var_genes, permutations=99
-    ... )
-    """
-    print(f"\n{'='*70}")
-    print(f"Testing Genes for Spatial Autocorrelation")
-    print(f"{'='*70}")
-    
-    # Get expression data
-    if layer is not None:
-        expr_data = sp.get_layer(layer)
-    else:
-        expr_data = sp.expression.get_dense()
-    
-    # Get genes
-    if gene_names is None:
-        gene_names = sp.gene_index.tolist()
-        gene_indices = np.arange(len(gene_names))
-    else:
-        gene_indices = sp._get_gene_indices(gene_names)
-        gene_names = sp.gene_index[gene_indices].tolist()
-    
-    print(f"Testing {len(gene_names)} genes")
-    print(f"Method: {method}")
-    print(f"Permutations: {permutations}")
-    
-    # Test each gene
-    results_list = []
-    
-    for idx, gene in enumerate(gene_names):
-        if idx % 20 == 0:
-            print(f"  Testing gene {idx+1}/{len(gene_names)}...")
-        
-        gene_idx = gene_indices[idx]
-        expr = expr_data[:, gene_idx]
-        
-        # Skip if no variation
-        if expr.std() == 0:
-            results_list.append({
-                'gene': gene,
-                'statistic': np.nan,
-                'p_value': 1.0,
-                'significant': False
-            })
-            continue
-        
-        try:
-            if method == 'moran':
-                result = morans_i(sp, graph, expr, permutations=permutations, two_tailed=True)
-                results_list.append({
-                    'gene': gene,
-                    'statistic': result['I'],
-                    'p_value': result['p_value'],
-                    'significant': result['p_value'] < 0.05
-                })
-            elif method == 'geary':
-                result = gearys_c(sp, graph, expr, permutations=permutations)
-                results_list.append({
-                    'gene': gene,
-                    'statistic': result['C'],
-                    'p_value': result['p_value'],
-                    'significant': result['p_value'] < 0.05
-                })
-            else:
-                raise ValueError(f"Unknown method: {method}")
-        
-        except Exception as e:
-            warnings.warn(f"Error testing gene {gene}: {e}")
-            results_list.append({
-                'gene': gene,
-                'statistic': np.nan,
-                'p_value': 1.0,
-                'significant': False
-            })
-    
-    # Create results DataFrame
-    results_df = pd.DataFrame(results_list)
-    results_df = results_df.set_index('gene')
-    
-    # Summary
-    n_sig = results_df['significant'].sum()
-    
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Tested genes: {len(gene_names)}")
-    print(f"  Significant genes: {n_sig} ({100*n_sig/len(gene_names):.1f}%)")
-    print(f"  Method: {method}")
-    print(f"{'='*70}\n")
-    
-    return results_df

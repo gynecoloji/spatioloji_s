@@ -1,33 +1,37 @@
-# src/spatioloji_s/spatial/__init__.py
-
 """
-Spatial analysis module for spatioloji.
+spatial - Spatial analysis for spatioloji
 
-Provides two categories of spatial analysis:
-- Point-based: Uses cell centroids for distance-based analysis
-- Polygon-based: Uses cell boundaries for contact and shape analysis
+Two complementary approaches to spatial analysis:
+
+point : Centroid-based spatial analysis
+    Uses cell centroids (x, y coordinates) for fast distance
+    calculations. Best for large datasets and initial exploration.
+
+polygon : Polygon-based spatial analysis
+    Uses actual cell boundary polygons for true cell-cell topology.
+    Captures contact interfaces, cell shape, and boundary geometry.
+    More accurate but computationally heavier.
+
+shared : Utilities shared across both approaches
 
 Usage
 -----
-import spatioloji as sj
-
-# Point-based analysis
-graph = sj.spatial.point.build_knn_graph(sp, k=10)
-
-# Polygon-based analysis
-contact_graph = sj.spatial.polygon.build_contact_graph(sp)
+>>> import spatioloji as sj
+>>>
+>>> # Point-based analysis (centroid distances)
+>>> graph = sj.spatial.point.build_knn_graph(sp, k=6)
+>>> sj.spatial.point.neighborhood_composition(sp, graph, group_col='cell_type')
+>>>
+>>> # Polygon-based analysis (boundary distances)
+>>> graph = sj.spatial.polygon.build_contact_graph(sp)
+>>> sj.spatial.polygon.contact_fraction(sp, graph)
+>>> sj.spatial.polygon.compute_morphology(sp)
 """
 
-# Import submodules
 from . import point
 from . import polygon
-from . import shared
 
-__version__ = '0.1.0'
-
-# Define what gets imported with "from spatioloji.spatial import *"
 __all__ = [
     'point',
     'polygon',
-    'shared',
 ]

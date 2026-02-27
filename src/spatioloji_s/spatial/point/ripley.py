@@ -1,17 +1,9 @@
-# src/spatioloji_s/spatial/point/ripley.py
-
 """
-ripley.py - Ripley's K and L functions for point pattern analysis
+ripley.py - Ripley's spatial statistics (K, L, cross-K, cross-L)
 
-Provides methods for analyzing spatial clustering at multiple scales:
-- Ripley's K function: Analyzes clustering/dispersion at different distances
-- Ripley's L function: Variance-stabilized transformation of K
-- Cross-type K/L: Interactions between different cell types
-- Null model testing: Compare to Complete Spatial Randomness (CSR)
-
-All functions use global coordinates. For FOV-specific analysis, subset first:
-    sp_fov = sp.subset_by_fovs(['fov1'])
-    k_result = sj.spatial.point.ripleys_k(sp_fov)
+Classic point process statistics for analyzing spatial clustering
+and dispersion patterns. Works directly from cell coordinates
+without requiring a pre-built graph.
 """
 from __future__ import annotations
 from typing import TYPE_CHECKING
@@ -19,754 +11,640 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
 
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Optional, List, Tuple, Union
 import numpy as np
 import pandas as pd
-from scipy.spatial import distance_matrix
-import warnings
+from scipy.spatial import KDTree
+from dataclasses import dataclass
 
 
-def ripleys_k(sp: 'spatioloji',
-             radii: Optional[np.ndarray] = None,
-             n_radii: int = 50,
-             cell_ids: Optional[List[str]] = None,
-             edge_correction: str = 'ripley',
-             fov_id: Optional[str] = None) -> pd.DataFrame:
+@dataclass
+class RipleyResult:
     """
-    Compute Ripley's K function for point pattern analysis.
+    Container for Ripley's statistic results.
     
-    Ripley's K(r) measures the expected number of points within distance r
-    of a typical point, adjusted for study area. It quantifies clustering
-    or dispersion at different spatial scales.
+    Attributes
+    ----------
+    r : np.ndarray
+        Distance values where statistic was evaluated.
+    statistic : np.ndarray
+        K(r) or L(r) values.
+    csr_expected : np.ndarray
+        Expected values under complete spatial randomness.
+    function_type : str
+        'K' or 'L'.
+    correction : str
+        Edge correction method used.
+    envelope_lo : np.ndarray or None
+        Lower simulation envelope (if computed).
+    envelope_hi : np.ndarray or None
+        Upper simulation envelope (if computed).
+    label : str
+        Description (e.g., gene name or cell type).
+    """
+    r: np.ndarray
+    statistic: np.ndarray
+    csr_expected: np.ndarray
+    function_type: str
+    correction: str
+    envelope_lo: Optional[np.ndarray] = None
+    envelope_hi: Optional[np.ndarray] = None
+    label: str = ''
     
-    - K(r) > πr²: Clustering at distance r
-    - K(r) = πr²: Complete Spatial Randomness (CSR)
-    - K(r) < πr²: Dispersion/regularity at distance r
+    @property
+    def deviation(self) -> np.ndarray:
+        """Difference from CSR expectation."""
+        return self.statistic - self.csr_expected
     
-    Uses global coordinates. For FOV-specific analysis, use fov_id parameter
-    or subset first:
-        sp_fov = sp.subset_by_fovs(['fov1'])
-        k_result = sj.spatial.point.ripleys_k(sp_fov)
+    def summary(self) -> dict:
+        dev = self.deviation
+        return {
+            'function': self.function_type,
+            'label': self.label,
+            'correction': self.correction,
+            'max_r': self.r.max(),
+            'n_distances': len(self.r),
+            'max_deviation': dev.max(),
+            'min_deviation': dev.min(),
+            'has_envelope': self.envelope_lo is not None,
+        }
+    
+    def __repr__(self) -> str:
+        s = self.summary()
+        return (
+            f"RipleyResult({s['function']}, label={s['label']}, "
+            f"max_r={s['max_r']:.1f}, "
+            f"max_dev={s['max_deviation']:.2f})"
+        )
+
+
+def ripleys_k(
+    sj: 'spatioloji',
+    coord_type: str = 'global',
+    cell_ids: Optional[List[str]] = None,
+    max_r: Optional[float] = None,
+    n_steps: int = 50,
+    correction: str = 'ripley',
+) -> RipleyResult:
+    """
+    Compute Ripley's K function.
+    
+    K(r) counts the average number of neighbors within distance r,
+    normalized by overall density. Compares to CSR expectation (pi*r^2).
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    radii : np.ndarray, optional
-        Distance radii to test. If None, creates n_radii evenly spaced values.
-    n_radii : int, default=50
-        Number of radii to test (if radii not provided)
-    cell_ids : list, optional
-        Subset of cells to analyze. If None, uses all cells.
-    edge_correction : str, default='ripley'
-        Edge correction method:
-        - 'none': No correction
-        - 'ripley': Ripley's isotropic correction
-        - 'border': Border method (exclude edge points)
-    fov_id : str, optional
-        Analyze specific FOV only
+    sj : spatioloji
+        spatioloji object.
+    coord_type : str
+        'global' or 'local'.
+    cell_ids : list of str, optional
+        Subset of cells. If None, uses all cells.
+    max_r : float, optional
+        Maximum radius. If None, uses 25% of shortest bounding box side
+        (standard rule of thumb to avoid severe edge effects).
+    n_steps : int
+        Number of distance values to evaluate.
+    correction : str
+        Edge correction: 'ripley' (isotropic) or 'none'.
     
     Returns
     -------
-    pd.DataFrame
-        K function values with columns:
-        - r: Distance radius
-        - K: Ripley's K value
-        - K_csr: Expected K under CSR (πr²)
-        - K_diff: K - K_csr (deviation from randomness)
-    
-    Notes
-    -----
-    Ripley's K is defined as:
-        K(r) = λ⁻¹ * E[number of points within distance r]
-    
-    where λ is the intensity (points per unit area).
-    
-    Examples
-    --------
-    >>> import spatioloji as sj
-    >>> 
-    >>> # Compute K function for all cells
-    >>> k_result = sj.spatial.point.ripleys_k(sp, n_radii=50)
-    >>> 
-    >>> # Plot K function
-    >>> import matplotlib.pyplot as plt
-    >>> plt.plot(k_result['r'], k_result['K'], label='Observed K(r)')
-    >>> plt.plot(k_result['r'], k_result['K_csr'], label='CSR', linestyle='--')
-    >>> plt.xlabel('Distance r')
-    >>> plt.ylabel('K(r)')
-    >>> plt.legend()
-    >>> 
-    >>> # Analyze specific cell type
-    >>> tcells = sp.cell_meta[sp.cell_meta['cell_type'] == 'T_cell'].index
-    >>> k_tcells = sj.spatial.point.ripleys_k(sp, cell_ids=tcells)
-    >>> 
-    >>> # Single FOV analysis (method 1: fov_id parameter)
-    >>> k_fov1 = sj.spatial.point.ripleys_k(sp, fov_id='fov1')
-    >>> 
-    >>> # Single FOV analysis (method 2: subset first)
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> k_fov = sj.spatial.point.ripleys_k(sp_fov)
+    RipleyResult
+        K function values and CSR expectation.
     """
-    print(f"\n{'='*70}")
-    print(f"Computing Ripley's K Function (Global Coordinates)")
-    print(f"{'='*70}")
+    coords, area, bbox = _prepare_coords(sj, coord_type, cell_ids)
+    n = len(coords)
     
-    # Get coordinates (always global)
-    if fov_id is not None:
-        cell_ids_fov = sp.get_cells_in_fov(fov_id)
-        if cell_ids is not None:
-            # Intersection
-            cell_ids = list(set(cell_ids) & set(cell_ids_fov))
+    if max_r is None:
+        shortest_side = min(bbox[2] - bbox[0], bbox[3] - bbox[1])
+        max_r = shortest_side * 0.25
+    
+    r_values = np.linspace(0, max_r, n_steps + 1)[1:]  # skip r=0
+    lambda_density = n / area
+    
+    # Build KDTree for efficient distance queries
+    tree = KDTree(coords)
+    
+    # For each r, count pairs within that distance
+    K_values = np.zeros(len(r_values))
+    
+    for ri, r in enumerate(r_values):
+        # Count all pairs within distance r
+        count = tree.query_pairs(r, output_type='ndarray')
+        n_pairs = len(count)
+        
+        if correction == 'ripley' and n_pairs > 0:
+            # Ripley isotropic edge correction
+            # Weight each pair by 1 / (fraction of circle inside bbox)
+            weighted_count = 0.0
+            for idx_i, idx_j in count:
+                d = np.sqrt(np.sum((coords[idx_i] - coords[idx_j]) ** 2))
+                w_i = _edge_correction_weight(coords[idx_i], d, bbox)
+                w_j = _edge_correction_weight(coords[idx_j], d, bbox)
+                weighted_count += 1.0 / w_i + 1.0 / w_j
+            K_values[ri] = area * weighted_count / (n * (n - 1)) / 2
         else:
-            cell_ids = cell_ids_fov
-        
-        print(f"FOV: {fov_id}")
+            # No correction: simple count
+            K_values[ri] = area * 2 * n_pairs / (n * (n - 1))
     
-    if cell_ids is not None:
-        indices = sp._get_cell_indices(cell_ids)
-        coords = sp.get_spatial_coords(coord_type='global')[indices]
-        print(f"Cells: {len(cell_ids):,}")
-    else:
-        coords = sp.get_spatial_coords(coord_type='global')
-        print(f"Cells: {len(coords):,}")
+    csr_expected = np.pi * r_values ** 2
     
-    n_points = len(coords)
+    print(f"  ✓ Ripley's K: n={n}, max_r={max_r:.1f}, "
+          f"correction={correction}")
     
-    print(f"Edge correction: {edge_correction}")
-    
-    # Determine study area
-    x_min, y_min = coords.min(axis=0)
-    x_max, y_max = coords.max(axis=0)
-    area = (x_max - x_min) * (y_max - y_min)
-    
-    print(f"Study area: {area:.2f} square units")
-    
-    # Intensity (points per unit area)
-    intensity = n_points / area
-    
-    print(f"Intensity: {intensity:.6f} points/unit²")
-    
-    # Determine radii
-    if radii is None:
-        max_dist = np.sqrt(area) / 4  # Use 1/4 of study area diagonal
-        radii = np.linspace(0, max_dist, n_radii + 1)[1:]  # Exclude 0
-    
-    print(f"Radii: {len(radii)} values from {radii.min():.2f} to {radii.max():.2f}")
-    
-    # Compute pairwise distances
-    print(f"\nComputing pairwise distances...")
-    dists = distance_matrix(coords, coords)
-    
-    # Compute K for each radius
-    print(f"Computing K function...")
-    K_values = np.zeros(len(radii))
-    
-    for i, r in enumerate(radii):
-        if i % 10 == 0 and i > 0:
-            print(f"  Radius {i}/{len(radii)}...")
-        
-        # Count pairs within distance r
-        within_r = (dists <= r) & (dists > 0)  # Exclude self
-        
-        if edge_correction == 'none':
-            # No edge correction
-            count = within_r.sum()
-            K_values[i] = count / (n_points * intensity)
-        
-        elif edge_correction == 'ripley':
-            # Ripley's isotropic edge correction
-            # Weight by proportion of circle inside study area
-            total_weighted = 0
-            
-            for j in range(n_points):
-                for k in range(n_points):
-                    if j != k and dists[j, k] <= r:
-                        # Compute edge correction weight
-                        x_j, y_j = coords[j]
-                        
-                        # Distance to boundaries
-                        d_left = x_j - x_min
-                        d_right = x_max - x_j
-                        d_bottom = y_j - y_min
-                        d_top = y_max - y_j
-                        
-                        # Approximate correction (simplified)
-                        # Full correction requires computing circle-rectangle intersection
-                        min_edge_dist = min(d_left, d_right, d_bottom, d_top)
-                        
-                        if min_edge_dist >= r:
-                            weight = 1.0  # Circle fully inside
-                        else:
-                            # Approximate weight
-                            weight = 1.0 + (r - min_edge_dist) / r
-                        
-                        total_weighted += weight
-            
-            K_values[i] = total_weighted / (n_points * intensity)
-        
-        elif edge_correction == 'border':
-            # Border method: exclude points too close to edge
-            # Only count pairs where both points are > r from edge
-            valid_points = []
-            
-            for j in range(n_points):
-                x_j, y_j = coords[j]
-                d_left = x_j - x_min
-                d_right = x_max - x_j
-                d_bottom = y_j - y_min
-                d_top = y_max - y_j
-                
-                if min(d_left, d_right, d_bottom, d_top) >= r:
-                    valid_points.append(j)
-            
-            if len(valid_points) > 0:
-                valid_dists = dists[np.ix_(valid_points, valid_points)]
-                within_r_valid = (valid_dists <= r) & (valid_dists > 0)
-                count = within_r_valid.sum()
-                K_values[i] = count / (len(valid_points) * intensity)
-            else:
-                K_values[i] = 0
-        
-        else:
-            raise ValueError(f"Unknown edge_correction: {edge_correction}")
-    
-    # Expected K under CSR (Complete Spatial Randomness)
-    K_csr = np.pi * radii**2
-    
-    # Create results DataFrame
-    results = pd.DataFrame({
-        'r': radii,
-        'K': K_values,
-        'K_csr': K_csr,
-        'K_diff': K_values - K_csr
-    })
-    
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Radii tested: {len(radii)}")
-    print(f"  Mean K(r): {K_values.mean():.2f}")
-    print(f"  Mean deviation from CSR: {(K_values - K_csr).mean():.2f}")
-    
-    # Interpretation
-    mean_diff = (K_values - K_csr).mean()
-    if mean_diff > 0:
-        print(f"  → Overall clustering detected")
-    elif mean_diff < 0:
-        print(f"  → Overall dispersion detected")
-    else:
-        print(f"  → Consistent with random pattern")
-    
-    print(f"{'='*70}\n")
-    
-    return results
+    return RipleyResult(
+        r=r_values,
+        statistic=K_values,
+        csr_expected=csr_expected,
+        function_type='K',
+        correction=correction,
+        label='all_cells',
+    )
 
 
-def ripleys_l(sp: 'spatioloji',
-             radii: Optional[np.ndarray] = None,
-             n_radii: int = 50,
-             cell_ids: Optional[List[str]] = None,
-             edge_correction: str = 'ripley',
-             fov_id: Optional[str] = None) -> pd.DataFrame:
+def _prepare_coords(
+    sj: 'spatioloji',
+    coord_type: str,
+    cell_ids: Optional[List[str]],
+) -> Tuple[np.ndarray, float, Tuple[float, float, float, float]]:
     """
-    Compute Ripley's L function (variance-stabilized K function).
+    Extract coordinates, compute area and bounding box.
     
-    L(r) = sqrt(K(r) / π) - r
+    Returns
+    -------
+    coords : np.ndarray (n, 2)
+    area : float
+    bbox : tuple (xmin, ymin, xmax, ymax)
+    """
+    coords = sj.get_spatial_coords(cell_ids=cell_ids, coord_type=coord_type)
     
-    The L function is easier to interpret than K:
-    - L(r) > 0: Clustering at distance r
-    - L(r) = 0: Complete Spatial Randomness (CSR)
-    - L(r) < 0: Dispersion/regularity at distance r
+    xmin, ymin = coords.min(axis=0)
+    xmax, ymax = coords.max(axis=0)
+    bbox = (xmin, ymin, xmax, ymax)
+    area = (xmax - xmin) * (ymax - ymin)
     
-    Uses global coordinates. For FOV-specific analysis, subset first.
+    if area == 0:
+        raise ValueError("Bounding box has zero area — cells are collinear")
+    
+    return coords, area, bbox
+
+
+def _edge_correction_weight(
+    point: np.ndarray,
+    d: float,
+    bbox: Tuple[float, float, float, float],
+) -> float:
+    """
+    Ripley isotropic edge correction weight.
+    
+    Estimates the fraction of the circle centered at `point` with
+    radius `d` that falls inside the bounding box. Uses the 
+    proportion-of-circumference approximation.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    radii : np.ndarray, optional
-        Distance radii to test
-    n_radii : int, default=50
-        Number of radii
-    cell_ids : list, optional
-        Subset of cells
-    edge_correction : str, default='ripley'
-        Edge correction method
-    fov_id : str, optional
-        Specific FOV
+    point : np.ndarray (2,)
+    d : float, distance (radius)
+    bbox : (xmin, ymin, xmax, ymax)
     
     Returns
     -------
-    pd.DataFrame
-        L function values with columns:
-        - r: Distance radius
-        - L: Ripley's L value
-        - L_csr: Expected L under CSR (0)
-        - L_diff: L - L_csr (same as L)
-    
-    Examples
-    --------
-    >>> # Compute L function
-    >>> l_result = sj.spatial.point.ripleys_l(sp)
-    >>> 
-    >>> # Plot L function
-    >>> import matplotlib.pyplot as plt
-    >>> plt.plot(l_result['r'], l_result['L'])
-    >>> plt.axhline(0, color='red', linestyle='--', label='CSR')
-    >>> plt.xlabel('Distance r')
-    >>> plt.ylabel('L(r)')
-    >>> plt.legend()
-    >>> 
-    >>> # Identify scales with clustering
-    >>> clustered = l_result[l_result['L'] > 0]
-    >>> print(f"Clustering at r = {clustered['r'].min():.1f} to {clustered['r'].max():.1f}")
-    >>> 
-    >>> # FOV-specific analysis
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> l_fov = sj.spatial.point.ripleys_l(sp_fov)
+    float
+        Weight in (0, 1]. 1.0 = entire circle inside bbox.
     """
-    print(f"\n{'='*70}")
-    print(f"Computing Ripley's L Function (Global Coordinates)")
-    print(f"{'='*70}")
+    if d == 0:
+        return 1.0
     
-    # Compute K function first
+    xmin, ymin, xmax, ymax = bbox
+    px, py = point
+    
+    # Distance from point to each edge
+    dx_min = px - xmin
+    dx_max = xmax - px
+    dy_min = py - ymin
+    dy_max = ymax - py
+    
+    # Fraction of circle outside each edge
+    # A circle extends beyond an edge if d > distance_to_edge
+    # The "lost" fraction per edge ≈ arccos(dist/d) / pi
+    fraction_inside = 1.0
+    
+    for dist_to_edge in [dx_min, dx_max, dy_min, dy_max]:
+        if d > dist_to_edge and dist_to_edge >= 0:
+            fraction_inside -= np.arccos(
+                np.clip(dist_to_edge / d, -1, 1)
+            ) / (2 * np.pi)
+    
+    return max(fraction_inside, 0.01)  # floor to avoid division by ~0
+
+
+def ripleys_l(
+    sj: 'spatioloji',
+    coord_type: str = 'global',
+    cell_ids: Optional[List[str]] = None,
+    max_r: Optional[float] = None,
+    n_steps: int = 50,
+    correction: str = 'ripley',
+) -> RipleyResult:
+    """
+    Compute Ripley's L function (variance-stabilized K).
+    
+    L(r) = sqrt(K(r)/pi) - r.
+    Under CSR, L(r) = 0 for all r. Positive = clustering,
+    negative = dispersion. Much easier to interpret than raw K.
+    
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    coord_type : str
+        'global' or 'local'.
+    cell_ids : list of str, optional
+        Subset of cells.
+    max_r : float, optional
+        Maximum radius.
+    n_steps : int
+        Number of distance values.
+    correction : str
+        Edge correction method.
+    
+    Returns
+    -------
+    RipleyResult
+        L function values (CSR expectation = 0).
+    """
+    # Compute K first
     k_result = ripleys_k(
-        sp, radii=radii, n_radii=n_radii,
-        cell_ids=cell_ids, edge_correction=edge_correction, fov_id=fov_id
+        sj, coord_type=coord_type, cell_ids=cell_ids,
+        max_r=max_r, n_steps=n_steps, correction=correction,
     )
     
-    # Transform to L
-    print(f"Transforming K to L...")
-    L_values = np.sqrt(k_result['K'] / np.pi) - k_result['r']
-    L_csr = np.zeros(len(L_values))  # Under CSR, L(r) = 0
+    # Transform: L(r) = sqrt(K(r)/pi) - r
+    L_values = np.sqrt(k_result.statistic / np.pi) - k_result.r
+    csr_expected = np.zeros_like(k_result.r)  # L = 0 under CSR
     
-    # Create results DataFrame
-    results = pd.DataFrame({
-        'r': k_result['r'],
-        'L': L_values,
-        'L_csr': L_csr,
-        'L_diff': L_values  # Same as L since CSR is 0
-    })
+    print(f"  ✓ Ripley's L: max deviation = {np.max(np.abs(L_values)):.4f}")
     
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Mean L(r): {L_values.mean():.3f}")
-    print(f"  Min L(r): {L_values.min():.3f}")
-    print(f"  Max L(r): {L_values.max():.3f}")
-    
-    # Interpretation
-    if L_values.mean() > 0:
-        print(f"  → Overall clustering pattern")
-    elif L_values.mean() < 0:
-        print(f"  → Overall dispersed pattern")
-    else:
-        print(f"  → Random pattern")
-    
-    print(f"{'='*70}\n")
-    
-    return results
-
-
-def cross_k_function(sp: 'spatioloji',
-                    group1: str,
-                    group2: str,
-                    groupby: str = 'cell_type',
-                    radii: Optional[np.ndarray] = None,
-                    n_radii: int = 50,
-                    edge_correction: str = 'none') -> pd.DataFrame:
-    """
-    Compute cross-type K function for two cell populations.
-    
-    Measures spatial association between two cell types at different
-    distances. Tests whether type 1 cells are clustered around type 2 cells.
-    
-    Uses global coordinates.
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    group1 : str
-        First cell type (reference population)
-    group2 : str
-        Second cell type (target population)
-    groupby : str, default='cell_type'
-        Column in cell_meta
-    radii : np.ndarray, optional
-        Distance radii
-    n_radii : int, default=50
-        Number of radii
-    edge_correction : str, default='none'
-        Edge correction method
-    
-    Returns
-    -------
-    pd.DataFrame
-        Cross-K function with columns:
-        - r: Distance radius
-        - K_cross: Cross-K value
-        - K_indep: Expected K under independence
-        - K_diff: K_cross - K_indep
-    
-    Examples
-    --------
-    >>> # Test if T cells cluster around tumor cells
-    >>> cross_k = sj.spatial.point.cross_k_function(
-    ...     sp, group1='T_cell', group2='Tumor', groupby='cell_type'
-    ... )
-    >>> 
-    >>> # Plot
-    >>> import matplotlib.pyplot as plt
-    >>> plt.plot(cross_k['r'], cross_k['K_cross'], label='Observed')
-    >>> plt.plot(cross_k['r'], cross_k['K_indep'], label='Independence', linestyle='--')
-    >>> plt.xlabel('Distance r')
-    >>> plt.ylabel('K_cross(r)')
-    >>> plt.legend()
-    >>> 
-    >>> # Check if T cells are attracted to tumor
-    >>> if (cross_k['K_diff'] > 0).mean() > 0.5:
-    ...     print("T cells cluster around tumor cells")
-    """
-    print(f"\n{'='*70}")
-    print(f"Computing Cross-Type K Function (Global Coordinates)")
-    print(f"{'='*70}")
-    print(f"Group 1 (reference): {group1}")
-    print(f"Group 2 (target): {group2}")
-    
-    if groupby not in sp.cell_meta.columns:
-        raise ValueError(f"Column '{groupby}' not found in cell_meta")
-    
-    # Get cell populations
-    cell_types = sp.cell_meta[groupby].astype(str)
-    
-    cells1 = sp.cell_index[cell_types == group1].tolist()
-    cells2 = sp.cell_index[cell_types == group2].tolist()
-    
-    n1 = len(cells1)
-    n2 = len(cells2)
-    
-    print(f"{group1}: {n1:,} cells")
-    print(f"{group2}: {n2:,} cells")
-    
-    if n1 == 0 or n2 == 0:
-        raise ValueError("One or both groups have no cells")
-    
-    # Get coordinates (always global)
-    indices1 = sp._get_cell_indices(cells1)
-    indices2 = sp._get_cell_indices(cells2)
-    
-    coords1 = sp.get_spatial_coords(coord_type='global')[indices1]
-    coords2 = sp.get_spatial_coords(coord_type='global')[indices2]
-    
-    # Study area
-    all_coords = np.vstack([coords1, coords2])
-    x_min, y_min = all_coords.min(axis=0)
-    x_max, y_max = all_coords.max(axis=0)
-    area = (x_max - x_min) * (y_max - y_min)
-    
-    print(f"Study area: {area:.2f} square units")
-    
-    # Intensities
-    intensity1 = n1 / area
-    intensity2 = n2 / area
-    
-    print(f"Intensity {group1}: {intensity1:.6f}")
-    print(f"Intensity {group2}: {intensity2:.6f}")
-    
-    # Determine radii
-    if radii is None:
-        max_dist = np.sqrt(area) / 4
-        radii = np.linspace(0, max_dist, n_radii + 1)[1:]
-    
-    print(f"Radii: {len(radii)} values")
-    
-    # Compute cross-distances (group1 to group2)
-    print(f"\nComputing cross-distances...")
-    from scipy.spatial.distance import cdist
-    cross_dists = cdist(coords1, coords2)
-    
-    # Compute cross-K for each radius
-    print(f"Computing cross-K function...")
-    K_cross = np.zeros(len(radii))
-    
-    for i, r in enumerate(radii):
-        if i % 10 == 0 and i > 0:
-            print(f"  Radius {i}/{len(radii)}...")
-        
-        # Count type2 cells within distance r of each type1 cell
-        within_r = (cross_dists <= r).sum()
-        
-        # Cross-K
-        K_cross[i] = within_r / (n1 * intensity2)
-    
-    # Expected K under independence (random labeling)
-    K_indep = np.pi * radii**2
-    
-    # Create results
-    results = pd.DataFrame({
-        'r': radii,
-        'K_cross': K_cross,
-        'K_indep': K_indep,
-        'K_diff': K_cross - K_indep
-    })
-    
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Mean K_cross: {K_cross.mean():.2f}")
-    print(f"  Mean deviation from independence: {(K_cross - K_indep).mean():.2f}")
-    
-    mean_diff = (K_cross - K_indep).mean()
-    if mean_diff > 0:
-        print(f"  → {group1} cells cluster around {group2} cells")
-    elif mean_diff < 0:
-        print(f"  → {group1} cells avoid {group2} cells")
-    else:
-        print(f"  → Random spatial association")
-    
-    print(f"{'='*70}\n")
-    
-    return results
-
-
-def cross_l_function(sp: 'spatioloji',
-                    group1: str,
-                    group2: str,
-                    groupby: str = 'cell_type',
-                    radii: Optional[np.ndarray] = None,
-                    n_radii: int = 50) -> pd.DataFrame:
-    """
-    Compute cross-type L function (normalized cross-K).
-    
-    L_cross(r) = sqrt(K_cross(r) / π) - r
-    
-    Uses global coordinates.
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    group1 : str
-        First cell type
-    group2 : str
-        Second cell type
-    groupby : str, default='cell_type'
-        Column in cell_meta
-    radii : np.ndarray, optional
-        Distance radii
-    n_radii : int, default=50
-        Number of radii
-    
-    Returns
-    -------
-    pd.DataFrame
-        Cross-L function
-    
-    Examples
-    --------
-    >>> cross_l = sj.spatial.point.cross_l_function(
-    ...     sp, group1='T_cell', group2='Tumor'
-    ... )
-    >>> 
-    >>> # Plot
-    >>> import matplotlib.pyplot as plt
-    >>> plt.plot(cross_l['r'], cross_l['L_cross'])
-    >>> plt.axhline(0, color='red', linestyle='--')
-    >>> plt.xlabel('Distance r')
-    >>> plt.ylabel('L_cross(r)')
-    """
-    # Compute cross-K first
-    k_result = cross_k_function(
-        sp, group1, group2, groupby=groupby,
-        radii=radii, n_radii=n_radii
+    return RipleyResult(
+        r=k_result.r,
+        statistic=L_values,
+        csr_expected=csr_expected,
+        function_type='L',
+        correction=correction,
+        label='all_cells',
     )
-    
-    # Transform to L
-    print(f"Transforming to L function...")
-    L_cross = np.sqrt(k_result['K_cross'] / np.pi) - k_result['r']
-    L_indep = np.zeros(len(L_cross))
-    
-    results = pd.DataFrame({
-        'r': k_result['r'],
-        'L_cross': L_cross,
-        'L_indep': L_indep,
-        'L_diff': L_cross
-    })
-    
-    print(f"\nMean L_cross: {L_cross.mean():.3f}")
-    
-    return results
 
-
-def test_csr(sp: 'spatioloji',
-            cell_ids: Optional[List[str]] = None,
-            n_simulations: int = 99,
-            radii: Optional[np.ndarray] = None,
-            n_radii: int = 30,
-            statistic: str = 'L') -> Dict:
+def cross_k(
+    sj: 'spatioloji',
+    cell_type_col: str,
+    type_a: str,
+    type_b: str,
+    coord_type: str = 'global',
+    max_r: Optional[float] = None,
+    n_steps: int = 50,
+    correction: str = 'ripley',
+) -> RipleyResult:
     """
-    Test Complete Spatial Randomness (CSR) using Monte Carlo simulation.
+    Compute cross-K function between two cell types.
     
-    Compares observed K or L function to distribution under CSR.
-    Uses global coordinates.
+    Measures whether cells of type_a are clustered around cells
+    of type_b at each distance r. Asymmetric: K_AB != K_BA.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    cell_ids : list, optional
-        Subset of cells
-    n_simulations : int, default=99
-        Number of CSR simulations
-    radii : np.ndarray, optional
-        Distance radii
-    n_radii : int, default=30
-        Number of radii
-    statistic : str, default='L'
-        'K' or 'L' function
+    sj : spatioloji
+        spatioloji object.
+    cell_type_col : str
+        Column in sj.cell_meta with cell type labels.
+    type_a : str
+        Source cell type ("are these clustered...").
+    type_b : str
+        Target cell type ("...around these?").
+    coord_type : str
+        'global' or 'local'.
+    max_r : float, optional
+        Maximum radius.
+    n_steps : int
+        Number of distance values.
+    correction : str
+        Edge correction method.
     
     Returns
     -------
-    dict
-        Results with keys:
-        - observed: Observed K or L values
-        - simulations: Simulated values
-        - envelope_low: Lower envelope (2.5th percentile)
-        - envelope_high: Upper envelope (97.5th percentile)
-        - p_value: P-value for deviation from CSR
-        - p_values_per_r: P-values for each radius
-        - radii: Distance radii
-    
-    Examples
-    --------
-    >>> # Test T cells for CSR
-    >>> tcells = sp.cell_meta[sp.cell_meta['cell_type'] == 'T_cell'].index
-    >>> csr_result = sj.spatial.point.test_csr(
-    ...     sp, cell_ids=tcells, n_simulations=99
-    ... )
-    >>> 
-    >>> # Plot with confidence envelope
-    >>> import matplotlib.pyplot as plt
-    >>> plt.plot(csr_result['radii'], csr_result['observed'], label='Observed')
-    >>> plt.fill_between(
-    ...     csr_result['radii'],
-    ...     csr_result['envelope_low'],
-    ...     csr_result['envelope_high'],
-    ...     alpha=0.3, label='95% CSR envelope'
-    ... )
-    >>> plt.legend()
-    >>> 
-    >>> # FOV-specific CSR test
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> csr_fov = sj.spatial.point.test_csr(sp_fov, n_simulations=99)
+    RipleyResult
+        Cross-K values. CSR expectation = pi*r^2.
     """
-    print(f"\n{'='*70}")
-    print(f"Testing Complete Spatial Randomness (Global Coordinates)")
-    print(f"{'='*70}")
-    print(f"Simulations: {n_simulations}")
-    print(f"Statistic: {statistic}")
+    if cell_type_col not in sj.cell_meta.columns:
+        raise ValueError(f"'{cell_type_col}' not found in cell_meta")
     
-    # Get coordinates (always global)
-    if cell_ids is not None:
-        indices = sp._get_cell_indices(cell_ids)
-        coords = sp.get_spatial_coords(coord_type='global')[indices]
-    else:
-        coords = sp.get_spatial_coords(coord_type='global')
+    labels = sj.cell_meta[cell_type_col].values
+    all_coords = sj.get_spatial_coords(coord_type=coord_type)
     
-    n_points = len(coords)
-    print(f"Points: {n_points:,}")
+    mask_a = labels == type_a
+    mask_b = labels == type_b
+    coords_a = all_coords[mask_a]
+    coords_b = all_coords[mask_b]
+    n_a = len(coords_a)
+    n_b = len(coords_b)
     
-    # Study area
-    x_min, y_min = coords.min(axis=0)
-    x_max, y_max = coords.max(axis=0)
-    area = (x_max - x_min) * (y_max - y_min)
+    if n_a == 0 or n_b == 0:
+        raise ValueError(f"No cells found for type_a='{type_a}' "
+                         f"({n_a}) or type_b='{type_b}' ({n_b})")
     
-    # Compute observed statistic
-    print(f"\nComputing observed {statistic} function...")
+    # Bounding box from all cells
+    xmin, ymin = all_coords.min(axis=0)
+    xmax, ymax = all_coords.max(axis=0)
+    bbox = (xmin, ymin, xmax, ymax)
+    area = (xmax - xmin) * (ymax - ymin)
     
-    if statistic == 'K':
-        obs_result = ripleys_k(
-            sp, radii=radii, n_radii=n_radii,
-            cell_ids=cell_ids, edge_correction='none'
-        )
-        observed = obs_result['K'].values
-    else:  # L
-        obs_result = ripleys_l(
-            sp, radii=radii, n_radii=n_radii,
-            cell_ids=cell_ids, edge_correction='none'
-        )
-        observed = obs_result['L'].values
+    if max_r is None:
+        shortest_side = min(xmax - xmin, ymax - ymin)
+        max_r = shortest_side * 0.25
     
-    radii = obs_result['r'].values
+    r_values = np.linspace(0, max_r, n_steps + 1)[1:]
     
-    # Run simulations
-    print(f"\nRunning {n_simulations} CSR simulations...")
-    simulations = np.zeros((n_simulations, len(radii)))
+    # Build KDTree on type_b (targets)
+    tree_b = KDTree(coords_b)
     
-    for sim in range(n_simulations):
-        if sim % 20 == 0 and sim > 0:
-            print(f"  Simulation {sim}/{n_simulations}...")
+    # For each cell in type_a, count type_b neighbors at each r
+    K_values = np.zeros(len(r_values))
+    
+    for ri, r in enumerate(r_values):
+        total_weighted = 0.0
         
-        # Generate random points in study area
-        sim_coords = np.random.uniform(
-            low=[x_min, y_min],
-            high=[x_max, y_max],
-            size=(n_points, 2)
-        )
-        
-        # Compute statistic for simulated points
-        intensity = n_points / area
-        dists = distance_matrix(sim_coords, sim_coords)
-        
-        for i, r in enumerate(radii):
-            within_r = (dists <= r) & (dists > 0)
-            count = within_r.sum()
-            K_sim = count / (n_points * intensity)
+        for i in range(n_a):
+            # Find type_b neighbors within r of this type_a cell
+            neighbors = tree_b.query_ball_point(coords_a[i], r)
             
-            if statistic == 'K':
-                simulations[sim, i] = K_sim
-            else:  # L
-                simulations[sim, i] = np.sqrt(K_sim / np.pi) - r
+            if correction == 'ripley':
+                for j_idx in neighbors:
+                    d = np.sqrt(np.sum(
+                        (coords_a[i] - coords_b[j_idx]) ** 2
+                    ))
+                    if d > 0:
+                        w = _edge_correction_weight(coords_a[i], d, bbox)
+                        total_weighted += 1.0 / w
+            else:
+                total_weighted += len(neighbors)
+        
+        lambda_b = n_b / area
+        K_values[ri] = total_weighted / (n_a * lambda_b)
     
-    # Compute envelopes
-    envelope_low = np.percentile(simulations, 2.5, axis=0)
-    envelope_high = np.percentile(simulations, 97.5, axis=0)
+    csr_expected = np.pi * r_values ** 2
     
-    # P-value (two-tailed)
-    # Proportion of simulations more extreme than observed
-    deviations_obs = np.abs(observed - simulations.mean(axis=0))
-    deviations_sim = np.abs(simulations - simulations.mean(axis=0))
+    print(f"  ✓ Cross-K ({type_a}→{type_b}): n_a={n_a}, n_b={n_b}, "
+          f"max_r={max_r:.1f}")
     
-    p_values_per_r = np.mean(deviations_sim >= deviations_obs[np.newaxis, :], axis=0)
-    p_value_global = np.mean(p_values_per_r < 0.05)  # Overall significance
+    return RipleyResult(
+        r=r_values,
+        statistic=K_values,
+        csr_expected=csr_expected,
+        function_type='cross-K',
+        correction=correction,
+        label=f"{type_a}→{type_b}",
+    )
+
+
+def cross_l(
+    sj: 'spatioloji',
+    cell_type_col: str,
+    type_a: str,
+    type_b: str,
+    coord_type: str = 'global',
+    max_r: Optional[float] = None,
+    n_steps: int = 50,
+    correction: str = 'ripley',
+) -> RipleyResult:
+    """
+    Compute cross-L function (variance-stabilized cross-K).
     
-    results = {
-        'observed': observed,
-        'simulations': simulations,
-        'envelope_low': envelope_low,
-        'envelope_high': envelope_high,
-        'p_value': p_value_global,
-        'p_values_per_r': p_values_per_r,
-        'radii': radii
-    }
+    L_AB(r) = sqrt(K_AB(r)/pi) - r. Under CSR, L = 0.
+    Positive = type_a clusters around type_b.
     
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Global p-value: {p_value_global:.3f}")
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    cell_type_col : str
+        Column with cell type labels.
+    type_a, type_b : str
+        Source and target cell types.
+    coord_type : str
+        'global' or 'local'.
+    max_r : float, optional
+        Maximum radius.
+    n_steps : int
+        Number of distance values.
+    correction : str
+        Edge correction method.
     
-    # Check if outside envelope
-    outside = (observed < envelope_low) | (observed > envelope_high)
-    n_outside = outside.sum()
+    Returns
+    -------
+    RipleyResult
+        Cross-L values.
+    """
+    k_result = cross_k(
+        sj, cell_type_col, type_a, type_b,
+        coord_type=coord_type, max_r=max_r,
+        n_steps=n_steps, correction=correction,
+    )
     
-    print(f"  Radii outside envelope: {n_outside}/{len(radii)}")
+    L_values = np.sqrt(k_result.statistic / np.pi) - k_result.r
+    csr_expected = np.zeros_like(k_result.r)
     
-    if n_outside > len(radii) * 0.05:
-        if np.mean(observed > envelope_high) > 0.5:
-            print(f"  → Significant clustering (p < 0.05)")
-        else:
-            print(f"  → Significant dispersion (p < 0.05)")
+    print(f"  ✓ Cross-L ({type_a}→{type_b}): "
+          f"max deviation = {np.max(np.abs(L_values)):.4f}")
+    
+    return RipleyResult(
+        r=k_result.r,
+        statistic=L_values,
+        csr_expected=csr_expected,
+        function_type='cross-L',
+        correction=k_result.correction,
+        label=f"{type_a}→{type_b}",
+    )
+
+
+def simulation_envelope(
+    sj: 'spatioloji',
+    function: str = 'L',
+    coord_type: str = 'global',
+    cell_ids: Optional[List[str]] = None,
+    cell_type_col: Optional[str] = None,
+    type_a: Optional[str] = None,
+    type_b: Optional[str] = None,
+    n_simulations: int = 99,
+    confidence: float = 0.95,
+    max_r: Optional[float] = None,
+    n_steps: int = 50,
+    correction: str = 'ripley',
+    seed: Optional[int] = None,
+) -> RipleyResult:
+    """
+    Compute simulation envelopes for significance testing.
+    
+    For K/L: simulates complete spatial randomness (uniform points).
+    For cross-K/L: permutes cell type labels while keeping positions.
+    
+    The observed curve is significant at distance r if it falls
+    outside the envelope at that r.
+    
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    function : str
+        'K', 'L', 'cross-K', or 'cross-L'.
+    coord_type : str
+        'global' or 'local'.
+    cell_ids : list, optional
+        Subset of cells (for K/L).
+    cell_type_col : str, optional
+        Cell type column (required for cross functions).
+    type_a, type_b : str, optional
+        Cell types (required for cross functions).
+    n_simulations : int
+        Number of simulations for envelope.
+    confidence : float
+        Confidence level for envelope (e.g., 0.95 = 95%).
+    max_r : float, optional
+        Maximum radius.
+    n_steps : int
+        Number of distance values.
+    correction : str
+        Edge correction method.
+    seed : int, optional
+        Random seed.
+    
+    Returns
+    -------
+    RipleyResult
+        Observed statistic with envelope_lo and envelope_hi filled.
+    """
+    rng = np.random.default_rng(seed)
+    is_cross = function.startswith('cross')
+    
+    # Validate inputs for cross functions
+    if is_cross:
+        if cell_type_col is None or type_a is None or type_b is None:
+            raise ValueError(
+                "cross functions require cell_type_col, type_a, and type_b"
+            )
+    
+    # Step 1: Compute observed
+    if function == 'K':
+        observed = ripleys_k(sj, coord_type, cell_ids, max_r, n_steps, correction)
+    elif function == 'L':
+        observed = ripleys_l(sj, coord_type, cell_ids, max_r, n_steps, correction)
+    elif function == 'cross-K':
+        observed = cross_k(sj, cell_type_col, type_a, type_b,
+                           coord_type, max_r, n_steps, correction)
+    elif function == 'cross-L':
+        observed = cross_l(sj, cell_type_col, type_a, type_b,
+                           coord_type, max_r, n_steps, correction)
     else:
-        print(f"  → Consistent with CSR")
+        raise ValueError(f"Unknown function: {function}")
     
-    print(f"{'='*70}\n")
+    r_values = observed.r
+    n_r = len(r_values)
     
-    return results
+    # Step 2: Simulate
+    print(f"  Running {n_simulations} simulations for envelope...")
+    sim_stats = np.zeros((n_simulations, n_r))
+    
+    if not is_cross:
+        # CSR simulation: scatter random points in bounding box
+        coords, area, bbox = _prepare_coords(sj, coord_type, cell_ids)
+        n_points = len(coords)
+        xmin, ymin, xmax, ymax = bbox
+        
+        for s in range(n_simulations):
+            # Generate random points
+            rand_x = rng.uniform(xmin, xmax, n_points)
+            rand_y = rng.uniform(ymin, ymax, n_points)
+            rand_coords = np.column_stack([rand_x, rand_y])
+            
+            # Compute statistic for random points
+            sim_result = _compute_k_from_coords(
+                rand_coords, bbox, area, r_values, correction
+            )
+            
+            if function == 'L':
+                sim_stats[s] = np.sqrt(sim_result / np.pi) - r_values
+            else:
+                sim_stats[s] = sim_result
+    else:
+        # Label permutation: keep positions, shuffle types
+        labels = sj.cell_meta[cell_type_col].values.copy()
+        
+        for s in range(n_simulations):
+            # Shuffle labels
+            shuffled = rng.permutation(labels)
+            sj.cell_meta[cell_type_col] = shuffled
+            
+            if function == 'cross-K':
+                sim = cross_k(sj, cell_type_col, type_a, type_b,
+                              coord_type, max_r, n_steps, correction)
+                sim_stats[s] = sim.statistic
+            else:
+                sim = cross_l(sj, cell_type_col, type_a, type_b,
+                              coord_type, max_r, n_steps, correction)
+                sim_stats[s] = sim.statistic
+        
+        # Restore original labels
+        sj.cell_meta[cell_type_col] = labels
+    
+    # Step 3: Build envelope
+    alpha = 1 - confidence
+    lo_pct = (alpha / 2) * 100
+    hi_pct = (1 - alpha / 2) * 100
+    
+    envelope_lo = np.percentile(sim_stats, lo_pct, axis=0)
+    envelope_hi = np.percentile(sim_stats, hi_pct, axis=0)
+    
+    # Report
+    above = np.sum(observed.statistic > envelope_hi)
+    below = np.sum(observed.statistic < envelope_lo)
+    print(f"  ✓ Envelope ({confidence:.0%}): "
+          f"{above} distances above, {below} below, "
+          f"{n_r - above - below} inside")
+    
+    # Return observed with envelope attached
+    observed.envelope_lo = envelope_lo
+    observed.envelope_hi = envelope_hi
+    
+    return observed
+
+
+def _compute_k_from_coords(
+    coords: np.ndarray,
+    bbox: Tuple[float, float, float, float],
+    area: float,
+    r_values: np.ndarray,
+    correction: str,
+) -> np.ndarray:
+    """
+    Compute K(r) directly from coordinate array.
+    Used internally for CSR simulations.
+    """
+    n = len(coords)
+    tree = KDTree(coords)
+    K_values = np.zeros(len(r_values))
+    
+    for ri, r in enumerate(r_values):
+        pairs = tree.query_pairs(r, output_type='ndarray')
+        n_pairs = len(pairs)
+        
+        if correction == 'ripley' and n_pairs > 0:
+            weighted = 0.0
+            for idx_i, idx_j in pairs:
+                d = np.sqrt(np.sum((coords[idx_i] - coords[idx_j]) ** 2))
+                w_i = _edge_correction_weight(coords[idx_i], d, bbox)
+                w_j = _edge_correction_weight(coords[idx_j], d, bbox)
+                weighted += 1.0 / w_i + 1.0 / w_j
+            K_values[ri] = area * weighted / (n * (n - 1)) / 2
+        else:
+            K_values[ri] = area * 2 * n_pairs / (n * (n - 1))
+    
+    return K_values

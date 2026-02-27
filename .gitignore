@@ -203,6 +203,3 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
-# big files
-*.pickle

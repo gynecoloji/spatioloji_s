@@ -1,550 +1,402 @@
-# src/spatioloji_s/spatial/point/neighborhoods.py
-
 """
-neighborhoods.py - Neighborhood queries and composition analysis
+neighborhoods.py - Cell type neighborhood analysis
 
-Functions for analyzing cellular neighborhoods using point-based graphs.
-All functions use global coordinates.
+Analyzes the cellular composition of spatial neighborhoods,
+identifying co-localization patterns and recurring microenvironments.
 """
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
-    from .graph import SpatialGraph
 
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Optional, List, Union
 import numpy as np
 import pandas as pd
-from scipy.spatial import KDTree
-import warnings
+from scipy import sparse
+
+from .graph import PointSpatialGraph
 
 
-def get_neighbors(sp: 'spatioloji',
-                 graph: 'SpatialGraph',
-                 cell_id: str,
-                 return_distances: bool = False) -> Union[List[str], Tuple[List[str], np.ndarray]]:
+def neighborhood_composition(
+    sj: 'spatioloji',
+    graph: PointSpatialGraph,
+    cell_type_col: str,
+    normalize: bool = True,
+) -> pd.DataFrame:
     """
-    Get neighbors for a specific cell.
+    Compute cell type composition of each cell's neighborhood.
+    
+    For each cell, counts (or proportions of) each cell type
+    among its graph neighbors.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph
-    cell_id : str
-        Cell identifier
-    return_distances : bool, default=False
-        If True, also return distances to neighbors
-    
-    Returns
-    -------
-    list or tuple
-        Neighbor cell IDs, optionally with distances
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> neighbors = sj.spatial.point.get_neighbors(sp, graph, 'cell_1')
-    >>> print(f"Cell 1 has {len(neighbors)} neighbors")
-    >>> 
-    >>> # Get neighbors with distances
-    >>> neighbors, dists = sj.spatial.point.get_neighbors(
-    ...     sp, graph, 'cell_1', return_distances=True
-    ... )
-    """
-    neighbor_ids = graph.get_neighbor_ids(cell_id)
-    
-    if return_distances:
-        distances = graph.get_neighbor_distances(cell_id)
-        if distances is None:
-            warnings.warn("Graph has no distance information, returning None for distances")
-        return neighbor_ids, distances
-    
-    return neighbor_ids
-
-
-def get_cells_in_radius(sp: 'spatioloji',
-                       center_cell: str,
-                       radius: float,
-                       include_center: bool = False) -> List[str]:
-    """
-    Get all cells within radius of a center cell.
-    
-    This is a one-time query that doesn't require pre-built graph.
-    Uses global coordinates. For FOV-specific analysis, subset first.
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    center_cell : str
-        Center cell ID
-    radius : float
-        Search radius
-    include_center : bool, default=False
-        Whether to include center cell in results
-    
-    Returns
-    -------
-    list
-        Cell IDs within radius
-    
-    Examples
-    --------
-    >>> # Find cells within 50 units of a specific cell
-    >>> nearby = sj.spatial.point.get_cells_in_radius(sp, 'cell_1', radius=50)
-    >>> 
-    >>> # For FOV-specific analysis
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> nearby = sj.spatial.point.get_cells_in_radius(sp_fov, 'cell_1', radius=50)
-    >>> 
-    >>> # Get neighborhood for multiple cells
-    >>> for cell_id in ['cell_1', 'cell_2', 'cell_3']:
-    ...     neighbors = sj.spatial.point.get_cells_in_radius(sp, cell_id, radius=100)
-    ...     print(f"{cell_id}: {len(neighbors)} neighbors")
-    """
-    # Get coordinates (always global)
-    coords = sp.get_spatial_coords(coord_type='global')
-    
-    # Get center cell coordinate
-    if center_cell not in sp.cell_index:
-        raise ValueError(f"Cell '{center_cell}' not found")
-    
-    center_idx = sp._cell_id_to_idx[center_cell]
-    center_coord = coords[center_idx]
-    
-    # Build KD-tree
-    tree = KDTree(coords)
-    
-    # Query cells within radius
-    indices = tree.query_ball_point(center_coord, radius)
-    
-    # Get cell IDs
-    cell_ids = [sp.cell_index[i] for i in indices]
-    
-    # Remove center if requested
-    if not include_center and center_cell in cell_ids:
-        cell_ids.remove(center_cell)
-    
-    return cell_ids
-
-
-def get_neighborhood_composition(sp: 'spatioloji',
-                                 graph: 'SpatialGraph',
-                                 groupby: str,
-                                 normalize: bool = True,
-                                 add_to_obs: bool = False) -> pd.DataFrame:
-    """
-    Get neighborhood composition for each cell.
-    
-    Counts categories (e.g., cell types) in each cell's neighborhood
-    based on the spatial graph.
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph defining neighborhoods
-    groupby : str
-        Column in cell_meta to group by (e.g., 'cell_type', 'cluster')
-    normalize : bool, default=True
-        If True, return proportions instead of counts
-    add_to_obs : bool, default=False
-        If True, add composition to sp.cell_meta with prefix 'nhood_'
+    sj : spatioloji
+        spatioloji object.
+    graph : PointSpatialGraph
+        Pre-built spatial graph.
+    cell_type_col : str
+        Column in sj.cell_meta containing cell type labels.
+    normalize : bool
+        If True, return proportions. If False, return raw counts.
     
     Returns
     -------
     pd.DataFrame
-        Composition matrix (cells × categories)
-        Index aligned with sp.cell_index
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> 
-    >>> # Get neighborhood composition by cell type
-    >>> comp = sj.spatial.point.get_neighborhood_composition(
-    ...     sp, graph, groupby='cell_type'
-    ... )
-    >>> 
-    >>> # Cells with high T-cell neighborhood
-    >>> high_tcell = comp['T_cell'] > 0.5
-    >>> sp.cell_meta['high_tcell_nhood'] = high_tcell
-    >>> 
-    >>> # Add to cell_meta automatically
-    >>> comp = sj.spatial.point.get_neighborhood_composition(
-    ...     sp, graph, groupby='cell_type', add_to_obs=True
-    ... )
-    >>> # Now available as sp.cell_meta['nhood_T_cell'], etc.
+        (n_cells x n_types). Each row sums to 1 if normalized.
     """
-    print(f"\n{'='*70}")
-    print(f"Computing Neighborhood Composition")
-    print(f"{'='*70}")
+    if cell_type_col not in sj.cell_meta.columns:
+        raise ValueError(f"'{cell_type_col}' not found in cell_meta")
     
-    if groupby not in sp.cell_meta.columns:
-        raise ValueError(f"Column '{groupby}' not found in cell_meta")
+    labels = sj.cell_meta[cell_type_col].values
+    categories = pd.Categorical(labels)
+    types = categories.categories  # unique sorted types
+    codes = categories.codes       # integer encoding
     
-    print(f"Parameters:")
-    print(f"  groupby = '{groupby}'")
-    print(f"  normalize = {normalize}")
-    
-    # Get categories
-    categories = sp.cell_meta[groupby].astype(str)
-    unique_cats = sorted(categories.unique())
-    
-    print(f"  Found {len(unique_cats)} categories")
-    
-    # Initialize result matrix
-    n_cells = len(sp.cell_index)
-    composition = pd.DataFrame(
-        0.0,
-        index=sp.cell_index,
-        columns=unique_cats,
-        dtype=np.float32
+    # One-hot encode: (n_cells x n_types)
+    n_cells = len(codes)
+    n_types = len(types)
+    onehot = sparse.csr_matrix(
+        (np.ones(n_cells), (np.arange(n_cells), codes)),
+        shape=(n_cells, n_types),
     )
     
-    print(f"\nCounting neighbors for {n_cells:,} cells...")
+    # Matrix multiply: adjacency @ onehot -> neighbor type counts
+    counts = graph.adjacency.dot(onehot).toarray()  # (n_cells x n_types)
     
-    # Count neighbors for each cell
-    for i, cell_id in enumerate(sp.cell_index):
-        if i % 10000 == 0 and i > 0:
-            print(f"  Processed {i:,} / {n_cells:,} cells...")
-        
-        neighbor_indices = graph.get_neighbors(cell_id)
-        
-        if len(neighbor_indices) > 0:
-            neighbor_ids = sp.cell_index[neighbor_indices]
-            neighbor_cats = categories.loc[neighbor_ids]
-            
-            # Count each category
-            counts = neighbor_cats.value_counts()
-            composition.loc[cell_id, counts.index] = counts.values
+    result = pd.DataFrame(counts, index=graph.cell_ids, columns=types)
     
-    # Normalize if requested
     if normalize:
-        row_sums = composition.sum(axis=1)
-        composition = composition.div(row_sums, axis=0).fillna(0)
+        row_sums = result.sum(axis=1)
+        # Avoid division by zero for isolated cells (degree=0)
+        result = result.div(row_sums.replace(0, np.nan), axis=0).fillna(0)
     
-    print(f"\n{'='*70}")
-    print(f"Result:")
-    print(f"  Composition matrix: {n_cells:,} cells × {len(unique_cats)} categories")
-    if normalize:
-        print(f"  Values are proportions (sum to 1)")
-    else:
-        print(f"  Values are counts")
-    print(f"{'='*70}\n")
+    print(f"  ✓ Neighborhood composition: {n_cells} cells × {n_types} types"
+          f" ({'proportions' if normalize else 'counts'})")
     
-    # Add to cell_meta if requested
-    if add_to_obs:
-        for cat in unique_cats:
-            col_name = f"nhood_{cat}"
-            sp.cell_meta[col_name] = composition[cat]
-        print(f"Added to cell_meta with prefix 'nhood_'")
-    
-    return composition
+    return result
 
-
-def get_neighborhood_expression(sp: 'spatioloji',
-                                graph: 'SpatialGraph',
-                                genes: Optional[Union[str, List[str]]] = None,
-                                layer: Optional[str] = None,
-                                agg_func: str = 'mean') -> pd.DataFrame:
+def neighborhood_enrichment(
+    sj: 'spatioloji',
+    graph: PointSpatialGraph,
+    cell_type_col: str,
+    n_permutations: int = 1000,
+    seed: Optional[int] = None,
+) -> dict:
     """
-    Get aggregated gene expression in each cell's neighborhood.
+    Test whether cell type pairs co-locate more/less than expected.
+    
+    Uses permutation testing: shuffle cell type labels, recompute
+    pairwise interaction counts, and compare observed vs. permuted.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph defining neighborhoods
-    genes : str or list, optional
-        Gene(s) to analyze. If None, uses all genes.
-    layer : str, optional
-        Expression layer to use. If None, uses main expression.
-    agg_func : str, default='mean'
-        Aggregation function: 'mean', 'median', 'sum', 'max'
+    sj : spatioloji
+        spatioloji object.
+    graph : PointSpatialGraph
+        Pre-built spatial graph.
+    cell_type_col : str
+        Column in sj.cell_meta with cell type labels.
+    n_permutations : int
+        Number of label shuffles for null distribution.
+    seed : int, optional
+        Random seed for reproducibility.
+    
+    Returns
+    -------
+    dict with keys:
+        'zscore'   : pd.DataFrame (n_types x n_types), enrichment z-scores
+        'observed' : pd.DataFrame, observed interaction counts
+        'expected' : pd.DataFrame, mean expected counts from permutations
+        'pvalue'   : pd.DataFrame, two-sided empirical p-values
+    """
+    if cell_type_col not in sj.cell_meta.columns:
+        raise ValueError(f"'{cell_type_col}' not found in cell_meta")
+    
+    rng = np.random.default_rng(seed)
+    
+    labels = sj.cell_meta[cell_type_col].values
+    categories = pd.Categorical(labels)
+    types = categories.categories
+    codes = categories.codes.copy()
+    n_cells = len(codes)
+    n_types = len(types)
+    adj = graph.adjacency
+    
+    # --- Helper: compute type-type interaction counts from codes ---
+    def _interaction_counts(codes_arr):
+        onehot = sparse.csr_matrix(
+            (np.ones(n_cells), (np.arange(n_cells), codes_arr)),
+            shape=(n_cells, n_types),
+        )
+        # C.T @ A @ C -> (n_types x n_types) interaction matrix
+        interactions = (onehot.T.dot(adj)).dot(onehot).toarray()
+        return interactions
+    
+    # Observed
+    observed = _interaction_counts(codes)
+    
+    # Permutations
+    print(f"  Running {n_permutations} permutations...")
+    perm_results = np.zeros((n_permutations, n_types, n_types))
+    
+    for i in range(n_permutations):
+        shuffled = rng.permutation(codes)
+        perm_results[i] = _interaction_counts(shuffled)
+    
+    # Statistics
+    perm_mean = perm_results.mean(axis=0)
+    perm_std = perm_results.std(axis=0)
+    
+    # Z-score: (observed - expected) / std
+    with np.errstate(divide='ignore', invalid='ignore'):
+        zscore = (observed - perm_mean) / perm_std
+        zscore = np.nan_to_num(zscore, nan=0.0)
+    
+    # Empirical p-value (two-sided): fraction of permutations
+    # with value as extreme as observed
+    pvalue = np.zeros((n_types, n_types))
+    for i in range(n_types):
+        for j in range(n_types):
+            extreme = np.sum(
+                np.abs(perm_results[:, i, j] - perm_mean[i, j])
+                >= np.abs(observed[i, j] - perm_mean[i, j])
+            )
+            pvalue[i, j] = (extreme + 1) / (n_permutations + 1)
+    
+    # Wrap in DataFrames
+    result = {
+        'zscore': pd.DataFrame(zscore, index=types, columns=types),
+        'observed': pd.DataFrame(observed, index=types, columns=types),
+        'expected': pd.DataFrame(perm_mean, index=types, columns=types),
+        'pvalue': pd.DataFrame(pvalue, index=types, columns=types),
+    }
+    
+    # Report top enriched/depleted pairs
+    z_flat = result['zscore'].values[np.triu_indices(n_types, k=1)]
+    type_pairs = [
+        (types[i], types[j])
+        for i in range(n_types) for j in range(i + 1, n_types)
+    ]
+    top_enriched = sorted(zip(type_pairs, z_flat), key=lambda x: -x[1])[:3]
+    top_depleted = sorted(zip(type_pairs, z_flat), key=lambda x: x[1])[:3]
+    
+    print(f"  ✓ Neighborhood enrichment: {n_types} types, "
+          f"{n_permutations} permutations")
+    print(f"    Top enriched:  {top_enriched[0][0]} (z={top_enriched[0][1]:.2f})")
+    print(f"    Top depleted:  {top_depleted[0][0]} (z={top_depleted[0][1]:.2f})")
+    
+    return result
+
+def identify_niches(
+    sj: 'spatioloji',
+    graph: PointSpatialGraph,
+    cell_type_col: str,
+    method: str = 'kmeans',
+    n_niches: int = 5,
+    resolution: float = 1.0,
+    normalize: bool = True,
+    label_col: str = 'spatial_niche',
+    seed: Optional[int] = 42,
+) -> dict:
+    """
+    Identify recurring spatial niches by clustering neighborhood profiles.
+    
+    Each cell's neighborhood composition (from the spatial graph) is 
+    computed, then cells with similar compositions are grouped into niches.
+    
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    graph : PointSpatialGraph
+        Pre-built spatial graph.
+    cell_type_col : str
+        Column in sj.cell_meta with cell type labels.
+    method : str
+        'kmeans' or 'leiden'.
+    n_niches : int
+        Number of niches (used by kmeans).
+    resolution : float
+        Resolution parameter (used by leiden). Higher = more niches.
+    normalize : bool
+        Whether to normalize composition to proportions.
+    label_col : str
+        Column name for storing niche labels in sj.cell_meta.
+    seed : int, optional
+        Random seed.
+    
+    Returns
+    -------
+    dict with keys:
+        'labels'     : pd.Series, niche label per cell
+        'signatures' : pd.DataFrame, mean composition per niche
+        'composition': pd.DataFrame, the full composition matrix used
+    """
+    # Step 1: Get neighborhood composition
+    comp = neighborhood_composition(
+        sj, graph, cell_type_col, normalize=normalize
+    )
+    
+    # Step 2: Cluster
+    if method == 'kmeans':
+        from sklearn.cluster import KMeans
+        
+        km = KMeans(n_clusters=n_niches, random_state=seed, n_init=10)
+        labels = km.fit_predict(comp.values)
+        labels = pd.Series(
+            [f"niche_{i}" for i in labels],
+            index=comp.index,
+            name=label_col,
+        )
+        
+    elif method == 'leiden':
+        try:
+            import leidenalg
+            import igraph as ig
+        except ImportError:
+            raise ImportError(
+                "Leiden requires leidenalg and igraph. "
+                "Install with: pip install leidenalg igraph"
+            )
+        from sklearn.neighbors import NearestNeighbors
+        
+        # Build KNN graph in composition space (not spatial)
+        k_comp = min(15, comp.shape[0] - 1)
+        nn = NearestNeighbors(n_neighbors=k_comp + 1, metric='cosine')
+        nn.fit(comp.values)
+        dist_matrix, idx_matrix = nn.kneighbors(comp.values)
+        
+        # Build igraph from KNN
+        edges = []
+        for i in range(comp.shape[0]):
+            for j_idx in range(1, k_comp + 1):  # skip self
+                neighbor = idx_matrix[i, j_idx]
+                if i < neighbor:  # avoid duplicates
+                    edges.append((i, neighbor))
+        
+        g = ig.Graph(n=comp.shape[0], edges=edges, directed=False)
+        
+        partition = leidenalg.find_partition(
+            g,
+            leidenalg.RBConfigurationVertexPartition,
+            resolution_parameter=resolution,
+            seed=seed if seed is not None else 0,
+        )
+        
+        labels = pd.Series(
+            [f"niche_{m}" for m in partition.membership],
+            index=comp.index,
+            name=label_col,
+        )
+    else:
+        raise ValueError(f"Unknown method: {method}. Use 'kmeans' or 'leiden'.")
+    
+    # Step 3: Compute niche signatures (mean composition per niche)
+    comp_with_niche = comp.copy()
+    comp_with_niche[label_col] = labels.values
+    signatures = comp_with_niche.groupby(label_col).mean()
+    
+    # Step 4: Store in cell_meta
+    sj.cell_meta[label_col] = labels.values
+    
+    # Report
+    niche_counts = labels.value_counts().sort_index()
+    n_found = len(niche_counts)
+    print(f"  ✓ Identified {n_found} niches (method={method}):")
+    for niche, count in niche_counts.items():
+        top_type = signatures.loc[niche].idxmax()
+        top_pct = signatures.loc[niche].max() * 100
+        print(f"    {niche}: {count:,} cells "
+              f"(dominant: {top_type} {top_pct:.0f}%)")
+    
+    return {
+        'labels': labels,
+        'signatures': signatures,
+        'composition': comp,
+    }
+
+def neighborhood_diversity(
+    sj: 'spatioloji',
+    graph: PointSpatialGraph,
+    cell_type_col: str,
+    metrics: Optional[List[str]] = None,
+    store: bool = True,
+) -> pd.DataFrame:
+    """
+    Compute diversity of each cell's neighborhood.
+    
+    Quantifies how mixed the cell types are around each cell.
+    High diversity = many types intermingling. Low = homogeneous.
+    
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    graph : PointSpatialGraph
+        Pre-built spatial graph.
+    cell_type_col : str
+        Column in sj.cell_meta with cell type labels.
+    metrics : list of str, optional
+        Which metrics to compute. Default: all three.
+        Options: 'shannon', 'simpson', 'richness'.
+    store : bool
+        If True, add results to sj.cell_meta.
     
     Returns
     -------
     pd.DataFrame
-        Neighborhood expression (cells × genes)
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> 
-    >>> # Mean expression of specific genes in neighborhoods
-    >>> nhood_expr = sj.spatial.point.get_neighborhood_expression(
-    ...     sp, graph, genes=['CD4', 'CD8', 'CD19']
-    ... )
-    >>> 
-    >>> # Compare cell's own expression vs neighborhood
-    >>> cell_expr = sp.get_expression(gene_names=['CD4'], as_dataframe=True)
-    >>> nhood_expr = sj.spatial.point.get_neighborhood_expression(
-    ...     sp, graph, genes=['CD4']
-    ... )
-    >>> sp.cell_meta['CD4_self'] = cell_expr['CD4']
-    >>> sp.cell_meta['CD4_nhood'] = nhood_expr['CD4']
+        (n_cells x n_metrics). One diversity value per cell per metric.
     """
-    print(f"\n{'='*70}")
-    print(f"Computing Neighborhood Expression")
-    print(f"{'='*70}")
+    if metrics is None:
+        metrics = ['shannon', 'simpson', 'richness']
     
-    # Get expression data
-    if layer is not None:
-        if layer not in sp.layers:
-            raise ValueError(f"Layer '{layer}' not found")
-        expr_data = sp.get_layer(layer)
-    else:
-        expr_data = sp.expression.get_dense()
+    valid = {'shannon', 'simpson', 'richness'}
+    invalid = set(metrics) - valid
+    if invalid:
+        raise ValueError(f"Unknown metrics: {invalid}. Use {valid}")
     
-    # Get genes to analyze
-    if genes is not None:
-        if isinstance(genes, str):
-            genes = [genes]
-        gene_indices = sp._get_gene_indices(genes)
-        gene_names = sp.gene_index[gene_indices]
-        expr_data = expr_data[:, gene_indices]
-    else:
-        gene_names = sp.gene_index
-    
-    print(f"Parameters:")
-    print(f"  n_genes = {len(gene_names)}")
-    print(f"  agg_func = {agg_func}")
-    print(f"  layer = {layer if layer else 'main expression'}")
-    
-    # Initialize result
-    nhood_expr = pd.DataFrame(
-        0.0,
-        index=sp.cell_index,
-        columns=gene_names,
-        dtype=np.float32
+    # Get proportions (normalized composition)
+    comp = neighborhood_composition(
+        sj, graph, cell_type_col, normalize=True
     )
     
-    print(f"\nAggregating expression for {len(sp.cell_index):,} cells...")
+    props = comp.values  # (n_cells, n_types)
+    result = pd.DataFrame(index=graph.cell_ids)
     
-    # Aggregate for each cell's neighborhood
-    for i, cell_id in enumerate(sp.cell_index):
-        if i % 5000 == 0 and i > 0:
-            print(f"  Processed {i:,} / {len(sp.cell_index):,} cells...")
-        
-        neighbor_indices = graph.get_neighbors(cell_id)
-        
-        if len(neighbor_indices) > 0:
-            neighbor_expr = expr_data[neighbor_indices, :]
-            
-            # Aggregate
-            if agg_func == 'mean':
-                agg_values = neighbor_expr.mean(axis=0)
-            elif agg_func == 'median':
-                agg_values = np.median(neighbor_expr, axis=0)
-            elif agg_func == 'sum':
-                agg_values = neighbor_expr.sum(axis=0)
-            elif agg_func == 'max':
-                agg_values = neighbor_expr.max(axis=0)
-            else:
-                raise ValueError(f"Unknown agg_func: {agg_func}")
-            
-            nhood_expr.loc[cell_id] = agg_values
+    if 'shannon' in metrics:
+        # H = -sum(p * log(p)), treating 0*log(0) = 0
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_props = np.log(props)
+            log_props[~np.isfinite(log_props)] = 0
+        shannon = -np.sum(props * log_props, axis=1)
+        result['shannon_entropy'] = shannon
     
-    print(f"\n{'='*70}")
-    print(f"Result:")
-    print(f"  Neighborhood expression: {len(sp.cell_index):,} cells × {len(gene_names)} genes")
-    print(f"{'='*70}\n")
+    if 'simpson' in metrics:
+        # D = 1 - sum(p^2)
+        simpson = 1.0 - np.sum(props ** 2, axis=1)
+        result['simpson_index'] = simpson
     
-    return nhood_expr
-
-
-def compute_neighborhood_diversity(sp: 'spatioloji',
-                                   graph: 'SpatialGraph',
-                                   groupby: str,
-                                   metric: str = 'shannon') -> pd.Series:
-    """
-    Compute diversity of cell types in each neighborhood.
+    if 'richness' in metrics:
+        # Count of types with proportion > 0
+        # Use raw counts to avoid floating point issues
+        comp_counts = neighborhood_composition(
+            sj, graph, cell_type_col, normalize=False
+        )
+        richness = (comp_counts.values > 0).sum(axis=1)
+        result['richness'] = richness
     
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph
-    groupby : str
-        Column to compute diversity on (e.g., 'cell_type')
-    metric : str, default='shannon'
-        Diversity metric: 'shannon' (entropy), 'simpson', or 'richness'
+    # Store in cell_meta
+    if store:
+        for col in result.columns:
+            sj.cell_meta[col] = result[col].values
     
-    Returns
-    -------
-    pd.Series
-        Diversity score for each cell
-    
-    Notes
-    -----
-    - Shannon entropy: -sum(p * log(p)) where p is proportion
-    - Simpson diversity: 1 - sum(p^2)
-    - Richness: Number of unique types
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=20)
-    >>> 
-    >>> # Compute Shannon diversity
-    >>> diversity = sj.spatial.point.compute_neighborhood_diversity(
-    ...     sp, graph, groupby='cell_type', metric='shannon'
-    ... )
-    >>> sp.cell_meta['nhood_diversity'] = diversity
-    >>> 
-    >>> # High diversity regions (mixed cell types)
-    >>> high_diversity = sp.cell_meta[sp.cell_meta['nhood_diversity'] > 1.5].index
-    """
-    print(f"\n{'='*70}")
-    print(f"Computing Neighborhood Diversity")
-    print(f"{'='*70}")
-    print(f"Parameters:")
-    print(f"  groupby = '{groupby}'")
-    print(f"  metric = {metric}")
-    
-    # Get composition
-    comp = get_neighborhood_composition(
-        sp, graph, groupby, normalize=True
-    )
-    
-    print(f"\nCalculating {metric} diversity...")
-    
-    # Calculate diversity
-    if metric == 'shannon':
-        # Shannon entropy: -sum(p * log(p))
-        diversity = -np.sum(comp * np.log(comp + 1e-10), axis=1)
-    
-    elif metric == 'simpson':
-        # Simpson diversity: 1 - sum(p^2)
-        diversity = 1 - np.sum(comp ** 2, axis=1)
-    
-    elif metric == 'richness':
-        # Number of unique types
-        diversity = (comp > 0).sum(axis=1)
-    
-    else:
-        raise ValueError(f"Unknown metric: {metric}")
-    
-    diversity = pd.Series(diversity, index=sp.cell_index, name=f'{metric}_diversity')
-    
-    print(f"\n{'='*70}")
-    print(f"Result:")
-    print(f"  Min diversity: {diversity.min():.3f}")
-    print(f"  Max diversity: {diversity.max():.3f}")
-    print(f"  Mean diversity: {diversity.mean():.3f}")
-    print(f"{'='*70}\n")
-    
-    return diversity
-
-
-def compute_spatial_lag(sp: 'spatioloji',
-                       graph: 'SpatialGraph',
-                       values: Union[str, pd.Series, np.ndarray],
-                       weighted: bool = False) -> pd.Series:
-    """
-    Compute spatial lag (average of neighbors' values).
-    
-    The spatial lag is the average value of a variable in a cell's
-    neighborhood. Used in spatial autocorrelation analysis.
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph
-    values : str, pd.Series, or np.ndarray
-        Values to compute lag for.
-        - str: column name in cell_meta
-        - pd.Series: values with index matching sp.cell_index
-        - np.ndarray: values aligned with sp.cell_index
-    weighted : bool, default=False
-        If True, weight by inverse distance (requires graph.distances)
-    
-    Returns
-    -------
-    pd.Series
-        Spatial lag for each cell
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> 
-    >>> # Spatial lag of gene expression
-    >>> expr = sp.get_expression(gene_names='CD4', as_dataframe=True)['CD4']
-    >>> lag = sj.spatial.point.compute_spatial_lag(sp, graph, expr)
-    >>> 
-    >>> # Compare cell value vs neighborhood average
-    >>> sp.cell_meta['CD4'] = expr
-    >>> sp.cell_meta['CD4_lag'] = lag
-    >>> 
-    >>> # Spatial lag from cell_meta column
-    >>> lag = sj.spatial.point.compute_spatial_lag(sp, graph, 'total_counts')
-    """
-    print(f"\n{'='*70}")
-    print(f"Computing Spatial Lag")
-    print(f"{'='*70}")
-    
-    # Get values
-    if isinstance(values, str):
-        if values not in sp.cell_meta.columns:
-            raise ValueError(f"Column '{values}' not found in cell_meta")
-        values_array = sp.cell_meta[values].values
-        values_name = values
-    elif isinstance(values, pd.Series):
-        # Align to cell_index
-        values_array = values.reindex(sp.cell_index).values
-        values_name = values.name or 'values'
-    elif isinstance(values, np.ndarray):
-        values_array = values
-        values_name = 'values'
-    else:
-        raise TypeError("values must be str, pd.Series, or np.ndarray")
-    
-    print(f"Parameters:")
-    print(f"  values = {values_name}")
-    print(f"  weighted = {weighted}")
-    
-    if weighted and graph.distances is None:
-        raise ValueError("Graph must have distances for weighted spatial lag")
-    
-    # Compute spatial lag
-    spatial_lag = np.zeros(len(sp.cell_index))
-    
-    print(f"\nComputing lag for {len(sp.cell_index):,} cells...")
-    
-    for i, cell_id in enumerate(sp.cell_index):
-        if i % 10000 == 0 and i > 0:
-            print(f"  Processed {i:,} / {len(sp.cell_index):,} cells...")
-        
-        neighbor_indices = graph.get_neighbors(cell_id)
-        
-        if len(neighbor_indices) > 0:
-            neighbor_values = values_array[neighbor_indices]
-            
-            if weighted:
-                # Weight by inverse distance
-                distances = graph.get_neighbor_distances(cell_id)
-                weights = 1.0 / (distances + 1e-10)
-                weights = weights / weights.sum()
-                spatial_lag[i] = np.sum(neighbor_values * weights)
-            else:
-                # Simple mean
-                spatial_lag[i] = neighbor_values.mean()
-    
-    result = pd.Series(spatial_lag, index=sp.cell_index, name=f'{values_name}_lag')
-    
-    print(f"\n{'='*70}")
-    print(f"Result:")
-    print(f"  Min lag: {result.min():.3f}")
-    print(f"  Max lag: {result.max():.3f}")
-    print(f"  Mean lag: {result.mean():.3f}")
-    print(f"{'='*70}\n")
+    # Report
+    print(f"  ✓ Neighborhood diversity ({len(metrics)} metrics):")
+    for col in result.columns:
+        vals = result[col]
+        print(f"    {col}: mean={vals.mean():.3f}, "
+              f"range=[{vals.min():.3f}, {vals.max():.3f}]")
     
     return result

@@ -1,919 +1,735 @@
-# src/spatioloji_s/spatial/point/patterns.py
-
 """
-patterns.py - Spatial pattern detection and domain identification
+patterns.py - Spatial pattern detection
 
-Provides methods for:
-- Identifying spatial domains/niches
-- Finding spatially variable genes
-- Co-localization analysis
-- Spatial gradient detection
-- Hotspot/coldspot identification
-
-All functions use global coordinates. For FOV-specific analysis, subset first:
-    sp_fov = sp.subset_by_fovs(['fov1'])
-    graph = sj.spatial.point.build_knn_graph(sp_fov, k=10)
-    domains = sj.spatial.point.identify_spatial_domains(sp_fov, graph)
+Detects spatial structure in gene expression and cell type distributions,
+including autocorrelation, hotspots, and co-occurrence patterns.
 """
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
-    from .graph import SpatialGraph
 
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Optional, List, Union
 import numpy as np
 import pandas as pd
-from scipy import stats
-from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
-from sklearn.preprocessing import StandardScaler
-import warnings
+from scipy import sparse
+
+from .graph import PointSpatialGraph
 
 
-def identify_spatial_domains(sp: 'spatioloji',
-                            graph: 'SpatialGraph',
-                            method: str = 'leiden',
-                            n_domains: Optional[int] = None,
-                            resolution: float = 1.0,
-                            features: Optional[List[str]] = None,
-                            use_expression: bool = True,
-                            n_pcs: int = 20) -> pd.Series:
+def morans_i(
+    sj: 'spatioloji',
+    graph: PointSpatialGraph,
+    values: Union[str, np.ndarray],
+    local: bool = False,
+    n_permutations: int = 999,
+    seed: Optional[int] = None,
+) -> Union[dict, pd.DataFrame]:
     """
-    Identify spatial domains (spatially coherent regions).
+    Compute Moran's I spatial autocorrelation.
     
-    Combines spatial proximity with feature similarity to find
-    biologically meaningful spatial domains.
-    
-    Uses global coordinates. For FOV-specific analysis, subset first:
-        sp_fov = sp.subset_by_fovs(['fov1'])
-        graph = sj.spatial.point.build_knn_graph(sp_fov, k=10)
-        domains = sj.spatial.point.identify_spatial_domains(sp_fov, graph)
+    Global: single statistic testing whether values are spatially
+    clustered across the entire tissue.
+    Local (LISA): per-cell statistic identifying WHERE clustering occurs.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph
-    method : str, default='leiden'
-        Clustering method:
-        - 'leiden': Leiden clustering (requires leidenalg)
-        - 'louvain': Louvain clustering (requires louvain)
-        - 'kmeans': K-means on spatial coordinates + features
-        - 'hierarchical': Hierarchical clustering
-        - 'dbscan': DBSCAN clustering
-    n_domains : int, optional
-        Number of domains (for kmeans, hierarchical)
-    resolution : float, default=1.0
-        Resolution parameter (for leiden, louvain)
-    features : list, optional
-        Features from cell_meta to use. If None and use_expression=False,
-        uses spatial coordinates only.
-    use_expression : bool, default=True
-        If True, include gene expression in clustering
-    n_pcs : int, default=20
-        Number of PCs to use if use_expression=True
+    sj : spatioloji
+        spatioloji object.
+    graph : PointSpatialGraph
+        Pre-built spatial graph.
+    values : str or np.ndarray
+        Gene name (looked up in expression) or pre-computed array.
+    local : bool
+        If True, compute local Moran's I (LISA) per cell.
+        If False, compute global Moran's I.
+    n_permutations : int
+        Permutations for significance testing.
+    seed : int, optional
+        Random seed.
     
     Returns
     -------
-    pd.Series
-        Domain assignments for each cell
+    dict (global) with keys:
+        'I'       : float, Moran's I statistic
+        'expected': float, expected I under randomness (-1/(N-1))
+        'zscore'  : float, z-score from permutation test
+        'pvalue'  : float, pseudo p-value
     
-    Examples
-    --------
-    >>> import spatioloji as sj
-    >>> 
-    >>> # Build spatial graph
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> 
-    >>> # Identify domains using expression + spatial info
-    >>> domains = sj.spatial.point.identify_spatial_domains(
-    ...     sp, graph, method='leiden', resolution=1.0
-    ... )
-    >>> sp.cell_meta['spatial_domain'] = domains
-    >>> 
-    >>> # FOV-specific analysis
-    >>> sp_fov = sp.subset_by_fovs(['fov1'])
-    >>> graph = sj.spatial.point.build_knn_graph(sp_fov, k=10)
-    >>> domains = sj.spatial.point.identify_spatial_domains(
-    ...     sp_fov, graph, method='kmeans', n_domains=10
-    ... )
+    pd.DataFrame (local) with columns:
+        'local_i'  : per-cell local Moran's I
+        'zscore'   : per-cell z-score
+        'pvalue'   : per-cell pseudo p-value
+        'spot_type': 'HH', 'LL', 'HL', 'LH', or 'ns'
     """
-    print(f"\n{'='*70}")
-    print(f"Identifying Spatial Domains")
-    print(f"{'='*70}")
-    print(f"Method: {method}")
-    print(f"Use expression: {use_expression}")
+    rng = np.random.default_rng(seed)
     
-    # Build feature matrix
-    feature_list = []
+    # Resolve values
+    x = _resolve_values(sj, values)
+    n = len(x)
     
-    # Add spatial coordinates (normalized) - ALWAYS GLOBAL
-    coords = sp.get_spatial_coords(coord_type='global')
-    coords_norm = (coords - coords.mean(axis=0)) / coords.std(axis=0)
-    feature_list.append(coords_norm)
-    print(f"  Added spatial coordinates (2 features, global)")
+    # Row-normalize the weight matrix
+    W = _row_normalize(graph.adjacency)
     
-    # Add expression features
-    if use_expression:
-        # Use PCA if available, otherwise compute
-        if 'X_pca' in sp.embeddings:
-            pca_coords = sp.embeddings['X_pca'][:, :n_pcs]
-            print(f"  Using existing PCA ({n_pcs} PCs)")
-        else:
-            print(f"  Computing PCA...")
-            from sklearn.decomposition import PCA
-            
-            expr = sp.expression.get_dense()
-            pca = PCA(n_components=n_pcs)
-            pca_coords = pca.fit_transform(expr)
-            print(f"  Computed PCA ({n_pcs} PCs, {pca.explained_variance_ratio_[:5].sum():.1%} variance)")
-        
-        feature_list.append(pca_coords)
+    # Mean-center
+    z = x - x.mean()
+    denom = np.sum(z ** 2)
     
-    # Add custom features
-    if features is not None:
-        for feat in features:
-            if feat not in sp.cell_meta.columns:
-                warnings.warn(f"Feature '{feat}' not found in cell_meta")
-                continue
-            
-            feat_values = sp.cell_meta[feat].values
-            
-            # Handle categorical
-            if sp.cell_meta[feat].dtype == 'object':
-                from sklearn.preprocessing import LabelEncoder
-                le = LabelEncoder()
-                feat_values = le.fit_transform(feat_values)
-            
-            feat_values = feat_values.reshape(-1, 1)
-            feat_values = (feat_values - feat_values.mean()) / (feat_values.std() + 1e-10)
-            feature_list.append(feat_values)
-        
-        print(f"  Added {len(features)} custom features")
-    
-    # Combine features
-    X = np.hstack(feature_list)
-    print(f"\nFeature matrix: {X.shape}")
-    
-    # Clustering
-    print(f"\nClustering with {method}...")
-    
-    if method == 'leiden':
-        try:
-            import igraph as ig
-            import leidenalg
-        except ImportError:
-            raise ImportError(
-                "Leiden requires python-igraph and leidenalg. "
-                "Install with: pip install python-igraph leidenalg"
+    if denom == 0:
+        print("  ⚠ All values identical — Moran's I undefined")
+        if local:
+            return pd.DataFrame(
+                {'local_i': 0, 'zscore': 0, 'pvalue': 1, 'spot_type': 'ns'},
+                index=graph.cell_ids,
             )
-        
-        # Convert to igraph
-        print(f"  Converting graph to igraph...")
-        edges = graph.to_edge_list()
-        g = ig.Graph()
-        g.add_vertices(len(sp.cell_index))
-        g.add_edges([(sp._cell_id_to_idx[s], sp._cell_id_to_idx[t]) 
-                     for s, t in zip(edges['source'], edges['target'])])
-        
-        # Add weights based on feature similarity
-        print(f"  Computing feature-based weights...")
-        weights = []
-        for s, t in zip(edges['source'], edges['target']):
-            idx_s = sp._cell_id_to_idx[s]
-            idx_t = sp._cell_id_to_idx[t]
-            sim = 1.0 / (1.0 + np.linalg.norm(X[idx_s] - X[idx_t]))
-            weights.append(sim)
-        
-        # Leiden clustering
-        print(f"  Running Leiden (resolution={resolution})...")
-        partition = leidenalg.find_partition(
-            g, leidenalg.RBConfigurationVertexPartition,
-            weights=weights, resolution_parameter=resolution
-        )
-        
-        domains = np.array(partition.membership)
-        n_found = len(set(domains))
-        print(f"  Found {n_found} domains")
+        return {'I': 0, 'expected': -1 / (n - 1), 'zscore': 0, 'pvalue': 1}
     
-    elif method == 'louvain':
-        try:
-            import igraph as ig
-            import louvain
-        except ImportError:
-            raise ImportError(
-                "Louvain requires python-igraph and louvain-igraph. "
-                "Install with: pip install python-igraph louvain-igraph"
-            )
+    if not local:
+        # --- Global Moran's I ---
+        # I = (N / W_sum) * (z' W z) / (z' z)
+        # With row-normalized W, simplifies to: N * (z' W z) / (W_sum * z'z)
+        Wz = W.dot(z)
+        observed_I = n * z.dot(Wz) / (W.sum() * denom)
+        expected_I = -1 / (n - 1)
         
-        # Convert to igraph
-        edges = graph.to_edge_list()
-        g = ig.Graph()
-        g.add_vertices(len(sp.cell_index))
-        g.add_edges([(sp._cell_id_to_idx[s], sp._cell_id_to_idx[t]) 
-                     for s, t in zip(edges['source'], edges['target'])])
+        # Permutation test
+        perm_Is = np.empty(n_permutations)
+        for i in range(n_permutations):
+            z_perm = rng.permutation(z)
+            Wz_perm = W.dot(z_perm)
+            perm_Is[i] = n * z_perm.dot(Wz_perm) / (W.sum() * np.sum(z_perm ** 2))
         
-        # Add weights
-        weights = []
-        for s, t in zip(edges['source'], edges['target']):
-            idx_s = sp._cell_id_to_idx[s]
-            idx_t = sp._cell_id_to_idx[t]
-            sim = 1.0 / (1.0 + np.linalg.norm(X[idx_s] - X[idx_t]))
-            weights.append(sim)
+        perm_mean = perm_Is.mean()
+        perm_std = perm_Is.std()
+        zscore = (observed_I - perm_mean) / perm_std if perm_std > 0 else 0
+        pvalue = (np.sum(np.abs(perm_Is - perm_mean)
+                         >= np.abs(observed_I - perm_mean)) + 1) / (n_permutations + 1)
         
-        # Louvain clustering
-        partition = louvain.find_partition(
-            g, louvain.RBConfigurationVertexPartition,
-            weights=weights, resolution_parameter=resolution
-        )
+        label = values if isinstance(values, str) else 'custom'
+        print(f"  ✓ Global Moran's I ({label}): I={observed_I:.4f}, "
+              f"z={zscore:.2f}, p={pvalue:.4f}")
         
-        domains = np.array(partition.membership)
-        n_found = len(set(domains))
-        print(f"  Found {n_found} domains")
-    
-    elif method == 'kmeans':
-        if n_domains is None:
-            raise ValueError("n_domains required for kmeans")
-        
-        kmeans = KMeans(n_clusters=n_domains, random_state=42)
-        domains = kmeans.fit_predict(X)
-        print(f"  Created {n_domains} domains")
-    
-    elif method == 'hierarchical':
-        if n_domains is None:
-            raise ValueError("n_domains required for hierarchical")
-        
-        clustering = AgglomerativeClustering(n_clusters=n_domains, linkage='ward')
-        domains = clustering.fit_predict(X)
-        print(f"  Created {n_domains} domains")
-    
-    elif method == 'dbscan':
-        # Estimate eps from graph
-        if graph.distances is not None:
-            edges = graph.to_edge_list()
-            eps = edges['distance'].quantile(0.5)
-        else:
-            eps = 1.0
-        
-        print(f"  Using eps={eps:.2f}")
-        
-        dbscan = DBSCAN(eps=eps, min_samples=5)
-        domains = dbscan.fit_predict(X)
-        
-        n_domains = len(set(domains)) - (1 if -1 in domains else 0)
-        n_noise = (domains == -1).sum()
-        print(f"  Found {n_domains} domains, {n_noise} noise points")
+        return {
+            'I': observed_I,
+            'expected': expected_I,
+            'zscore': zscore,
+            'pvalue': pvalue,
+        }
     
     else:
-        raise ValueError(f"Unknown method: {method}")
-    
-    # Convert to series
-    domain_series = pd.Series(domains, index=sp.cell_index, name='spatial_domain')
-    
-    # Summary
-    print(f"\n{'='*70}")
-    print(f"Domain Summary:")
-    print(domain_series.value_counts().sort_index())
-    print(f"{'='*70}\n")
-    
-    return domain_series
+        # --- Local Moran's I (LISA) ---
+        # Ii = (zi / var) * sum_j(wij * zj)
+        Wz = np.array(W.dot(z)).flatten()
+        variance = denom / n
+        local_i = (z / variance) * Wz
+        
+        # Permutation for each cell
+        perm_local = np.empty((n_permutations, n))
+        for i in range(n_permutations):
+            z_perm = rng.permutation(z)
+            Wz_perm = np.array(W.dot(z_perm)).flatten()
+            perm_local[i] = (z / variance) * Wz_perm
+        
+        perm_mean = perm_local.mean(axis=0)
+        perm_std = perm_local.std(axis=0)
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+            zscores = (local_i - perm_mean) / perm_std
+            zscores = np.nan_to_num(zscores, nan=0.0)
+        
+        # Per-cell p-values
+        pvalues = np.zeros(n)
+        for c in range(n):
+            extreme = np.sum(
+                np.abs(perm_local[:, c] - perm_mean[c])
+                >= np.abs(local_i[c] - perm_mean[c])
+            )
+            pvalues[c] = (extreme + 1) / (n_permutations + 1)
+        
+        # Classify spots: HH, LL, HL, LH
+        spot_type = _classify_lisa(z, Wz, pvalues, alpha=0.05)
+        
+        result = pd.DataFrame({
+            'local_i': local_i,
+            'zscore': zscores,
+            'pvalue': pvalues,
+            'spot_type': spot_type,
+        }, index=graph.cell_ids)
+        
+        counts = result['spot_type'].value_counts()
+        print(f"  ✓ Local Moran's I (LISA): "
+              f"HH={counts.get('HH', 0)}, LL={counts.get('LL', 0)}, "
+              f"HL={counts.get('HL', 0)}, LH={counts.get('LH', 0)}, "
+              f"ns={counts.get('ns', 0)}")
+        
+        return result
 
 
-def find_spatially_variable_genes(sp: 'spatioloji',
-                                  graph: 'SpatialGraph',
-                                  n_genes: Optional[int] = None,
-                                  method: str = 'moran',
-                                  layer: Optional[str] = None,
-                                  permutations: int = 99,
-                                  fdr_threshold: float = 0.05) -> pd.DataFrame:
+def _classify_lisa(
+    z: np.ndarray,
+    Wz: np.ndarray,
+    pvalues: np.ndarray,
+    alpha: float = 0.05,
+) -> np.ndarray:
     """
-    Identify genes with spatial expression patterns.
+    Classify LISA results into spot types.
     
-    Tests all (or top variable) genes for spatial autocorrelation to
-    find genes with non-random spatial patterns.
+    HH: high value, high neighbors (hot cluster)
+    LL: low value, low neighbors (cold cluster)
+    HL: high value, low neighbors (high outlier)
+    LH: low value, high neighbors (low outlier)
+    ns: not significant
+    """
+    spot_type = np.full(len(z), 'ns', dtype=object)
+    sig = pvalues < alpha
+    
+    spot_type[(z > 0) & (Wz > 0) & sig] = 'HH'
+    spot_type[(z < 0) & (Wz < 0) & sig] = 'LL'
+    spot_type[(z > 0) & (Wz < 0) & sig] = 'HL'
+    spot_type[(z < 0) & (Wz > 0) & sig] = 'LH'
+    
+    return spot_type
+
+
+def _row_normalize(W: sparse.spmatrix) -> sparse.csr_matrix:
+    """Row-normalize a sparse weight matrix."""
+    W = W.astype(np.float64).tocsr()
+    row_sums = np.array(W.sum(axis=1)).flatten()
+    row_sums[row_sums == 0] = 1  # avoid division by zero
+    diag_inv = sparse.diags(1.0 / row_sums)
+    return diag_inv.dot(W)
+
+
+def _resolve_values(
+    sj: 'spatioloji',
+    values: Union[str, np.ndarray],
+) -> np.ndarray:
+    """Resolve values: gene name -> expression array, or pass through."""
+    if isinstance(values, str):
+        # Look up gene expression
+        if values in sj.cell_meta.columns:
+            return sj.cell_meta[values].values.astype(np.float64)
+        else:
+            expr = sj.get_expression(gene_names=values)
+            return expr.flatten().astype(np.float64)
+    return np.asarray(values, dtype=np.float64)
+
+def getis_ord_gi(
+    sj: 'spatioloji',
+    graph: PointSpatialGraph,
+    values: Union[str, np.ndarray],
+    star: bool = True,
+    permutation_pvalue: bool = False,
+    n_permutations: int = 999,
+    seed: Optional[int] = None,
+    store: bool = True,
+) -> pd.DataFrame:
+    """
+    Compute Getis-Ord Gi(*) hotspot statistic.
+    
+    Identifies spatial clusters of HIGH values (hotspots) and
+    LOW values (coldspots). Unlike Moran's I, Gi* distinguishes
+    the direction of clustering.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph
-    n_genes : int, optional
-        Test top N most variable genes. If None, tests all genes.
-    method : str, default='moran'
-        'moran' or 'geary'
+    sj : spatioloji
+        spatioloji object.
+    graph : PointSpatialGraph
+        Pre-built spatial graph.
+    values : str or np.ndarray
+        Gene name or pre-computed array.
+    star : bool
+        If True, use Gi* (includes self-weight). Recommended.
+    permutation_pvalue : bool
+        If True, compute p-values via permutation instead of
+        analytical z-score. More robust for non-normal data.
+    n_permutations : int
+        Number of permutations (if permutation_pvalue=True).
+    seed : int, optional
+        Random seed.
+    store : bool
+        If True, add results to sj.cell_meta.
+    
+    Returns
+    -------
+    pd.DataFrame with columns:
+        'gi'       : Gi(*) statistic per cell
+        'zscore'   : z-score (analytical or permutation-based)
+        'pvalue'   : p-value
+        'spot_type': 'hotspot', 'coldspot', or 'ns'
+    """
+    rng = np.random.default_rng(seed)
+    
+    x = _resolve_values(sj, values)
+    n = len(x)
+    
+    # Prepare weight matrix
+    W = graph.adjacency.astype(np.float64).tocsr()
+    
+    if star:
+        # Gi*: add self-connections (diagonal = 1)
+        W = W + sparse.eye(n, format='csr')
+    
+    # Global statistics
+    x_mean = x.mean()
+    x_var = x.var()  # population variance
+    S = np.sqrt(x_var)
+    
+    if S == 0:
+        print("  ⚠ All values identical — Gi* undefined")
+        return pd.DataFrame(
+            {'gi': 0, 'zscore': 0, 'pvalue': 1, 'spot_type': 'ns'},
+            index=graph.cell_ids,
+        )
+    
+    # Per-cell weight sums
+    Wi = np.array(W.sum(axis=1)).flatten()       # Σⱼ wᵢⱼ
+    Wi2 = np.array(W.multiply(W).sum(axis=1)).flatten()  # Σⱼ wᵢⱼ²
+    
+    # Numerator: Σⱼ wᵢⱼ xⱼ  -  x̄ Σⱼ wᵢⱼ
+    Wx = np.array(W.dot(x)).flatten()
+    numerator = Wx - x_mean * Wi
+    
+    # Denominator: S * sqrt((N * Σⱼ wᵢⱼ² - (Σⱼ wᵢⱼ)²) / (N - 1))
+    denominator = S * np.sqrt((n * Wi2 - Wi ** 2) / (n - 1))
+    
+    # Gi statistic (already a z-score under analytical null)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        gi = numerator / denominator
+        gi = np.nan_to_num(gi, nan=0.0)
+    
+    # P-values
+    if not permutation_pvalue:
+        # Analytical: Gi is approximately standard normal
+        from scipy.stats import norm
+        pvalues = 2 * norm.sf(np.abs(gi))  # two-sided
+        zscores = gi
+    else:
+        # Permutation-based
+        perm_gi = np.empty((n_permutations, n))
+        for i in range(n_permutations):
+            x_perm = rng.permutation(x)
+            Wx_perm = np.array(W.dot(x_perm)).flatten()
+            num_perm = Wx_perm - x_perm.mean() * Wi
+            S_perm = np.sqrt(x_perm.var())
+            denom_perm = S_perm * np.sqrt((n * Wi2 - Wi ** 2) / (n - 1))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                perm_gi[i] = np.nan_to_num(num_perm / denom_perm, nan=0.0)
+        
+        perm_mean = perm_gi.mean(axis=0)
+        perm_std = perm_gi.std(axis=0)
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+            zscores = (gi - perm_mean) / perm_std
+            zscores = np.nan_to_num(zscores, nan=0.0)
+        
+        pvalues = np.zeros(n)
+        for c in range(n):
+            extreme = np.sum(
+                np.abs(perm_gi[:, c] - perm_mean[c])
+                >= np.abs(gi[c] - perm_mean[c])
+            )
+            pvalues[c] = (extreme + 1) / (n_permutations + 1)
+    
+    # Classify spots
+    spot_type = np.full(n, 'ns', dtype=object)
+    sig = pvalues < 0.05
+    spot_type[(gi > 0) & sig] = 'hotspot'
+    spot_type[(gi < 0) & sig] = 'coldspot'
+    
+    result = pd.DataFrame({
+        'gi': gi,
+        'zscore': zscores,
+        'pvalue': pvalues,
+        'spot_type': spot_type,
+    }, index=graph.cell_ids)
+    
+    # Store
+    if store:
+        label = values if isinstance(values, str) else 'custom'
+        sj.cell_meta[f'gi_{label}'] = gi
+        sj.cell_meta[f'gi_{label}_spot'] = spot_type
+    
+    # Report
+    n_hot = (spot_type == 'hotspot').sum()
+    n_cold = (spot_type == 'coldspot').sum()
+    label = values if isinstance(values, str) else 'custom'
+    print(f"  ✓ Getis-Ord Gi{'*' if star else ''} ({label}): "
+          f"{n_hot} hotspot cells, {n_cold} coldspot cells")
+    
+    return result
+
+def co_occurrence(
+    sj: 'spatioloji',
+    cell_type_col: str,
+    coord_type: str = 'global',
+    intervals: Optional[np.ndarray] = None,
+    n_intervals: int = 10,
+    max_distance: Optional[float] = None,
+    n_permutations: int = 100,
+    seed: Optional[int] = None,
+    type_pairs: Optional[List[tuple]] = None,
+) -> dict:
+    """
+    Compute distance-resolved co-occurrence between cell types.
+    
+    For each distance interval, measures whether cell type pairs 
+    appear together more or less than expected by chance.
+    
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    cell_type_col : str
+        Column in sj.cell_meta with cell type labels.
+    coord_type : str
+        'global' or 'local'.
+    intervals : np.ndarray, optional
+        Distance bin edges. If None, auto-computed from data.
+    n_intervals : int
+        Number of distance bins (if intervals is None).
+    max_distance : float, optional
+        Maximum distance to consider. If None, uses 25th percentile
+        of all pairwise distances (keeps computation feasible).
+    n_permutations : int
+        Number of label shuffles for null distribution.
+    seed : int, optional
+        Random seed.
+    type_pairs : list of tuples, optional
+        Specific (typeA, typeB) pairs to compute. If None, all pairs.
+    
+    Returns
+    -------
+    dict with keys:
+        'score'     : pd.DataFrame, co-occurrence score per pair per interval
+                      (observed/expected ratio). Columns = interval midpoints.
+        'observed'  : pd.DataFrame, observed pair counts
+        'expected'  : pd.DataFrame, mean expected pair counts
+        'intervals' : np.ndarray, distance bin edges
+        'midpoints' : np.ndarray, distance bin centers
+    """
+    from scipy.spatial import KDTree
+    
+    rng = np.random.default_rng(seed)
+    
+    if cell_type_col not in sj.cell_meta.columns:
+        raise ValueError(f"'{cell_type_col}' not found in cell_meta")
+    
+    coords = sj.get_spatial_coords(coord_type=coord_type)
+    labels = sj.cell_meta[cell_type_col].values
+    types = np.unique(labels)
+    n_cells = len(labels)
+    
+    # Build KDTree
+    tree = KDTree(coords)
+    
+    # Auto-compute distance intervals
+    if intervals is None:
+        if max_distance is None:
+            # Sample pairwise distances to estimate range
+            sample_idx = rng.choice(n_cells, size=min(1000, n_cells), replace=False)
+            sample_dists = tree.query(coords[sample_idx], k=20)[0][:, 1:]
+            max_distance = np.percentile(sample_dists, 75)
+        
+        intervals = np.linspace(0, max_distance, n_intervals + 1)
+    
+    midpoints = (intervals[:-1] + intervals[1:]) / 2
+    n_bins = len(midpoints)
+    
+    # Determine type pairs
+    if type_pairs is None:
+        type_pairs = [
+            (types[i], types[j])
+            for i in range(len(types))
+            for j in range(i, len(types))
+        ]
+    
+    # --- Helper: count pairs per distance bin for given labels ---
+    def _count_pairs(labs):
+        pair_counts = {pair: np.zeros(n_bins) for pair in type_pairs}
+        
+        for bin_idx in range(n_bins):
+            r_inner = intervals[bin_idx]
+            r_outer = intervals[bin_idx + 1]
+            
+            # Find all pairs within r_outer
+            pairs_outer = tree.query_pairs(r_outer)
+            if r_inner > 0:
+                pairs_inner = tree.query_pairs(r_inner)
+                pairs_in_bin = pairs_outer - pairs_inner
+            else:
+                pairs_in_bin = pairs_outer
+            
+            # Count by type pair
+            for i, j in pairs_in_bin:
+                ti, tj = labs[i], labs[j]
+                # Check both orders since pairs are unordered
+                if (ti, tj) in pair_counts:
+                    pair_counts[(ti, tj)] += np.zeros(n_bins)
+                    pair_counts[(ti, tj)][bin_idx] += 1
+                elif (tj, ti) in pair_counts:
+                    pair_counts[(tj, ti)][bin_idx] += 1
+        
+        return pair_counts
+    
+    # Optimized: precompute pairs per bin, then just look up labels
+    print(f"  Precomputing distance pairs across {n_bins} bins...")
+    bin_pairs = []
+    for bin_idx in range(n_bins):
+        r_inner = intervals[bin_idx]
+        r_outer = intervals[bin_idx + 1]
+        pairs_outer = tree.query_pairs(r_outer)
+        if r_inner > 0:
+            pairs_inner = tree.query_pairs(r_inner)
+            pairs_in_bin = pairs_outer - pairs_inner
+        else:
+            pairs_in_bin = pairs_outer
+        bin_pairs.append(list(pairs_in_bin))
+    
+    def _count_from_precomputed(labs):
+        pair_counts = {pair: np.zeros(n_bins) for pair in type_pairs}
+        for bin_idx in range(n_bins):
+            for i, j in bin_pairs[bin_idx]:
+                ti, tj = labs[i], labs[j]
+                if (ti, tj) in pair_counts:
+                    pair_counts[(ti, tj)][bin_idx] += 1
+                elif (tj, ti) in pair_counts:
+                    pair_counts[(tj, ti)][bin_idx] += 1
+        return pair_counts
+    
+    # Observed counts
+    observed = _count_from_precomputed(labels)
+    
+    # Permutations
+    print(f"  Running {n_permutations} permutations...")
+    perm_counts = {pair: np.zeros((n_permutations, n_bins)) for pair in type_pairs}
+    
+    for p in range(n_permutations):
+        shuffled = rng.permutation(labels)
+        perm_result = _count_from_precomputed(shuffled)
+        for pair in type_pairs:
+            perm_counts[pair][p] = perm_result[pair]
+    
+    # Compute scores: observed / expected
+    expected = {pair: perm_counts[pair].mean(axis=0) for pair in type_pairs}
+    
+    scores = {}
+    for pair in type_pairs:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ratio = observed[pair] / expected[pair]
+            ratio = np.nan_to_num(ratio, nan=1.0, posinf=1.0)
+        scores[pair] = ratio
+    
+    # Build DataFrames
+    pair_labels = [f"{a}-{b}" for a, b in type_pairs]
+    
+    score_df = pd.DataFrame(
+        [scores[p] for p in type_pairs],
+        index=pair_labels,
+        columns=[f"{m:.1f}" for m in midpoints],
+    )
+    observed_df = pd.DataFrame(
+        [observed[p] for p in type_pairs],
+        index=pair_labels,
+        columns=[f"{m:.1f}" for m in midpoints],
+    )
+    expected_df = pd.DataFrame(
+        [expected[p] for p in type_pairs],
+        index=pair_labels,
+        columns=[f"{m:.1f}" for m in midpoints],
+    )
+    
+    # Report
+    print(f"  ✓ Co-occurrence: {len(type_pairs)} pairs × {n_bins} distance bins")
+    for pair, pair_label in zip(type_pairs, pair_labels):
+        mean_score = scores[pair].mean()
+        trend = "attract" if mean_score > 1.1 else "avoid" if mean_score < 0.9 else "neutral"
+        print(f"    {pair_label}: mean score={mean_score:.2f} ({trend})")
+    
+    return {
+        'score': score_df,
+        'observed': observed_df,
+        'expected': expected_df,
+        'intervals': intervals,
+        'midpoints': midpoints,
+    }
+
+def spatially_variable_genes(
+    sj: 'spatioloji',
+    graph: PointSpatialGraph,
+    genes: Optional[List[str]] = None,
+    layer: Optional[str] = None,
+    n_top: int = 50,
+    fdr_threshold: float = 0.05,
+    method: str = 'morans_i',
+) -> pd.DataFrame:
+    """
+    Screen genes for spatial variability.
+    
+    Ranks all genes by spatial autocorrelation using an analytical
+    (fast) approximation. Use for discovery, then validate top hits
+    with full permutation tests via morans_i().
+    
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    graph : PointSpatialGraph
+        Pre-built spatial graph.
+    genes : list of str, optional
+        Genes to test. If None, tests all genes.
     layer : str, optional
-        Expression layer to use
-    permutations : int, default=99
-        Permutations for significance testing
-    fdr_threshold : float, default=0.05
-        FDR threshold for significance
+        Expression layer to use. If None, uses raw expression.
+    n_top : int
+        Number of top genes to report in summary.
+    fdr_threshold : float
+        FDR cutoff for significance.
+    method : str
+        'morans_i' (only option currently; extensible).
     
     Returns
     -------
-    pd.DataFrame
-        Spatially variable genes with columns:
-        - statistic: Moran's I or Geary's C
-        - p_value: P-value from permutation test
-        - q_value: FDR-corrected p-value
-        - significant: Boolean (q < fdr_threshold)
-        - variance: Gene variance
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> 
-    >>> # Find top 500 most variable genes with spatial patterns
-    >>> svg = sj.spatial.point.find_spatially_variable_genes(
-    ...     sp, graph, n_genes=500, permutations=99
-    ... )
-    >>> 
-    >>> # Get significant spatially variable genes
-    >>> sig_svg = svg[svg['significant']].sort_values('statistic', ascending=False)
-    >>> print(f"Found {len(sig_svg)} spatially variable genes")
-    >>> 
-    >>> # Top spatially variable genes
-    >>> top_svg = sig_svg.head(20).index.tolist()
+    pd.DataFrame with columns:
+        'I'       : Moran's I statistic
+        'expected': expected I under randomness
+        'variance': analytical variance
+        'zscore'  : z-score (analytical)
+        'pvalue'  : p-value (analytical, two-sided)
+        'fdr'     : Benjamini-Hochberg adjusted p-value
+    Sorted by I descending (most spatially variable first).
     """
-    from .statistics import test_spatial_autocorrelation_genes
-    from statsmodels.stats.multitest import multipletests
+    from scipy.stats import norm
     
-    print(f"\n{'='*70}")
-    print(f"Finding Spatially Variable Genes")
-    print(f"{'='*70}")
+    if method != 'morans_i':
+        raise ValueError(f"Unknown method: {method}. Use 'morans_i'.")
     
-    # Get expression data
+    # Resolve genes
+    if genes is None:
+        genes = sj.gene_index.tolist()
+    
+    n_genes = len(genes)
+    n_cells = sj.n_cells
+    
+    print(f"  Screening {n_genes} genes for spatial variability...")
+    
+    # Get expression matrix (cells x genes)
     if layer is not None:
-        expr = sp.get_layer(layer)
+        expr = sj.get_layer(layer)
+        gene_indices = sj._get_gene_indices(genes)
+        if sparse.issparse(expr):
+            X = expr[:, gene_indices].toarray()
+        else:
+            X = expr[:, gene_indices]
     else:
-        expr = sp.expression.get_dense()
+        X = sj.get_expression(gene_names=genes)  # (n_cells, n_genes)
     
-    # Select genes
-    if n_genes is not None:
-        # Get top variable genes
-        variances = expr.var(axis=0)
-        top_indices = np.argsort(variances)[-n_genes:]
-        gene_names = sp.gene_index[top_indices].tolist()
-        print(f"Testing top {n_genes} most variable genes")
-    else:
-        gene_names = sp.gene_index.tolist()
-        print(f"Testing all {len(gene_names)} genes")
+    X = X.astype(np.float64)
     
-    # Test for spatial autocorrelation
-    results = test_spatial_autocorrelation_genes(
-        sp, graph, gene_names=gene_names, layer=layer,
-        permutations=permutations, method=method
+    # Row-normalize weight matrix
+    W = _row_normalize(graph.adjacency)
+    W_sum = W.sum()
+    
+    # Mean-center each gene
+    means = X.mean(axis=0)
+    Z = X - means  # (n_cells, n_genes)
+    
+    # Denominator: sum of squared deviations per gene
+    denom = (Z ** 2).sum(axis=0)  # (n_genes,)
+    
+    # Numerator: for each gene g, z_g.T @ W @ z_g
+    # Efficient: compute W @ Z first, then element-wise multiply with Z
+    WZ = W.dot(Z)  # (n_cells, n_genes) — sparse @ dense
+    numerator = (Z * WZ).sum(axis=0)  # (n_genes,) — diagonal of Z.T @ W @ Z
+    
+    # Global Moran's I per gene
+    with np.errstate(divide='ignore', invalid='ignore'):
+        I_values = (n_cells / W_sum) * numerator / denom
+        I_values = np.nan_to_num(I_values, nan=0.0)
+    
+    # Analytical expected value and variance
+    expected_I = -1.0 / (n_cells - 1)
+    
+    # Analytical variance (under normality assumption)
+    # Var(I) = (N^2 * S1 - N * S2 + 3 * W_sum^2) / 
+    #          ((N^2 - 1) * W_sum^2)  -  expected_I^2
+    # where S1 = 0.5 * sum((wij + wji)^2), S2 = sum((wi. + w.i)^2)
+    W_sym = W + W.T
+    S1 = 0.5 * W_sym.multiply(W_sym).sum()
+    
+    row_sums = np.array(W.sum(axis=1)).flatten()
+    col_sums = np.array(W.sum(axis=0)).flatten()
+    S2 = np.sum((row_sums + col_sums) ** 2)
+    
+    variance_I = (
+        (n_cells ** 2 * S1 - n_cells * S2 + 3 * W_sum ** 2)
+        / ((n_cells ** 2 - 1) * W_sum ** 2)
+        - expected_I ** 2
     )
+    variance_I = max(variance_I, 1e-10)  # avoid zero
     
-    # Add variance
-    gene_indices = sp._get_gene_indices(results.index.tolist())
-    results['variance'] = expr[:, gene_indices].var(axis=0)
+    # Z-scores and p-values
+    zscores = (I_values - expected_I) / np.sqrt(variance_I)
+    pvalues = 2 * norm.sf(np.abs(zscores))  # two-sided
     
-    # FDR correction
-    print(f"\nApplying FDR correction...")
-    _, q_values, _, _ = multipletests(
-        results['p_value'].values,
-        method='fdr_bh'
-    )
-    results['q_value'] = q_values
-    results['significant'] = q_values < fdr_threshold
+    # FDR correction (Benjamini-Hochberg)
+    fdr = _benjamini_hochberg(pvalues)
     
-    # Sort by statistic
-    results = results.sort_values('statistic', ascending=(method == 'geary'))
+    # Build result DataFrame
+    result = pd.DataFrame({
+        'I': I_values,
+        'expected': expected_I,
+        'variance': variance_I,
+        'zscore': zscores,
+        'pvalue': pvalues,
+        'fdr': fdr,
+    }, index=genes)
     
-    # Summary
-    n_sig = results['significant'].sum()
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Tested genes: {len(results)}")
-    print(f"  Significant (FDR < {fdr_threshold}): {n_sig} ({100*n_sig/len(results):.1f}%)")
-    print(f"\nTop 10 spatially variable genes:")
-    print(results.head(10)[['statistic', 'p_value', 'q_value']])
-    print(f"{'='*70}\n")
+    result = result.sort_values('I', ascending=False)
     
-    return results
+    # Report
+    n_sig = (result['fdr'] < fdr_threshold).sum()
+    print(f"  ✓ Spatially variable genes: {n_sig}/{n_genes} significant "
+          f"(FDR < {fdr_threshold})")
+    print(f"    Top {min(n_top, n_sig)} genes:")
+    
+    top = result.head(min(n_top, 10))
+    for gene_name, row in top.iterrows():
+        print(f"      {gene_name:>15s}: I={row['I']:.4f}, "
+              f"z={row['zscore']:.1f}, FDR={row['fdr']:.1e}")
+    
+    return result
 
 
-def detect_colocalization(sp: 'spatioloji',
-                         graph: 'SpatialGraph',
-                         group1: str,
-                         group2: Optional[str] = None,
-                         groupby: str = 'cell_type',
-                         method: str = 'neighborhood',
-                         permutations: int = 999) -> Dict:
+def _benjamini_hochberg(pvalues: np.ndarray) -> np.ndarray:
     """
-    Test for spatial co-localization between cell groups.
-    
-    Tests whether two groups of cells are spatially associated
-    (co-localized) or segregated. Uses global coordinates.
+    Benjamini-Hochberg FDR correction.
     
     Parameters
     ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph
-    group1 : str
-        First group (value in groupby column)
-    group2 : str, optional
-        Second group. If None, tests group1 vs all others.
-    groupby : str, default='cell_type'
-        Column in cell_meta containing groups
-    method : str, default='neighborhood'
-        Method to test:
-        - 'neighborhood': Neighborhood enrichment test
-        - 'distance': Distance-based test
-    permutations : int, default=999
-        Permutations for significance testing
+    pvalues : np.ndarray
+        Raw p-values.
     
     Returns
     -------
-    dict
-        Results with keys:
-        - observed: Observed co-localization metric
-        - expected: Expected under null
-        - enrichment: Observed / Expected
-        - p_value: P-value from permutation test
-        - interpretation: 'co-localized', 'segregated', or 'random'
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> 
-    >>> # Test if T cells and tumor cells co-localize
-    >>> result = sj.spatial.point.detect_colocalization(
-    ...     sp, graph, group1='T_cell', group2='Tumor', groupby='cell_type'
-    ... )
-    >>> print(f"Enrichment: {result['enrichment']:.2f}, p={result['p_value']:.3e}")
-    >>> 
-    >>> # Test all pairwise co-localizations
-    >>> cell_types = sp.cell_meta['cell_type'].unique()
-    >>> for ct1 in cell_types:
-    ...     for ct2 in cell_types:
-    ...         if ct1 < ct2:  # Avoid duplicates
-    ...             result = sj.spatial.point.detect_colocalization(
-    ...                 sp, graph, ct1, ct2
-    ...             )
-    ...             if result['p_value'] < 0.05:
-    ...                 print(f"{ct1} - {ct2}: {result['interpretation']}")
+    np.ndarray
+        Adjusted p-values (FDR).
     """
-    print(f"\n{'='*70}")
-    print(f"Testing Co-localization")
-    print(f"{'='*70}")
+    n = len(pvalues)
+    ranked_idx = np.argsort(pvalues)
+    ranked_pvalues = pvalues[ranked_idx]
     
-    if groupby not in sp.cell_meta.columns:
-        raise ValueError(f"Column '{groupby}' not found in cell_meta")
+    # BH formula: adjusted_p[i] = p[i] * n / rank[i]
+    fdr = np.zeros(n)
+    fdr[ranked_idx] = ranked_pvalues * n / np.arange(1, n + 1)
     
-    print(f"Group 1: {group1}")
-    print(f"Group 2: {group2 if group2 else 'all others'}")
-    print(f"Method: {method}")
+    # Enforce monotonicity (from largest to smallest rank)
+    fdr[ranked_idx] = np.minimum.accumulate(
+        fdr[ranked_idx][::-1]
+    )[::-1]
     
-    # Get group assignments
-    groups = sp.cell_meta[groupby].astype(str)
+    # Clip to [0, 1]
+    fdr = np.clip(fdr, 0, 1)
     
-    # Define group masks
-    mask1 = groups == group1
-    if group2 is not None:
-        mask2 = groups == group2
-    else:
-        mask2 = groups != group1
-    
-    n1 = mask1.sum()
-    n2 = mask2.sum()
-    
-    print(f"\nGroup sizes:")
-    print(f"  {group1}: {n1}")
-    print(f"  {group2 if group2 else 'others'}: {n2}")
-    
-    if method == 'neighborhood':
-        # Count group2 neighbors of group1 cells
-        observed = 0
-        total_neighbors = 0
-        
-        for cell_id in sp.cell_index[mask1]:
-            neighbors = graph.get_neighbor_ids(cell_id)
-            neighbor_groups = groups.loc[neighbors]
-            
-            if group2 is not None:
-                observed += (neighbor_groups == group2).sum()
-            else:
-                observed += (neighbor_groups != group1).sum()
-            
-            total_neighbors += len(neighbors)
-        
-        # Expected under random distribution
-        expected = total_neighbors * (n2 / len(groups))
-        
-        # Enrichment
-        enrichment = observed / expected if expected > 0 else 0
-        
-        print(f"\nNeighborhood enrichment:")
-        print(f"  Observed neighbors: {observed}")
-        print(f"  Expected neighbors: {expected:.1f}")
-        print(f"  Enrichment: {enrichment:.3f}")
-        
-        # Permutation test
-        print(f"\nPermutation test ({permutations} permutations)...")
-        
-        enrichments_perm = np.zeros(permutations)
-        
-        for perm in range(permutations):
-            if perm % 200 == 0 and perm > 0:
-                print(f"  Permutation {perm}/{permutations}...")
-            
-            # Permute group labels
-            groups_perm = np.random.permutation(groups.values)
-            
-            observed_perm = 0
-            for i, cell_id in enumerate(sp.cell_index[mask1]):
-                neighbors = graph.get_neighbor_ids(cell_id)
-                neighbor_indices = sp._get_cell_indices(neighbors)
-                neighbor_groups_perm = groups_perm[neighbor_indices]
-                
-                if group2 is not None:
-                    observed_perm += (neighbor_groups_perm == group2).sum()
-                else:
-                    observed_perm += (neighbor_groups_perm != group1).sum()
-            
-            enrichments_perm[perm] = observed_perm / expected if expected > 0 else 0
-        
-        # P-value
-        if enrichment > 1:
-            p_value = (np.sum(enrichments_perm >= enrichment) + 1) / (permutations + 1)
-            interpretation = 'co-localized' if p_value < 0.05 else 'random'
-        else:
-            p_value = (np.sum(enrichments_perm <= enrichment) + 1) / (permutations + 1)
-            interpretation = 'segregated' if p_value < 0.05 else 'random'
-    
-    elif method == 'distance':
-        # Average distance from group1 to nearest group2 cell
-        # ALWAYS USES GLOBAL COORDINATES
-        from .graph import compute_pairwise_distances
-        
-        cells1 = sp.cell_index[mask1].tolist()
-        cells2 = sp.cell_index[mask2].tolist()
-        
-        distances = compute_pairwise_distances(sp, cells1, cells2)
-        observed = distances.min(axis=1).mean()
-        
-        # Expected: average of all pairwise distances
-        all_distances = compute_pairwise_distances(sp, cells1, sp.cell_index.tolist())
-        expected = all_distances.min(axis=1).mean()
-        
-        enrichment = expected / observed if observed > 0 else 0
-        
-        print(f"\nDistance-based test:")
-        print(f"  Mean min distance: {observed:.2f}")
-        print(f"  Expected distance: {expected:.2f}")
-        print(f"  Enrichment: {enrichment:.3f}")
-        
-        # Permutation test
-        print(f"\nPermutation test ({permutations} permutations)...")
-        
-        distances_perm = np.zeros(permutations)
-        
-        for perm in range(permutations):
-            if perm % 50 == 0 and perm > 0:
-                print(f"  Permutation {perm}/{permutations}...")
-            
-            # Permute labels
-            groups_perm = np.random.permutation(groups.values)
-            mask2_perm = groups_perm != group1 if group2 is None else groups_perm == group2
-            
-            cells2_perm = sp.cell_index[mask2_perm].tolist()
-            
-            if len(cells2_perm) > 0:
-                distances_perm_mat = compute_pairwise_distances(sp, cells1, cells2_perm)
-                distances_perm[perm] = distances_perm_mat.min(axis=1).mean()
-            else:
-                distances_perm[perm] = np.inf
-        
-        # P-value
-        if observed < expected:
-            p_value = (np.sum(distances_perm <= observed) + 1) / (permutations + 1)
-            interpretation = 'co-localized' if p_value < 0.05 else 'random'
-        else:
-            p_value = (np.sum(distances_perm >= observed) + 1) / (permutations + 1)
-            interpretation = 'segregated' if p_value < 0.05 else 'random'
-    
-    else:
-        raise ValueError(f"Unknown method: {method}")
-    
-    results = {
-        'observed': float(observed),
-        'expected': float(expected),
-        'enrichment': float(enrichment),
-        'p_value': float(p_value),
-        'interpretation': interpretation,
-        'method': method,
-        'n_group1': int(n1),
-        'n_group2': int(n2)
-    }
-    
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Enrichment: {enrichment:.3f}")
-    print(f"  P-value: {p_value:.3e}")
-    print(f"  Interpretation: {interpretation.upper()}")
-    print(f"{'='*70}\n")
-    
-    return results
-
-
-def detect_spatial_gradients(sp: 'spatioloji',
-                            values: Union[str, pd.Series, np.ndarray],
-                            method: str = 'linear') -> Dict:
-    """
-    Detect spatial gradients in expression or features.
-    
-    Tests whether values show a directional trend across space
-    (e.g., expression increases from left to right).
-    Uses global coordinates.
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    values : str, pd.Series, or np.ndarray
-        Values to test for gradients
-    method : str, default='linear'
-        'linear' or 'polynomial'
-    
-    Returns
-    -------
-    dict
-        Results with keys:
-        - coef_x: Coefficient for x-direction
-        - coef_y: Coefficient for y-direction
-        - r2_x: R² for x-direction
-        - r2_y: R² for y-direction
-        - p_value_x: P-value for x
-        - p_value_y: P-value for y
-        - gradient_direction: Angle in degrees (0° = right, 90° = up)
-        - gradient_magnitude: Magnitude of gradient
-    
-    Examples
-    --------
-    >>> # Test gene for spatial gradient
-    >>> expr = sp.get_expression(gene_names='CD4', as_dataframe=True)['CD4']
-    >>> result = sj.spatial.point.detect_spatial_gradients(sp, expr)
-    >>> 
-    >>> if result['p_value_x'] < 0.05 or result['p_value_y'] < 0.05:
-    ...     print(f"Gradient detected: {result['gradient_direction']:.1f}°")
-    >>> 
-    >>> # Test all genes
-    >>> for gene in sp.gene_index[:100]:
-    ...     expr = sp.get_expression(gene_names=gene, as_dataframe=True)[gene]
-    ...     result = sj.spatial.point.detect_spatial_gradients(sp, expr)
-    ...     if result['p_value_x'] < 0.01:
-    ...         print(f"{gene}: gradient in x-direction")
-    """
-    print(f"\n{'='*70}")
-    print(f"Detecting Spatial Gradients")
-    print(f"{'='*70}")
-    
-    # Get values
-    if isinstance(values, str):
-        if values not in sp.cell_meta.columns:
-            raise ValueError(f"Column '{values}' not found in cell_meta")
-        values_array = sp.cell_meta[values].values
-        values_name = values
-    elif isinstance(values, pd.Series):
-        values_array = values.reindex(sp.cell_index).values
-        values_name = values.name or 'values'
-    elif isinstance(values, np.ndarray):
-        values_array = values
-        values_name = 'values'
-    else:
-        raise TypeError("values must be str, pd.Series, or np.ndarray")
-    
-    print(f"Variable: {values_name}")
-    print(f"Method: {method}")
-    
-    # Get coordinates - ALWAYS GLOBAL
-    coords = sp.get_spatial_coords(coord_type='global')
-    x = coords[:, 0]
-    y = coords[:, 1]
-    
-    # Remove NaN
-    valid = ~np.isnan(values_array)
-    x = x[valid]
-    y = y[valid]
-    values_array = values_array[valid]
-    
-    # Fit linear models
-    from sklearn.linear_model import LinearRegression
-    from sklearn.metrics import r2_score
-    
-    # X-direction
-    model_x = LinearRegression()
-    model_x.fit(x.reshape(-1, 1), values_array)
-    pred_x = model_x.predict(x.reshape(-1, 1))
-    
-    coef_x = model_x.coef_[0]
-    r2_x = r2_score(values_array, pred_x)
-    
-    # Test significance
-    n = len(values_array)
-    se_x = np.sqrt(np.sum((values_array - pred_x)**2) / (n - 2)) / np.sqrt(np.sum((x - x.mean())**2))
-    t_x = coef_x / se_x
-    p_value_x = 2 * (1 - stats.t.cdf(abs(t_x), n - 2))
-    
-    # Y-direction
-    model_y = LinearRegression()
-    model_y.fit(y.reshape(-1, 1), values_array)
-    pred_y = model_y.predict(y.reshape(-1, 1))
-    
-    coef_y = model_y.coef_[0]
-    r2_y = r2_score(values_array, pred_y)
-    
-    se_y = np.sqrt(np.sum((values_array - pred_y)**2) / (n - 2)) / np.sqrt(np.sum((y - y.mean())**2))
-    t_y = coef_y / se_y
-    p_value_y = 2 * (1 - stats.t.cdf(abs(t_y), n - 2))
-    
-    # Gradient direction and magnitude
-    gradient_direction = np.arctan2(coef_y, coef_x) * 180 / np.pi
-    if gradient_direction < 0:
-        gradient_direction += 360
-    
-    gradient_magnitude = np.sqrt(coef_x**2 + coef_y**2)
-    
-    results = {
-        'coef_x': float(coef_x),
-        'coef_y': float(coef_y),
-        'r2_x': float(r2_x),
-        'r2_y': float(r2_y),
-        'p_value_x': float(p_value_x),
-        'p_value_y': float(p_value_y),
-        'gradient_direction': float(gradient_direction),
-        'gradient_magnitude': float(gradient_magnitude),
-        'variable': values_name
-    }
-    
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  X-direction: coef={coef_x:.4f}, R²={r2_x:.3f}, p={p_value_x:.3e}")
-    print(f"  Y-direction: coef={coef_y:.4f}, R²={r2_y:.3f}, p={p_value_y:.3e}")
-    print(f"  Gradient direction: {gradient_direction:.1f}°")
-    print(f"  Gradient magnitude: {gradient_magnitude:.4f}")
-    
-    if p_value_x < 0.05 or p_value_y < 0.05:
-        print(f"  → Significant spatial gradient detected")
-    else:
-        print(f"  → No significant gradient")
-    
-    print(f"{'='*70}\n")
-    
-    return results
-
-
-def identify_hotspots(sp: 'spatioloji',
-                     graph: 'SpatialGraph',
-                     values: Union[str, pd.Series, np.ndarray],
-                     method: str = 'getis_ord',
-                     fdr_threshold: float = 0.05) -> pd.DataFrame:
-    """
-    Identify hotspots and coldspots (local clusters of high/low values).
-    
-    Uses Getis-Ord Gi* statistic to identify statistically significant
-    spatial clusters of high or low values.
-    
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object
-    graph : SpatialGraph
-        Spatial graph
-    values : str, pd.Series, or np.ndarray
-        Values to analyze
-    method : str, default='getis_ord'
-        'getis_ord' (Gi* statistic)
-    fdr_threshold : float, default=0.05
-        FDR threshold for significance
-    
-    Returns
-    -------
-    pd.DataFrame
-        Results with columns:
-        - Gi_star: Getis-Ord Gi* statistic
-        - p_value: P-value
-        - q_value: FDR-corrected p-value
-        - cluster_type: 'hotspot', 'coldspot', or 'not significant'
-        - significant: Boolean
-    
-    Examples
-    --------
-    >>> graph = sj.spatial.point.build_knn_graph(sp, k=10)
-    >>> expr = sp.get_expression(gene_names='CD4', as_dataframe=True)['CD4']
-    >>> 
-    >>> # Identify hotspots
-    >>> hotspots = sj.spatial.point.identify_hotspots(sp, graph, expr)
-    >>> 
-    >>> # Get significant hotspots
-    >>> sig_hotspots = hotspots[
-    ...     (hotspots['cluster_type'] == 'hotspot') & 
-    ...     (hotspots['significant'])
-    ... ].index
-    >>> 
-    >>> sp.cell_meta['is_hotspot'] = sp.cell_index.isin(sig_hotspots)
-    """
-    from statsmodels.stats.multitest import multipletests
-    
-    print(f"\n{'='*70}")
-    print(f"Identifying Hotspots/Coldspots")
-    print(f"{'='*70}")
-    
-    # Get values
-    if isinstance(values, str):
-        if values not in sp.cell_meta.columns:
-            raise ValueError(f"Column '{values}' not found in cell_meta")
-        values_array = sp.cell_meta[values].values
-        values_name = values
-    elif isinstance(values, pd.Series):
-        values_array = values.reindex(sp.cell_index).values
-        values_name = values.name or 'values'
-    elif isinstance(values, np.ndarray):
-        values_array = values
-        values_name = 'values'
-    else:
-        raise TypeError("values must be str, pd.Series, or np.ndarray")
-    
-    print(f"Variable: {values_name}")
-    print(f"Method: {method}")
-    
-    # Handle NaN
-    values_array = np.where(np.isnan(values_array), np.nanmean(values_array), values_array)
-    
-    n = len(values_array)
-    
-    # Get adjacency matrix
-    W = graph.adjacency.toarray()
-    
-    # Compute Getis-Ord Gi*
-    print(f"\nComputing Gi* for {n:,} cells...")
-    
-    Gi_star = np.zeros(n)
-    p_values = np.zeros(n)
-    
-    x_mean = values_array.mean()
-    x_std = values_array.std()
-    
-    for i in range(n):
-        if i % 5000 == 0 and i > 0:
-            print(f"  Cell {i:,}/{n:,}...")
-        
-        # Get neighbors (including self for Gi*)
-        w_i = W[i, :]
-        w_i[i] = 1.0  # Include self
-        
-        w_sum = w_i.sum()
-        
-        if w_sum == 0:
-            continue
-        
-        # Compute Gi*
-        numerator = np.sum(w_i * values_array) - x_mean * w_sum
-        denominator = x_std * np.sqrt((n * np.sum(w_i**2) - w_sum**2) / (n - 1))
-        
-        if denominator > 0:
-            Gi_star[i] = numerator / denominator
-            
-            # P-value (two-tailed)
-            p_values[i] = 2 * (1 - stats.norm.cdf(abs(Gi_star[i])))
-        else:
-            p_values[i] = 1.0
-    
-    # FDR correction
-    print(f"\nApplying FDR correction...")
-    _, q_values, _, _ = multipletests(p_values, method='fdr_bh')
-    
-    # Classify clusters
-    cluster_types = np.array(['not significant'] * n, dtype=object)
-    significant = q_values < fdr_threshold
-    
-    cluster_types[(Gi_star > 0) & significant] = 'hotspot'
-    cluster_types[(Gi_star < 0) & significant] = 'coldspot'
-    
-    # Create results DataFrame
-    results = pd.DataFrame({
-        'Gi_star': Gi_star,
-        'p_value': p_values,
-        'q_value': q_values,
-        'cluster_type': cluster_types,
-        'significant': significant
-    }, index=sp.cell_index)
-    
-    # Summary
-    n_hotspots = (cluster_types == 'hotspot').sum()
-    n_coldspots = (cluster_types == 'coldspot').sum()
-    
-    print(f"\n{'='*70}")
-    print(f"Results:")
-    print(f"  Hotspots: {n_hotspots} ({100*n_hotspots/n:.1f}%)")
-    print(f"  Coldspots: {n_coldspots} ({100*n_coldspots/n:.1f}%)")
-    print(f"  Not significant: {n - n_hotspots - n_coldspots}")
-    print(f"{'='*70}\n")
-    
-    return results
+    return fdr
