@@ -1170,6 +1170,7 @@ class spatioloji:
         cell_ids = []
         
         for cell_id, group in self._polygons.groupby(cell_id_col):
+            group = group.sort_index()  # ← this is the only change
             coords = list(zip(group[x_col], group[y_col]))
             geometries.append(Polygon(coords))
             cell_ids.append(cell_id)

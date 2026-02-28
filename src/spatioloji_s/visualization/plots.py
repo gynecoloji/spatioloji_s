@@ -1,11 +1,13 @@
+# plots.py
 """
-Spatial transcriptomics plotting functions for spatioloji objects.
+Spatial transcriptomics plotting functions.
 
-This module provides visualization functions for spatioloji data including:
-- FOV image stitching
-- Polygon-based plots (global and local)
-- Dot-based plots (global and local)
-- Support for both categorical and continuous features
+Public API:
+    stitch_fov_images          – stitch FOV images into one canvas
+    plot_global_polygon        – polygon plots in global coords
+    plot_local_polygon         – polygon plots per FOV (local coords)
+    plot_global_dots           – dot plots in global coords
+    plot_local_dots            – dot plots per FOV (local coords)
 """
 
 import os
@@ -13,93 +15,134 @@ import numpy as np
 import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
-from typing import List, Optional, Tuple, Dict, Union
 import matplotlib as mpl
 from matplotlib import colors, cm
 from matplotlib.patches import Patch
 from matplotlib.collections import PolyCollection
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def _calculate_global_offsets(spatioloji_obj):
-    """
-    Calculate global coordinate offsets from polygon data.
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object with polygon data
-    
-    Returns
-    -------
-    tuple
-        (min_x, min_y) offset values
-    """
-    if spatioloji_obj.polygons is None:
-        raise ValueError("No polygon data available for offset calculation")
-    
-    # Get global coordinate column names from config
-    x_col, y_col = spatioloji_obj.config.get_coordinate_columns('global')
-    
-    min_x = spatioloji_obj.polygons[x_col].min()
-    min_y = spatioloji_obj.polygons[y_col].min()
-    
-    return min_x, min_y
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 
-def _get_feature_data(spatioloji_obj, feature, feature_df=None, feature_column=None):
+# =============================================================================
+# SECTION 1 — PRIVATE HELPERS
+# =============================================================================
+
+def _get_feature_data(sj_obj, feature: str,
+                      feature_df=None, feature_column=None) -> pd.DataFrame:
     """
-    Extract feature data from various sources.
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object
-    feature : str
-        Feature name or "metadata"
-    feature_df : pd.DataFrame, optional
-        External feature dataframe
-    feature_column : str, optional
-        Column name when feature="metadata"
-    
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with 'cell' and feature columns
+    Return a two-column DataFrame: [cell_id_col, feature].
+
+    Three sources (in priority order):
+        1. External `feature_df`  — must contain cell_id and `feature` columns
+        2. feature="metadata"     — pulls `feature_column` from cell_meta
+        3. Default                — pulls `feature` directly from cell_meta
     """
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    
+    cell_id = sj_obj.config.cell_id_col
+
     if feature_df is not None:
-        # Using external feature dataframe
-        if cell_id_col not in feature_df.columns or feature not in feature_df.columns:
-            raise ValueError(f"feature_df must contain '{cell_id_col}' and '{feature}' columns")
-        return feature_df[[cell_id_col, feature]].copy()
-    
-    elif feature == "metadata" and feature_column is not None:
-        # Using a column from cell_meta
-        if feature_column not in spatioloji_obj.cell_meta.columns:
-            raise ValueError(f"Column '{feature_column}' not found in cell_meta")
-        
-        feature_subset = spatioloji_obj.cell_meta.reset_index()[[cell_id_col, feature_column]].copy()
-        feature_subset.rename(columns={feature_column: 'feature_value'}, inplace=True)
-        return feature_subset
-    
-    else:
-        # Using cell_meta directly
-        if feature not in spatioloji_obj.cell_meta.columns:
-            raise ValueError(f"Feature '{feature}' not found in cell_meta")
-        
-        feature_subset = spatioloji_obj.cell_meta.reset_index()[[cell_id_col, feature]].copy()
-        return feature_subset
+        if cell_id not in feature_df.columns or feature not in feature_df.columns:
+            raise ValueError(f"feature_df must contain '{cell_id}' and '{feature}' columns")
+        return feature_df[[cell_id, feature]].copy()
 
-# ============================================================================
-# FOV IMAGE STITCHING
-# ============================================================================
+    meta = sj_obj.cell_meta.reset_index()
+
+    if feature == "metadata":
+        if feature_column is None or feature_column not in meta.columns:
+            raise ValueError(f"feature_column='{feature_column}' not found in cell_meta")
+        return meta[[cell_id, feature_column]].rename(columns={feature_column: feature_column})
+
+    if feature not in meta.columns:
+        raise ValueError(f"Feature '{feature}' not found in cell_meta")
+    return meta[[cell_id, feature]].copy()
+
+
+def _build_color_mapping(series: pd.Series,
+                         kind: Literal['categorical', 'continuous'],
+                         colormap: str = 'viridis',
+                         color_map: Optional[Dict] = None,
+                         vmin=None, vmax=None):
+    """
+    Build everything needed to color-code a feature series.
+
+    Returns
+    -------
+    For categorical:
+        color_lookup : Dict[category → RGB tuple]
+        legend_handles : List[Patch]
+        norm=None, cmap=None
+
+    For continuous:
+        color_lookup : None   (colors applied via norm+cmap directly)
+        legend_handles : None
+        norm : Normalize
+        cmap : colormap object
+    """
+    if kind == 'categorical':
+        # Auto-convert if not already categorical
+        if not pd.api.types.is_categorical_dtype(series):
+            n = series.nunique()
+            if n > 20:
+                raise ValueError(f"Too many categories ({n}) for categorical plot. Use continuous instead.")
+            series = series.astype('category')
+
+        cats = series.cat.categories
+        palette = plt.cm.tab10.colors
+
+        # Use provided color_map or auto-assign
+        if color_map is not None:
+            lookup = {str(k): v for k, v in color_map.items()}
+        else:
+            lookup = {str(cat): palette[i % len(palette)] for i, cat in enumerate(cats)}
+
+        handles = [Patch(facecolor=v, label=k) for k, v in lookup.items()]
+        return lookup, handles, None, None
+
+    else:  # continuous
+        vmin = vmin if vmin is not None else series.min()
+        vmax = vmax if vmax is not None else series.max()
+        norm = colors.Normalize(vmin=vmin, vmax=vmax)
+        cmap = cm.get_cmap(colormap)
+        return None, None, norm, cmap
+
+
+def _setup_grid(n_plots: int,
+                grid_layout: Optional[Tuple[int, int]],
+                fig_w: int, fig_h: int):
+    """
+    Create a figure + flattened axes array for multi-FOV grid plots.
+
+    Returns
+    -------
+    fig, axs (flattened np.ndarray)
+    """
+    if grid_layout is not None:
+        rows, cols = grid_layout
+    else:
+        cols = int(np.ceil(np.sqrt(n_plots)))
+        rows = int(np.ceil(n_plots / cols))
+
+    fig, axs = plt.subplots(rows, cols, figsize=(fig_w * cols, fig_h * rows))
+    axs = np.array(axs).flatten()
+    return fig, axs
+
+
+def _finalize(fig, save_dir: str, filename: str, dpi: int, show: bool):
+    """Save → show/close. Always called at the end of public plot functions."""
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, filename)
+    fig.savefig(path, dpi=dpi, bbox_inches='tight')
+    print(f"Saved → {path}")
+    if not show:
+        plt.close(fig)
+        return None
+    plt.close(fig)
+    return fig
+
+# =============================================================================
+# SECTION 2 — FOV IMAGE STITCHING
+# =============================================================================
 
 def stitch_fov_images(
-    spatioloji_obj,
+    sj_obj,
     fov_ids: Optional[List[Union[str, int]]] = None,
     flip_vertical: bool = True,
     save_path: Optional[str] = None,
@@ -107,2615 +150,998 @@ def stitch_fov_images(
     title: Optional[str] = None,
     figsize: Tuple[int, int] = (12, 12),
     dpi: int = 300,
-    verbose: bool = True
+    verbose: bool = True,
 ) -> Tuple[np.ndarray, float, float]:
     """
-    Stitch multiple FOV images together based on their global positions.
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing FOV images and position data
-    fov_ids : List[Union[str, int]], optional
-        List of FOV IDs to include. If None, all available FOVs are used
-    flip_vertical : bool, optional
-        Whether to flip images vertically before stitching, by default True
-    save_path : str, optional
-        Path to save the stitched image. If None, image is not saved
-    show_plot : bool, optional
-        Whether to display the stitched image, by default True
-    title : str, optional
-        Title for the plot. If None, a default title is used
-    figsize : Tuple[int, int], optional
-        Figure size for plotting, by default (12, 12)
-    dpi : int, optional
-        Resolution for saving the image, by default 300
-    verbose : bool, optional
-        Whether to print progress information, by default True
-    
+    Stitch FOV images into one canvas using global FOV positions.
+
     Returns
     -------
-    Tuple[np.ndarray, float, float]
-        (stitched_image, min_x, min_y) - the stitched image and coordinate offsets
-    
-    Raises
-    ------
-    ValueError
-        If required data is missing or no valid FOVs are found
+    (stitched_image, min_x, min_y)
+        The numpy image array and the coordinate offsets used —
+        pass min_x / min_y to the plot_global_* functions so cell
+        coordinates align correctly with the canvas.
     """
-    # Check if spatioloji has required data
-    if spatioloji_obj.fov_positions is None:
-        raise ValueError("FOV positions data not found in spatioloji object")
-    
-    if spatioloji_obj.images.n_total == 0:
+    # ── Validation ────────────────────────────────────────────────────────────
+    if sj_obj.fov_positions is None:
+        raise ValueError("fov_positions not found in spatioloji object")
+    if sj_obj.images.n_total == 0:
         raise ValueError("No images found in spatioloji object")
-    
-    # If no FOV IDs provided, use all available FOVs with images
-    if fov_ids is None:
-        fov_ids = spatioloji_obj.images.fov_ids
-    
+
+    fov_ids = [str(f) for f in (fov_ids or sj_obj.images.fov_ids)]
     if not fov_ids:
-        raise ValueError("No FOV IDs provided")
-    
-    # Get FOV positions
-    fov_positions = spatioloji_obj.fov_positions.copy()
-    
-    # Check required columns
-    required_cols = ['x_global_px', 'y_global_px']
-    missing_cols = [col for col in required_cols if col not in fov_positions.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in fov_positions: {missing_cols}")
-    
-    # Convert FOV IDs to strings for consistency
-    fov_ids = [str(fid) for fid in fov_ids]
-    
-    # Filter FOV positions to only include selected FOVs
-    fov_positions = fov_positions[fov_positions.index.astype(str).isin(fov_ids)]
-    
-    if len(fov_positions) == 0:
-        raise ValueError(f"None of the selected FOVs {fov_ids} have position information")
-    
+        raise ValueError("No FOV IDs provided or available")
+
+    # ── FOV position table ────────────────────────────────────────────────────
+    positions = sj_obj.fov_positions.copy()
+    positions.index = positions.index.astype(str)
+
+    for col in ('x_global_px', 'y_global_px'):
+        if col not in positions.columns:
+            raise ValueError(f"Missing required column in fov_positions: '{col}'")
+
+    positions = positions.loc[positions.index.isin(fov_ids)]
+    if positions.empty:
+        raise ValueError(f"None of the selected FOVs {fov_ids} have position data")
+
     if verbose:
-        print(f"Stitching {len(fov_positions)} FOVs: {sorted(fov_positions.index.astype(str).tolist())}")
-    
-    # Get image dimensions from the first available image
-    first_fov = str(fov_positions.index[0])
-    first_image = spatioloji_obj.get_image(first_fov)
-    
-    if first_image is None:
-        raise ValueError(f"Could not find image for FOV {first_fov}")
-    
-    image_height, image_width = first_image.shape[:2]
+        print(f"Stitching {len(positions)} FOVs...")
+
+    # ── Detect single-FOV image size ──────────────────────────────────────────
+    first_img = sj_obj.get_image(str(positions.index[0]))
+    if first_img is None:
+        raise ValueError(f"Could not load image for FOV {positions.index[0]}")
+    img_h, img_w = first_img.shape[:2]
     if verbose:
-        print(f"Detected FOV image dimensions: {image_width} x {image_height}")
-    
-    # Calculate offsets
-    min_x = fov_positions["x_global_px"].min()
-    min_y = fov_positions["y_global_px"].min()
-    
-    fov_positions["x_offset"] = fov_positions["x_global_px"] - min_x
-    fov_positions["y_offset"] = fov_positions["y_global_px"] - min_y
-    
-    # Calculate stitched image dimensions
-    max_x = int(np.ceil((fov_positions["x_offset"].max() + image_width)))
-    max_y = int(np.ceil((fov_positions["y_offset"].max() + image_height)))
-    
+        print(f"FOV image size: {img_w} × {img_h} px")
+
+    # ── Build canvas ──────────────────────────────────────────────────────────
+    min_x = positions['x_global_px'].min()
+    min_y = positions['y_global_px'].min()
+    positions['x_off'] = (positions['x_global_px'] - min_x).astype(int)
+    positions['y_off'] = (positions['y_global_px'] - min_y).astype(int)
+
+    canvas_w = int(positions['x_off'].max() + img_w)
+    canvas_h = int(positions['y_off'].max() + img_h)
+    canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+
     if verbose:
-        print(f"Creating stitched image with dimensions: {max_x} x {max_y}")
-    
-    # Create empty canvas for the stitched image
-    stitched = np.zeros((max_y, max_x, 3), dtype=np.uint8)
-    
-    # Keep track of successfully added FOVs
-    added_fovs = []
-    
-    # Stitch images
-    for fov in fov_positions.index:
-        try:
-            # Get image from spatioloji object
-            img = spatioloji_obj.get_image(str(fov))
-            
-            if img is None:
-                if verbose:
-                    print(f"Could not find image for FOV {fov}")
-                continue
-            
-            # Flip image if required
-            img = cv2.flip(img, 0)
-            
-            # Calculate position in the stitched image
-            row = fov_positions.loc[fov]
-            x_offset = int(row["x_offset"])
-            y_offset = int(row["y_offset"])
-            
-            # Place image in the stitched canvas
-            h, w = img.shape[:2]
-            stitched[y_offset:y_offset+h, x_offset:x_offset+w] = img
-            
-            added_fovs.append(fov)
+        print(f"Canvas size: {canvas_w} × {canvas_h} px")
+
+    # ── Place each FOV ────────────────────────────────────────────────────────
+    placed = []
+    for fov, row in positions.iterrows():
+        img = sj_obj.get_image(str(fov))
+        if img is None:
             if verbose:
-                print(f"Added FOV {fov} at position ({x_offset}, {y_offset})")
-            
-        except Exception as e:
-            if verbose:
-                print(f"Error processing FOV {fov}: {e}")
+                print(f"  Skipping FOV {fov}: image not found")
             continue
-    
-    if not added_fovs:
-        print("Warning: No FOVs were successfully added to the stitched image.")
-        return None, None, None
-    
-    # Save stitched image if path is provided
-    if save_path:
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-            
-            plt.figure(figsize=figsize)
-            if flip_vertical:
-                display_img = cv2.flip(stitched, 0)
-            else:
-                display_img = stitched
-            plt.imshow(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB))
-            plt.axis("off")
-            
-            if title:
-                plt.title(title)
-            else:
-                plt.title(f"Stitched FOV Image ({len(added_fovs)} FOVs)")
-                
-            plt.tight_layout()
-            
-            if not save_path.endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.pdf')):
-                save_path = save_path + 'stitched_fov.png'
-                
-            plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-            plt.close()
-            if verbose:
-                print(f"Saved stitched image to {save_path}")
-                
-        except Exception as e:
-            print(f"Error saving stitched image: {e}")
-    
-    # Display the stitched image
-    if show_plot:
-        plt.figure(figsize=figsize)
+
         if flip_vertical:
-            display_img = cv2.flip(stitched, 0)
-        else:
-            display_img = stitched
-        plt.imshow(cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB))
-        plt.axis("off")
-        
-        if title:
-            plt.title(title)
-        else:
-            plt.title(f"Stitched FOV Image ({len(added_fovs)} FOVs)")
-            
+            img = cv2.flip(img, 0)
+
+        x0, y0 = int(row['x_off']), int(row['y_off'])
+        canvas[y0:y0 + img_h, x0:x0 + img_w] = img
+        placed.append(fov)
+        if verbose:
+            print(f"  Placed FOV {fov} at ({x0}, {y0})")
+
+    if not placed:
+        print("Warning: no FOVs were placed on canvas.")
+        return None, None, None
+
+    if verbose:
+        print(f"Done — {len(placed)} FOVs placed.")
+
+    # ── Display canvas ────────────────────────────────────────────────────────
+    display_img = cv2.flip(canvas, 0) if flip_vertical else canvas
+    rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+    plot_title = title or f"Stitched FOV Image ({len(placed)} FOVs)"
+
+    if save_path:
+        # Auto-add extension if missing
+        if not save_path.endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.pdf')):
+            save_path += '.png'
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.imshow(rgb)
+        ax.axis('off')
+        ax.set_title(plot_title)
+        plt.tight_layout()
+        fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        plt.close(fig)
+        if verbose:
+            print(f"Saved → {save_path}")
+
+    if show_plot:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.imshow(rgb)
+        ax.axis('off')
+        ax.set_title(plot_title)
         plt.tight_layout()
         plt.show()
-    
-    if verbose:
-        print(f"Stitched image created successfully with {len(added_fovs)} FOVs.")
-    
-    # Return stitched image and offsets
-    return stitched, min_x, min_y
 
-# ============================================================================
-# GLOBAL POLYGON PLOTTING
-# ============================================================================
-def plot_global_polygon_by_features(
-    spatioloji_obj,
+    return canvas, min_x, min_y
+
+# =============================================================================
+# SECTION 3 — POLYGON RENDERING ENGINE
+# =============================================================================
+
+def _render_polygons_on_ax(ax, df, x_col, y_col, cell_id_col, feature,
+                            kind, color_lookup, norm, cmap,
+                            edge_color, edge_width, alpha):
+    """
+    Draw all cell polygons onto a single Axes using PolyCollection (fast).
+
+    Parameters
+    ----------
+    ax          : matplotlib Axes
+    df          : DataFrame with columns [cell_id_col, x_col, y_col, feature]
+    kind        : 'categorical' or 'continuous'
+    color_lookup: Dict[category → color]  — used when kind='categorical'
+    norm, cmap  : used when kind='continuous'
+    """
+    polys, face_colors = [], []
+
+    for cell_id, grp in df.groupby(cell_id_col):
+        coords = grp[[x_col, y_col]].values
+        polys.append(coords)
+
+        if kind == 'categorical':
+            val = grp[feature].iloc[0]
+            face_colors.append(color_lookup.get(str(val), (0.5, 0.5, 0.5, 1.0)))
+        else:
+            val = grp[feature].iloc[0]
+            face_colors.append(cmap(norm(val)))
+
+    collection = PolyCollection(
+        polys,
+        facecolors=face_colors,
+        edgecolors=edge_color,
+        linewidths=edge_width,
+        alpha=alpha,
+    )
+    ax.add_collection(collection)
+    ax.autoscale_view()
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+
+# =============================================================================
+# SECTION 3 — PUBLIC POLYGON FUNCTIONS
+# =============================================================================
+
+def plot_global_polygon(
+    sj_obj,
     feature: str,
-    feature_df: Optional[pd.DataFrame] = None,
+    feature_df=None,
     feature_column: Optional[str] = None,
     background_img: Optional[np.ndarray] = None,
     min_x: Optional[float] = None,
     min_y: Optional[float] = None,
-    save_dir: str = "./",
+    # continuous params
     colormap: str = "viridis",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    # categorical params
+    color_map: Optional[Dict] = None,
+    legend_loc: str = 'center left',
+    legend_bbox: Tuple[float, float] = (1.01, 0.5),
+    # shared style
     edge_color: str = "none",
     edge_width: float = 0.01,
-    figsize: tuple = (12, 12),
-    fig_title: Optional[str] = None,
-    filename: Optional[str] = None,
-    dpi: int = 300,
-    show_plot: bool = True,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    alpha: float = 1.0
-) -> plt.Figure:
-    """
-    Plot cell polygons colored by a continuous feature value
-    in **cv2-aligned global pixel coordinates**.
-    
-    Optimized version using PolyCollection for fast rendering.
-    """
-
-    if spatioloji_obj.polygons is None:
-        raise ValueError("No polygon data available in spatioloji object")
-
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    x_col, y_col = spatioloji_obj.config.get_coordinate_columns("global")
-
-    polygon_df = spatioloji_obj.polygons.copy()
-
-    for col in [cell_id_col, x_col, y_col]:
-        if col not in polygon_df.columns:
-            raise ValueError(f"Missing required column: {col}")
-
-    # ─────────────────────────────────────────────
-    # Feature extraction
-    # ─────────────────────────────────────────────
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(
-            spatioloji_obj, feature, feature_df, feature_column
-        )
-        feature_subset.rename(columns={"feature_value": feature_column}, inplace=True)
-        feature = feature_column
-        feature_name = feature_column
-    else:
-        feature_subset = _get_feature_data(
-            spatioloji_obj, feature, feature_df, feature_column
-        )
-        feature_name = feature
-
-    # ─────────────────────────────────────────────
-    # Global offsets
-    # ─────────────────────────────────────────────
-    if min_x is None or min_y is None:
-        min_x, min_y = _calculate_global_offsets(spatioloji_obj)
-
-    polygon_df["x_plot"] = polygon_df[x_col] - min_x
-    polygon_df["y_plot"] = polygon_df[y_col] - min_y
-
-    merged_df = polygon_df.merge(feature_subset, on=cell_id_col)
-
-    if merged_df.empty:
-        raise ValueError("No matching cells found between polygons and features")
-
-    if not pd.api.types.is_numeric_dtype(merged_df[feature]):
-        raise ValueError(f"Feature '{feature}' must be numeric")
-
-    # ─────────────────────────────────────────────
-    # Color normalization
-    # ─────────────────────────────────────────────
-    vmin = merged_df[feature].min() if vmin is None else vmin
-    vmax = merged_df[feature].max() if vmax is None else vmax
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    cmap = cm.get_cmap(colormap)
-
-    # ─────────────────────────────────────────────
-    # Pre-compute all polygons and colors (FAST!)
-    # ─────────────────────────────────────────────
-    print(f"Preparing {merged_df[cell_id_col].nunique()} cell polygons...")
-    
-    polygons = []
-    polygon_colors = []
-    
-    for cell_id, group in merged_df.groupby(cell_id_col):
-        # Get coordinates for this cell
-        coords = group[["x_plot", "y_plot"]].values
-        polygons.append(coords)
-        
-        # Get color for this cell
-        value = group[feature].iloc[0]
-        color = cmap(norm(value))
-        polygon_colors.append(color)
-    
-    print(f"Creating PolyCollection...")
-
-    # ─────────────────────────────────────────────
-    # Figure
-    # ─────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=figsize)
-
-    if background_img is not None:
-        img_h, img_w = background_img.shape[:2]
-
-        ax.imshow(
-            cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB),
-            origin="upper"   # 🔑 cv2-aligned
-        )
-
-        ax.set_xlim(0, img_w)
-        ax.set_ylim(img_h, 0)  # 🔑 y increases downward
-    else:
-        ax.set_xlim(0, merged_df["x_plot"].max() * 1.05)
-        ax.set_ylim(merged_df["y_plot"].max() * 1.05, 0)
-
-    # ─────────────────────────────────────────────
-    # Draw ALL polygons at once using PolyCollection (FAST!)
-    # ─────────────────────────────────────────────
-    poly_collection = PolyCollection(
-        polygons,
-        facecolors=polygon_colors,
-        edgecolors=edge_color if edge_color != "none" else "none",
-        linewidths=edge_width,
-        alpha=alpha
-    )
-    ax.add_collection(poly_collection)
-
-    ax.set_aspect("equal")
-    ax.invert_yaxis()
-    ax.axis("off")
-
-    # ─────────────────────────────────────────────
-    # Colorbar
-    # ─────────────────────────────────────────────
-    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax, shrink=0.8)
-    cbar.set_label(fig_title if fig_title else feature_name)
-
-    plt.title(fig_title if fig_title else feature_name, fontsize=14)
-
-    os.makedirs(save_dir, exist_ok=True)
-
-    if filename is None:
-        safe = feature_name.replace(" ", "_").lower()
-        bg_suffix = "_with_bg" if background_img is not None else ""
-        filename = f"polygon_{safe}_global{bg_suffix}.png"
-
-    save_path = os.path.join(save_dir, filename)
-    
-    print(f"Saving figure...")
-    plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-    print(f"Saved to {save_path}")
-
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
-
-    return fig
-
-def plot_global_polygon_by_categorical(
-    spatioloji_obj,
-    feature: str,
-    feature_df: Optional[pd.DataFrame] = None,
-    feature_column: Optional[str] = None,
-    background_img: Optional[np.ndarray] = None,
-    min_x: Optional[float] = None,
-    min_y: Optional[float] = None,
-    save_dir: str = "./",
-    color_map: Optional[Dict[str, tuple]] = None,
-    edge_color: str = "black",
-    edge_width: float = 0.5,
-    figsize: tuple = (12, 12),
-    fig_title: Optional[str] = None,
-    filename: Optional[str] = None,
-    dpi: int = 300,
-    show_plot: bool = True,
-    alpha: float = 0.8,
-    legend_loc: str = 'center left',
-    legend_bbox_to_anchor: Tuple[float, float] = (1.01, 0.5)
-) -> plt.Figure:
-    """
-    Plot cell polygons colored by a categorical feature in global coordinates.
-    
-    Optimized version using PolyCollection for fast rendering.
-    """
-    if spatioloji_obj.polygons is None:
-        raise ValueError("No polygon data available in spatioloji object")
-    
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    x_col, y_col = spatioloji_obj.config.get_coordinate_columns("global")
-    
-    polygon_df = spatioloji_obj.polygons.copy()
-    
-    for col in [cell_id_col, x_col, y_col]:
-        if col not in polygon_df.columns:
-            raise ValueError(f"Missing required column: {col}")
-    
-    # Feature extraction
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(
-            spatioloji_obj, feature, feature_df, feature_column
-        )
-        feature_subset.rename(columns={"feature_value": feature_column}, inplace=True)
-        feature = feature_column
-        feature_name = feature_column
-    else:
-        feature_subset = _get_feature_data(
-            spatioloji_obj, feature, feature_df, feature_column
-        )
-        feature_name = feature
-    
-    # Check if feature is categorical or convert it
-    if not pd.api.types.is_categorical_dtype(feature_subset[feature]):
-        n_unique = feature_subset[feature].nunique()
-        
-        if n_unique > 20:
-            raise ValueError(
-                f"Feature '{feature}' has {n_unique} unique values, "
-                "too many for categorical plotting"
-            )
-        
-        print(f"Converting '{feature}' to categorical with {n_unique} categories.")
-        feature_subset[feature] = feature_subset[feature].astype('category')
-    
-    # Global offsets
-    if min_x is None or min_y is None:
-        min_x, min_y = _calculate_global_offsets(spatioloji_obj)
-    
-    polygon_df["x_plot"] = polygon_df[x_col] - min_x
-    polygon_df["y_plot"] = polygon_df[y_col] - min_y
-    
-    merged_df = polygon_df.merge(feature_subset, on=cell_id_col)
-    
-    if merged_df.empty:
-        raise ValueError("No matching cells found between polygons and features")
-    
-    # Get categories
-    categories = feature_subset[feature].cat.categories
-    
-    # Create color map if not provided
-    if color_map is None:
-        color_palette = plt.cm.tab10.colors
-        color_map = {cat: color_palette[i % len(color_palette)] 
-                     for i, cat in enumerate(categories)}
-    
-    # ─────────────────────────────────────────────
-    # Pre-compute all polygons and colors (FAST!)
-    # ─────────────────────────────────────────────
-    print(f"Preparing {merged_df[cell_id_col].nunique()} cell polygons...")
-    
-    polygons = []
-    polygon_colors = []
-    categories_present = set()
-    
-    for cell_id, group in merged_df.groupby(cell_id_col):
-        # Get coordinates for this cell
-        coords = group[["x_plot", "y_plot"]].values
-        polygons.append(coords)
-        
-        # Get color for this cell's category
-        category = group[feature].iloc[0]
-        categories_present.add(category)
-        color = color_map[category]
-        polygon_colors.append(color)
-    
-    print(f"Creating PolyCollection...")
-    
-    # ─────────────────────────────────────────────
-    # Figure
-    # ─────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    if background_img is not None:
-        img_h, img_w = background_img.shape[:2]
-        ax.imshow(
-            cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB),
-            origin="upper"
-        )
-        ax.set_xlim(0, img_w)
-        ax.set_ylim(img_h, 0)
-    else:
-        ax.set_xlim(0, merged_df["x_plot"].max() * 1.05)
-        ax.set_ylim(merged_df["y_plot"].max() * 1.05, 0)
-    
-    # ─────────────────────────────────────────────
-    # Draw ALL polygons at once using PolyCollection (FAST!)
-    # ─────────────────────────────────────────────
-    poly_collection = PolyCollection(
-        polygons,
-        facecolors=polygon_colors,
-        edgecolors=edge_color,
-        linewidths=edge_width,
-        alpha=alpha
-    )
-    ax.add_collection(poly_collection)
-    
-    ax.set_aspect("equal")
-    ax.invert_yaxis()
-    ax.axis("off")
-    
-    # Add legend
-    if len(categories_present) <= 20:
-        legend_patches = [
-            Patch(
-                facecolor=color_map[cat],
-                edgecolor=edge_color,
-                alpha=alpha,
-                label=str(cat)
-            )
-            for cat in sorted(categories_present)
-        ]
-        
-        ax.legend(
-            handles=legend_patches,
-            loc=legend_loc,
-            bbox_to_anchor=legend_bbox_to_anchor,
-            title=feature_name,
-            fontsize=12
-        )
-        plt.tight_layout(rect=[0, 0, 0.85, 1])
-    else:
-        plt.tight_layout()
-        print(f"Warning: Too many categories ({len(categories_present)}) for legend.")
-    
-    plt.title(
-        fig_title if fig_title else f"{feature_name} Distribution",
-        fontsize=14
-    )
-    
-    os.makedirs(save_dir, exist_ok=True)
-    
-    if filename is None:
-        safe = feature_name.replace(" ", "_").lower()
-        bg_suffix = "_with_bg" if background_img is not None else ""
-        filename = f"polygon_{safe}_categorical{bg_suffix}.png"
-    
-    save_path = os.path.join(save_dir, filename)
-    
-    print(f"Saving figure...")
-    plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-    print(f"Saved to {save_path}")
-    
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
-    
-    return fig
-
-
-# ============================================================================
-# GLOBAL DOT PLOTTING
-# ============================================================================
-
-def plot_global_dot_by_features(
-    spatioloji_obj,
-    feature: str,
-    feature_df: Optional[pd.DataFrame] = None,
-    feature_column: Optional[str] = None,
-    background_img: Optional[np.ndarray] = None,
-    min_x: Optional[float] = None,
-    min_y: Optional[float] = None,
-    save_dir: str = "./",
-    colormap: str = "viridis",
-    dot_size: int = 20,
-    figsize: tuple = (12, 12),
-    fig_title: Optional[str] = None,
-    filename: Optional[str] = None,
-    dpi: int = 300,
-    show_plot: bool = True,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
     alpha: float = 1.0,
-    edge_color: Optional[str] = None,
-    edge_width: float = 0.0
-) -> plt.Figure:
-    """
-    Plot cell dots colored by a continuous feature value in global coordinates.
-    Uses global center coordinates (CenterX_global_px, CenterY_global_px).
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing cell metadata
-    feature : str
-        Feature name to visualize, or "metadata" to use feature_column
-    feature_df : pd.DataFrame, optional
-        External DataFrame with 'cell' column and feature column
-    feature_column : str, optional
-        Column name from cell_meta when feature="metadata"
-    background_img : np.ndarray, optional
-        Stitched background image (from stitch_fov_images)
-    min_x : float, optional
-        X-offset for global coordinates (from stitch_fov_images)
-    min_y : float, optional
-        Y-offset for global coordinates (from stitch_fov_images)
-    save_dir : str, optional
-        Directory to save figure, by default "./"
-    colormap : str, optional
-        Matplotlib colormap name, by default "viridis"
-    dot_size : int, optional
-        Size of dots in points squared, by default 20
-    figsize : tuple, optional
-        Figure size (width, height), by default (12, 12)
-    fig_title : str, optional
-        Figure title, by default None (uses feature name)
-    filename : str, optional
-        Custom filename, by default None (auto-generated)
-    dpi : int, optional
-        Resolution for saved figure, by default 300
-    show_plot : bool, optional
-        Whether to display the figure, by default True
-    vmin : float, optional
-        Minimum value for color scale, by default None
-    vmax : float, optional
-        Maximum value for color scale, by default None
-    alpha : float, optional
-        Dot transparency, by default 1.0
-    edge_color : str, optional
-        Dot edge color, by default None
-    edge_width : float, optional
-        Dot edge width, by default 0.0
-    
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure object
-    """
-    # Get configuration
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    
-    # Create copy of cell metadata
-    cell_meta = spatioloji_obj.cell_meta.reset_index().copy()
-    
-    # Check required columns for global center coordinates
-    required_cols = [cell_id_col, 'CenterX_global_px', 'CenterY_global_px']
-    missing_cols = [col for col in required_cols if col not in cell_meta.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in cell_meta: {missing_cols}")
-    
-    cell_meta = cell_meta[required_cols]
-    
-    # Get feature data
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature_column
-        feature_subset.rename(columns={'feature_value': feature_column}, inplace=True)
-        feature = feature_column
-    else:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature
-    
-    # Calculate offsets if not provided
-    if min_x is None or min_y is None:
-        # Calculate from cell centers
-        min_x = cell_meta['CenterX_global_px'].min()
-        min_y = cell_meta['CenterY_global_px'].min()
-    
-    # Apply offsets
-    cell_meta['CenterX_offset'] = cell_meta['CenterX_global_px'] - min_x
-    cell_meta['CenterY_offset'] = cell_meta['CenterY_global_px'] - min_y
-    
-    # Merge with feature data
-    merged_df = cell_meta.merge(feature_subset, on=cell_id_col)
-    
-    if len(merged_df) == 0:
-        raise ValueError("No matching cells found between cell_meta and feature values")
-    
-    # Check if feature is numeric
-    if not pd.api.types.is_numeric_dtype(merged_df[feature]):
-        raise ValueError(f"Feature '{feature}' must be numeric for continuous plotting")
-    
-    # Normalize feature values for coloring
-    if vmin is None:
-        vmin = merged_df[feature].min()
-    if vmax is None:
-        vmax = merged_df[feature].max()
-    
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    
-    # Create figure
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    # Display background image if provided
-    if background_img is not None:
-        ax.imshow(cv2.cvtColor(cv2.flip(background_img, 0), cv2.COLOR_BGR2RGB))
-    
-    # Get colormap
-    cmap = cm.get_cmap(colormap)
-    
-    # Calculate plot limits
-    max_x = merged_df['CenterX_offset'].max() * 1.05
-    max_y = merged_df['CenterY_offset'].max() * 1.05
-    
-    # Create scatter plot
-    print(f"Creating scatter plot for {len(merged_df)} cells...")
-    
-    scatter = ax.scatter(
-        merged_df['CenterX_offset'],
-        merged_df['CenterY_offset'],
-        c=merged_df[feature],
-        cmap=colormap,
-        norm=norm,
-        s=dot_size,
-        alpha=alpha,
-        edgecolors=edge_color,
-        linewidths=edge_width
-    )
-    
-    # Set axis properties
-    ax.set_aspect('equal')
-    ax.set_xlim(0, max_x)
-    ax.set_ylim(0, max_y)
-    ax.axis('off')
-    
-    # Add colorbar
-    cbar = fig.colorbar(scatter, ax=ax, shrink=0.8)
-    cbar.set_label(feature_name)
-    
-    # Set title
-    title = fig_title if fig_title is not None else feature_name
-    plt.title(title, fontsize=14)
-    
-    # Create directory if needed
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Generate filename if not provided
-    if filename is None:
-        safe_name = feature_name.replace(' ', '_').lower()
-        bg_suffix = "_with_bg" if background_img is not None else ""
-        filename = f"global_dot_{safe_name}{bg_suffix}.png"
-    
-    # Save figure
-    save_path = os.path.join(save_dir, filename)
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    print(f"Saved figure to {save_path}")
-    
-    # Show plot if requested
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
-    
-    return fig
-
-
-def plot_global_dot_by_categorical(
-    spatioloji_obj,
-    feature: str,
-    feature_df: Optional[pd.DataFrame] = None,
-    feature_column: Optional[str] = None,
-    background_img: Optional[np.ndarray] = None,
-    min_x: Optional[float] = None,
-    min_y: Optional[float] = None,
-    save_dir: str = "./",
-    color_map: Optional[Dict[str, tuple]] = None,
-    dot_size: int = 20,
-    figsize: tuple = (12, 12),
+    figsize: Tuple[int, int] = (12, 12),
     fig_title: Optional[str] = None,
+    save_dir: str = "./",
     filename: Optional[str] = None,
     dpi: int = 300,
     show_plot: bool = True,
-    alpha: float = 1.0,
-    edge_color: Optional[str] = None,
-    edge_width: float = 0.0
 ) -> plt.Figure:
     """
-    Plot cell dots colored by a categorical feature in global coordinates.
-    Uses global center coordinates (CenterX_global_px, CenterY_global_px).
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing cell metadata
-    feature : str
-        Feature name to visualize, or "metadata" to use feature_column
-    feature_df : pd.DataFrame, optional
-        External DataFrame with 'cell' column and feature column
-    feature_column : str, optional
-        Column name from cell_meta when feature="metadata"
-    background_img : np.ndarray, optional
-        Stitched background image (from stitch_fov_images)
-    min_x : float, optional
-        X-offset for global coordinates (from stitch_fov_images)
-    min_y : float, optional
-        Y-offset for global coordinates (from stitch_fov_images)
-    save_dir : str, optional
-        Directory to save figure, by default "./"
-    color_map : Dict[str, tuple], optional
-        Category to color mapping, by default None (auto-assigned)
-    dot_size : int, optional
-        Size of dots in points squared, by default 20
-    figsize : tuple, optional
-        Figure size (width, height), by default (12, 12)
-    fig_title : str, optional
-        Figure title, by default None (uses feature name)
-    filename : str, optional
-        Custom filename, by default None (auto-generated)
-    dpi : int, optional
-        Resolution for saved figure, by default 300
-    show_plot : bool, optional
-        Whether to display the figure, by default True
-    alpha : float, optional
-        Dot transparency, by default 1.0
-    edge_color : str, optional
-        Dot edge color, by default None
-    edge_width : float, optional
-        Dot edge width, by default 0.0
-    
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure object
+    Plot cell polygons in global coordinates, colored by any feature.
+    Auto-detects categorical vs. continuous based on data type.
+
+    Usage
+    -----
+    # continuous gene expression
+    sj.plotting.plot_global_polygon(sp, feature='PanCK')
+
+    # categorical cell type
+    sj.plotting.plot_global_polygon(sp, feature='cell_type')
+
+    # from cell_meta column
+    sj.plotting.plot_global_polygon(sp, feature='metadata', feature_column='cluster')
     """
-    # Get configuration
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    
-    # Create copy of cell metadata
-    cell_meta = spatioloji_obj.cell_meta.reset_index().copy()
-    
-    # Check required columns for global center coordinates
-    required_cols = [cell_id_col, 'CenterX_global_px', 'CenterY_global_px']
-    missing_cols = [col for col in required_cols if col not in cell_meta.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in cell_meta: {missing_cols}")
-    
-    cell_meta = cell_meta[required_cols]
-    
-    # Get feature data
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature_column
-        feature_subset.rename(columns={'feature_value': feature_column}, inplace=True)
-        feature = feature_column
-    else:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature
-    
-    # Check if feature is categorical or convert it
-    if not pd.api.types.is_categorical_dtype(feature_subset[feature]):
-        n_unique = feature_subset[feature].nunique()
-        
-        if n_unique > 20:
-            raise ValueError(f"Feature '{feature}' has {n_unique} unique values, too many for categorical plotting")
-        
-        print(f"Converting '{feature}' to categorical with {n_unique} categories.")
-        feature_subset[feature] = feature_subset[feature].astype('category')
-    
-    # Calculate offsets if not provided
-    if min_x is None or min_y is None:
-        min_x = cell_meta['CenterX_global_px'].min()
-        min_y = cell_meta['CenterY_global_px'].min()
-    
-    # Apply offsets
-    cell_meta['CenterX_offset'] = cell_meta['CenterX_global_px'] - min_x
-    cell_meta['CenterY_offset'] = cell_meta['CenterY_global_px'] - min_y
-    
-    # Merge with feature data
-    merged_df = cell_meta.merge(feature_subset, on=cell_id_col)
-    
-    if len(merged_df) == 0:
-        raise ValueError("No matching cells found between cell_meta and feature values")
-    
-    # Get categories
-    categories = feature_subset[feature].cat.categories
-    
-    # Create color map if not provided
-    if color_map is None:
-        color_palette = plt.cm.tab10.colors
-        color_map = {cat: color_palette[i % len(color_palette)] for i, cat in enumerate(categories)}
-    
-    # Create figure
+    if sj_obj.polygons is None:
+        raise ValueError("No polygon data in spatioloji object")
+
+    cell_id_col = sj_obj.config.cell_id_col
+    x_col, y_col = sj_obj.config.get_coordinate_columns('global')
+
+    # ── Resolve feature name & data ──────────────────────────────────────────
+    feat_df = _get_feature_data(sj_obj, feature, feature_df, feature_column)
+    # if feature="metadata", _get_feature_data returns feature_column as the col name
+    feat_col = feature_column if (feature == "metadata" and feature_column) else feature
+    feat_name = fig_title or feat_col
+
+    # ── Auto-detect kind ──────────────────────────────────────────────────────
+    kind = 'categorical' if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else 'continuous'
+
+    # ── Build color mapping ───────────────────────────────────────────────────
+    color_lookup, legend_handles, norm, cmap = _build_color_mapping(
+        feat_df[feat_col], kind=kind,
+        colormap=colormap, color_map=color_map,
+        vmin=vmin, vmax=vmax,
+    )
+
+    # ── Apply global offsets ──────────────────────────────────────────────────
+    poly_df = sj_obj.polygons.copy()
+    if min_x is None:
+        min_x = poly_df[x_col].min()
+    if min_y is None:
+        min_y = poly_df[y_col].min()
+    poly_df['x_plot'] = poly_df[x_col] - min_x
+    poly_df['y_plot'] = poly_df[y_col] - min_y
+
+    merged = poly_df.merge(feat_df, on=cell_id_col)
+    if merged.empty:
+        raise ValueError("No overlapping cells between polygons and feature data")
+
+    # ── Figure ────────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=figsize)
-    
-    # Display background image if provided
+
     if background_img is not None:
-        ax.imshow(cv2.cvtColor(cv2.flip(background_img, 0), cv2.COLOR_BGR2RGB))
-    
-    # Calculate plot limits
-    max_x = merged_df['CenterX_offset'].max() * 1.05
-    max_y = merged_df['CenterY_offset'].max() * 1.05
-    
-    # Track present categories
-    categories_present = []
-    
-    # Plot each category separately for legend control
-    for category in categories:
-        category_cells = merged_df[merged_df[feature] == category]
-        
-        if len(category_cells) == 0:
-            continue
-        
-        categories_present.append(category)
-        
-        ax.scatter(
-            category_cells['CenterX_offset'],
-            category_cells['CenterY_offset'],
-            c=[color_map[category]],
-            s=dot_size,
-            alpha=alpha,
-            edgecolors=edge_color,
-            linewidths=edge_width,
-            label=str(category)
-        )
-    
-    # Set axis properties
-    ax.set_aspect('equal')
-    ax.set_xlim(0, max_x)
-    ax.set_ylim(0, max_y)
-    ax.axis('off')
-    
-    # Add legend if not too many categories
-    if len(categories_present) <= 20:
-        ax.legend(
-            loc='center left',
-            bbox_to_anchor=(1.01, 0.5),
-            title=feature_name,
-            fontsize=12
-        )
-        plt.tight_layout(rect=[0, 0, 0.85, 1])
-    else:
-        plt.tight_layout()
-        print(f"Warning: Too many categories ({len(categories_present)}) to display in legend.")
-    
-    # Set title
-    title = fig_title if fig_title is not None else f"{feature_name} Distribution"
-    plt.title(title, fontsize=14)
-    
-    # Create directory if needed
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Generate filename if not provided
-    if filename is None:
-        safe_name = feature_name.replace(' ', '_').lower()
-        bg_suffix = "_with_bg" if background_img is not None else ""
-        filename = f"global_dot_{safe_name}_categorical{bg_suffix}.png"
-    
-    # Save figure
-    save_path = os.path.join(save_dir, filename)
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    print(f"Saved figure to {save_path}")
-    
-    # Show plot if requested
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
-    
-    return fig
+        h, w = background_img.shape[:2]
+        ax.imshow(cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB), origin='upper')
+        ax.set_xlim(0, w)
+        ax.set_ylim(h, 0)  # y-down to match cv2
 
-# ============================================================================
-# LOCAL POLYGON PLOTTING
-# ============================================================================
-
-def plot_local_polygon_by_features(
-    spatioloji_obj,
-    feature: str,
-    fov_ids: Optional[List[Union[str, int]]] = None,
-    feature_df: Optional[pd.DataFrame] = None,
-    feature_column: Optional[str] = None,
-    background_img: bool = True,
-    save_dir: str = "./",
-    colormap: str = "viridis",
-    figure_width: int = 7,
-    figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
-    edge_color: str = 'black',
-    edge_width: float = 0.5,
-    alpha: float = 0.8,
-    title_fontsize: int = 20,
-    suptitle_fontsize: int = 24,
-    filename: Optional[str] = None,
-    dpi: int = 300,
-    show_plot: bool = True,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    colorbar_position: str = 'right'
-) -> plt.Figure:
-    """
-    Create polygon plots colored by continuous features across multiple FOVs.
-    Uses local coordinates to show cells in each FOV.
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing polygon data and FOV images
-    feature : str
-        Feature name to visualize, or "metadata" to use feature_column
-    fov_ids : List[Union[str, int]], optional
-        List of FOV IDs to plot. If None, all FOVs with images are used
-    feature_df : pd.DataFrame, optional
-        External DataFrame with 'cell' column and feature column
-    feature_column : str, optional
-        Column name from cell_meta when feature="metadata"
-    background_img : bool, optional
-        Whether to display FOV images as background, by default True
-    save_dir : str, optional
-        Directory to save figure, by default "./"
-    colormap : str, optional
-        Matplotlib colormap name, by default "viridis"
-    figure_width : int, optional
-        Width of each subplot in inches, by default 7
-    figure_height : int, optional
-        Height of each subplot in inches, by default 7
-    grid_layout : Tuple[int, int], optional
-        Custom grid layout (rows, columns), by default None (auto-determined)
-    edge_color : str, optional
-        Polygon edge color, by default 'black'
-    edge_width : float, optional
-        Polygon edge width, by default 0.5
-    alpha : float, optional
-        Polygon transparency, by default 0.8
-    title_fontsize : int, optional
-        Font size for FOV titles, by default 20
-    suptitle_fontsize : int, optional
-        Font size for main title, by default 24
-    filename : str, optional
-        Custom filename, by default None (auto-generated)
-    dpi : int, optional
-        Resolution for saved figure, by default 300
-    show_plot : bool, optional
-        Whether to display the plot, by default True
-    vmin : float, optional
-        Minimum value for color scale, by default None
-    vmax : float, optional
-        Maximum value for color scale, by default None
-    colorbar_position : str, optional
-        Position of colorbar ('right' or 'bottom'), by default 'right'
-    
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure object
-    """
-    # Check if polygon data exists
-    if spatioloji_obj.polygons is None:
-        raise ValueError("No polygon data available in spatioloji object")
-    
-    # Get configuration
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    fov_id_col = spatioloji_obj.config.fov_id_col
-    x_col, y_col = spatioloji_obj.config.get_coordinate_columns('local')
-    
-    # Create copy of polygon data
-    polygon_df = spatioloji_obj.polygons.copy()
-    
-    # Check required columns
-    required_cols = [cell_id_col, fov_id_col, x_col, y_col]
-    missing_cols = [col for col in required_cols if col not in polygon_df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in polygons: {missing_cols}")
-    
-    # If no FOV IDs provided, use all FOVs with images
-    if fov_ids is None:
-        if spatioloji_obj.images.n_total > 0:
-            fov_ids = spatioloji_obj.images.fov_ids
-        else:
-            # Fall back to all FOVs in polygon_df
-            fov_ids = sorted(polygon_df[fov_id_col].unique())
-    
-    # Convert FOV IDs to strings for consistency
-    fov_ids = [str(fid) for fid in fov_ids]
-    
-    # Get feature data
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature_column
-        feature_subset.rename(columns={'feature_value': feature_column}, inplace=True)
-        feature = feature_column
-    else:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature
-    
-    # Check if feature is numeric
-    if not pd.api.types.is_numeric_dtype(feature_subset[feature]):
-        raise ValueError(f"Feature '{feature}' must be numeric for continuous plotting")
-    
-    # Merge with feature data
-    merged_df = polygon_df.merge(feature_subset, on=cell_id_col)
-    
-    if len(merged_df) == 0:
-        raise ValueError("No matching cells found between polygon data and feature values")
-    
-    # Filter for selected FOVs
-    merged_df = merged_df[merged_df[fov_id_col].astype(str).isin(fov_ids)]
-    
-    if len(merged_df) == 0:
-        raise ValueError(f"No cells found in the selected FOVs: {fov_ids}")
-    
-    # Determine global color normalization
-    if vmin is None:
-        vmin = merged_df[feature].min()
-    if vmax is None:
-        vmax = merged_df[feature].max()
-    
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    
-    # Get colormap
-    cmap = cm.get_cmap(colormap)
-    
-    # Determine grid layout
-    if grid_layout is None:
-        n_plots = len(fov_ids)
-        grid_size = int(np.ceil(np.sqrt(n_plots)))
-        rows, cols = grid_size, grid_size
-    else:
-        rows, cols = grid_layout
-    
-    # Create figure and axes
-    fig, axs = plt.subplots(rows, cols, figsize=(figure_width*cols, figure_height*rows))
-    axs = axs.flatten() if hasattr(axs, 'flatten') else [axs]
-    
-    # Plot each FOV
-    for idx, fov_id in enumerate(fov_ids):
-        if idx >= len(axs):
-            print(f"Warning: Not enough subplots for FOV {fov_id}. Increase grid size.")
-            break
-        
-        ax = axs[idx]
-        
-        # Display FOV image as background if requested
-        image_width = None
-        image_height = None
-        
-        if background_img:
-            img = spatioloji_obj.get_image(str(fov_id))
-            if img is not None:
-                img = cv2.flip(img, 0)  # Flip vertically
-                ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                image_height, image_width = img.shape[:2]
-            else:
-                print(f"Warning: No image found for FOV {fov_id}")
-        
-        # Get cells in this FOV
-        fov_data = merged_df[merged_df[fov_id_col].astype(str) == str(fov_id)]
-        
-        if len(fov_data) == 0:
-            print(f"Warning: No cells found for FOV {fov_id}")
-            ax.text(0.5, 0.5, f"No data for FOV {fov_id}", ha='center', va='center')
-            if image_width and image_height:
-                ax.set_xlim(0, image_width)
-                ax.set_ylim(0, image_height)
-            ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-            ax.axis('off')
-            continue
-        
-        # If no image dimensions, determine from cell positions
-        if not image_width or not image_height:
-            image_width = fov_data[x_col].max() * 1.1
-            image_height = fov_data[y_col].max() * 1.1
-        
-        # Group cells by cell ID
-        cell_groups = fov_data.groupby(cell_id_col)
-        
-        # Process each cell
-        for cell_id, cell_vertices in cell_groups:
-            # Get feature value for this cell
-            feature_value = cell_vertices[feature].iloc[0]
-            
-            # Get color for this value
-            color = cmap(norm(feature_value))
-            
-            # Skip cells with fewer than 3 vertices
-            if len(cell_vertices) < 3:
-                print(f"Warning: Cell {cell_id} in FOV {fov_id} has fewer than 3 vertices. Skipping.")
-                continue
-            
-            # Create polygon coordinates
-            coords = cell_vertices[[x_col, y_col]].values
-            
-            # Create and add polygon
-            polygon = mpl.patches.Polygon(
-                coords,
-                closed=True,
-                facecolor=color,
-                edgecolor=edge_color,
-                linewidth=edge_width,
-                alpha=alpha
-            )
-            ax.add_patch(polygon)
-        
-        # Set plot properties
-        ax.set_aspect('equal')
-        ax.set_xlim(0, image_width)
-        ax.set_ylim(0, image_height)
-        ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-        ax.axis('off')
-    
-    # Hide unused subplots
-    for j in range(len(fov_ids), len(axs)):
-        axs[j].axis('off')
-    
-    # Add colorbar to the figure
-    if colorbar_position == 'right':
-        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-                           cax=cbar_ax)
-        cbar.set_label(feature_name)
-        plt.tight_layout(rect=[0, 0, 0.9, 0.95])
-    else:
-        cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.02])
-        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-                           cax=cbar_ax, orientation='horizontal')
-        cbar.set_label(feature_name)
-        plt.tight_layout(rect=[0, 0.1, 1, 0.95])
-    
-    # Set title
-    plt.suptitle(feature_name, fontsize=suptitle_fontsize)
-    plt.subplots_adjust(wspace=0.05, hspace=0.05)
-    
-    # Create directory if needed
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Generate filename if not provided
-    if filename is None:
-        safe_name = feature_name.replace(' ', '_').lower()
-        bg_suffix = "_with_bg" if background_img else ""
-        filename = f'local_polygon_{safe_name}_continuous{bg_suffix}.png'
-    
-    # Save figure
-    save_path = os.path.join(save_dir, filename)
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    print(f"Saved figure to {save_path}")
-    
-    # Show plot if requested
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
-    
-    return fig
-
-
-def plot_local_polygon_by_categorical(
-    spatioloji_obj,
-    feature: str,
-    fov_ids: Optional[List[Union[str, int]]] = None,
-    feature_df: Optional[pd.DataFrame] = None,
-    feature_column: Optional[str] = None,
-    background_img: bool = True,
-    save_dir: str = "./",
-    color_map: Optional[Dict[str, tuple]] = None,
-    figure_width: int = 7,
-    figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
-    edge_color: str = 'black',
-    edge_width: float = 0.5,
-    alpha: float = 0.8,
-    title_fontsize: int = 20,
-    suptitle_fontsize: int = 24,
-    filename: Optional[str] = None,
-    dpi: int = 300,
-    show_plot: bool = True
-) -> plt.Figure:
-    """
-    Create polygon plots colored by categorical features across multiple FOVs.
-    Uses local coordinates to show cells in each FOV.
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing polygon data and FOV images
-    feature : str
-        Feature name to visualize, or "metadata" to use feature_column
-    fov_ids : List[Union[str, int]], optional
-        List of FOV IDs to plot. If None, all FOVs with images are used
-    feature_df : pd.DataFrame, optional
-        External DataFrame with 'cell' column and feature column
-    feature_column : str, optional
-        Column name from cell_meta when feature="metadata"
-    background_img : bool, optional
-        Whether to display FOV images as background, by default True
-    save_dir : str, optional
-        Directory to save figure, by default "./"
-    color_map : Dict[str, tuple], optional
-        Category to color mapping, by default None (auto-assigned)
-    figure_width : int, optional
-        Width of each subplot in inches, by default 7
-    figure_height : int, optional
-        Height of each subplot in inches, by default 7
-    grid_layout : Tuple[int, int], optional
-        Custom grid layout (rows, columns), by default None (auto-determined)
-    edge_color : str, optional
-        Polygon edge color, by default 'black'
-    edge_width : float, optional
-        Polygon edge width, by default 0.5
-    alpha : float, optional
-        Polygon transparency, by default 0.8
-    title_fontsize : int, optional
-        Font size for FOV titles, by default 20
-    suptitle_fontsize : int, optional
-        Font size for main title, by default 24
-    filename : str, optional
-        Custom filename, by default None (auto-generated)
-    dpi : int, optional
-        Resolution for saved figure, by default 300
-    show_plot : bool, optional
-        Whether to display the plot, by default True
-    
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure object
-    """
-    # Check if polygon data exists
-    if spatioloji_obj.polygons is None:
-        raise ValueError("No polygon data available in spatioloji object")
-    
-    # Get configuration
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    fov_id_col = spatioloji_obj.config.fov_id_col
-    x_col, y_col = spatioloji_obj.config.get_coordinate_columns('local')
-    
-    # Create copy of polygon data
-    polygon_df = spatioloji_obj.polygons.copy()
-    
-    # Check required columns
-    required_cols = [cell_id_col, fov_id_col, x_col, y_col]
-    missing_cols = [col for col in required_cols if col not in polygon_df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in polygons: {missing_cols}")
-    
-    # If no FOV IDs provided, use all FOVs with images
-    if fov_ids is None:
-        if spatioloji_obj.images.n_total > 0:
-            fov_ids = spatioloji_obj.images.fov_ids
-        else:
-            fov_ids = sorted(polygon_df[fov_id_col].unique())
-    
-    # Convert FOV IDs to strings
-    fov_ids = [str(fid) for fid in fov_ids]
-    
-    # Get feature data
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature_column
-        feature_subset.rename(columns={'feature_value': feature_column}, inplace=True)
-        feature = feature_column
-    else:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature
-    
-    # Check if feature is categorical or convert it
-    if not pd.api.types.is_categorical_dtype(feature_subset[feature]):
-        n_unique = feature_subset[feature].nunique()
-        
-        if n_unique > 20:
-            raise ValueError(f"Feature '{feature}' has {n_unique} unique values, too many for categorical plotting")
-        
-        print(f"Converting '{feature}' to categorical with {n_unique} categories.")
-        feature_subset[feature] = feature_subset[feature].astype('category')
-    
-    # Merge with feature data
-    merged_df = polygon_df.merge(feature_subset, on=cell_id_col)
-    
-    if len(merged_df) == 0:
-        raise ValueError("No matching cells found between polygon data and feature values")
-    
-    # Filter for selected FOVs
-    merged_df = merged_df[merged_df[fov_id_col].astype(str).isin(fov_ids)]
-    
-    if len(merged_df) == 0:
-        raise ValueError(f"No cells found in the selected FOVs: {fov_ids}")
-    
-    # Get categories
-    categories = feature_subset[feature].cat.categories
-    
-    # Create color map if not provided
-    if color_map is None:
-        color_palette = plt.cm.tab10.colors
-        color_map = {cat: color_palette[i % len(color_palette)] for i, cat in enumerate(categories)}
-    
-    # Determine grid layout
-    if grid_layout is None:
-        n_plots = len(fov_ids)
-        grid_size = int(np.ceil(np.sqrt(n_plots)))
-        rows, cols = grid_size, grid_size
-    else:
-        rows, cols = grid_layout
-    
-    # Create figure and axes
-    fig, axs = plt.subplots(rows, cols, figsize=(figure_width*cols, figure_height*rows))
-    axs = axs.flatten() if hasattr(axs, 'flatten') else [axs]
-    
-    # Track present categories
-    categories_present = set()
-    
-    # Plot each FOV
-    for idx, fov_id in enumerate(fov_ids):
-        if idx >= len(axs):
-            print(f"Warning: Not enough subplots for FOV {fov_id}. Increase grid size.")
-            break
-        
-        ax = axs[idx]
-        
-        # Display FOV image as background if requested
-        image_width = None
-        image_height = None
-        
-        if background_img:
-            img = spatioloji_obj.get_image(str(fov_id))
-            if img is not None:
-                img = cv2.flip(img, 0)
-                ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                image_height, image_width = img.shape[:2]
-            else:
-                print(f"Warning: No image found for FOV {fov_id}")
-        
-        # Get cells in this FOV
-        fov_data = merged_df[merged_df[fov_id_col].astype(str) == str(fov_id)]
-        
-        if len(fov_data) == 0:
-            print(f"Warning: No cells found for FOV {fov_id}")
-            ax.text(0.5, 0.5, f"No data for FOV {fov_id}", ha='center', va='center')
-            if image_width and image_height:
-                ax.set_xlim(0, image_width)
-                ax.set_ylim(0, image_height)
-            ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-            ax.axis('off')
-            continue
-        
-        # If no image dimensions, determine from cell positions
-        if not image_width or not image_height:
-            image_width = fov_data[x_col].max() * 1.1
-            image_height = fov_data[y_col].max() * 1.1
-        
-        # Group cells by category for this FOV
-        cell_categories = {}
-        
-        for category in categories:
-            category_cells = fov_data[fov_data[feature] == category][cell_id_col].unique()
-            
-            if len(category_cells) == 0:
-                continue
-            
-            categories_present.add(category)
-            cell_categories[category] = category_cells
-        
-        # Process all cells by category
-        for category, cells in cell_categories.items():
-            category_color = color_map[category]
-            
-            for cell_id in cells:
-                cell_vertices = fov_data[fov_data[cell_id_col] == cell_id]
-                
-                if len(cell_vertices) < 3:
-                    print(f"Warning: Cell {cell_id} in FOV {fov_id} has fewer than 3 vertices. Skipping.")
-                    continue
-                
-                coords = cell_vertices[[x_col, y_col]].values
-                
-                polygon = mpl.patches.Polygon(
-                    coords,
-                    closed=True,
-                    facecolor=category_color,
-                    edgecolor=edge_color,
-                    linewidth=edge_width,
-                    alpha=alpha
-                )
-                ax.add_patch(polygon)
-        
-        # Set plot properties
-        ax.set_aspect('equal')
-        ax.set_xlim(0, image_width)
-        ax.set_ylim(0, image_height)
-        ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-        ax.axis('off')
-    
-    # Hide unused subplots
-    for j in range(len(fov_ids), len(axs)):
-        axs[j].axis('off')
-    
-    # Add legend for all present categories
-    legend_patches = [Patch(facecolor=color_map[cat],
-                           edgecolor=edge_color,
-                           alpha=alpha,
-                           label=str(cat))
-                     for cat in sorted(categories_present)]
-    
-    fig.legend(
-        handles=legend_patches,
-        loc='center right',
-        bbox_to_anchor=(1.02, 0.5),
-        title=feature_name,
-        fontsize=20
+    _render_polygons_on_ax(
+        ax, merged, 'x_plot', 'y_plot', cell_id_col, feat_col,
+        kind, color_lookup, norm, cmap, edge_color, edge_width, alpha,
     )
-    
-    # Set title and adjust layout
-    plt.suptitle(feature_name, fontsize=suptitle_fontsize)
-    plt.tight_layout(rect=[0, 0, 0.95, 0.98])
-    plt.subplots_adjust(wspace=0.05, hspace=0.05)
-    
-    # Create directory if needed
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Generate filename if not provided
-    if filename is None:
-        safe_name = feature_name.replace(' ', '_').lower()
-        bg_suffix = "_with_bg" if background_img else ""
-        filename = f'local_polygon_{safe_name}_categorical{bg_suffix}.png'
-    
-    # Save figure
-    save_path = os.path.join(save_dir, filename)
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    print(f"Saved figure to {save_path}")
-    
-    # Show plot if requested
-    if show_plot:
-        plt.show()
+
+    if background_img is not None:
+        ax.invert_yaxis()
+    ax.set_title(feat_name, fontsize=14)
+
+    # ── Legend / colorbar ─────────────────────────────────────────────────────
+    if kind == 'categorical':
+        ax.legend(handles=legend_handles, loc=legend_loc,
+                  bbox_to_anchor=legend_bbox, title=feat_name)
     else:
-        plt.close()
-    
-    return fig
+        sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax, shrink=0.8, label=feat_name)
 
-# ============================================================================
-# LOCAL POLYGON PLOTTING
-# ============================================================================
+    # ── Save / show ───────────────────────────────────────────────────────────
+    if filename is None:
+        safe = feat_col.replace(' ', '_').lower()
+        bg = '_with_bg' if background_img is not None else ''
+        filename = f"polygon_{safe}_global_{kind}{bg}.png"
 
-def plot_local_polygon_by_features(
-    spatioloji_obj,
+    return _finalize(fig, save_dir, filename, dpi, show_plot)
+
+
+def plot_local_polygon(
+    sj_obj,
     feature: str,
     fov_ids: Optional[List[Union[str, int]]] = None,
-    feature_df: Optional[pd.DataFrame] = None,
+    feature_df=None,
     feature_column: Optional[str] = None,
     background_img: bool = True,
-    save_dir: str = "./",
+    # continuous params
     colormap: str = "viridis",
-    figure_width: int = 7,
-    figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    colorbar_position: str = 'right',
+    # categorical params
+    color_map: Optional[Dict] = None,
+    # shared style
     edge_color: str = 'black',
     edge_width: float = 0.5,
     alpha: float = 0.8,
+    figure_width: int = 7,
+    figure_height: int = 7,
+    grid_layout: Optional[Tuple[int, int]] = None,
     title_fontsize: int = 20,
     suptitle_fontsize: int = 24,
+    save_dir: str = "./",
     filename: Optional[str] = None,
     dpi: int = 300,
     show_plot: bool = True,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    colorbar_position: str = 'right'
 ) -> plt.Figure:
     """
-    Create polygon plots colored by continuous features across multiple FOVs.
-    Uses local coordinates to show cells in each FOV.
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing polygon data and FOV images
-    feature : str
-        Feature name to visualize, or "metadata" to use feature_column
-    fov_ids : List[Union[str, int]], optional
-        List of FOV IDs to plot. If None, all FOVs with images are used
-    feature_df : pd.DataFrame, optional
-        External DataFrame with 'cell' column and feature column
-    feature_column : str, optional
-        Column name from cell_meta when feature="metadata"
-    background_img : bool, optional
-        Whether to display FOV images as background, by default True
-    save_dir : str, optional
-        Directory to save figure, by default "./"
-    colormap : str, optional
-        Matplotlib colormap name, by default "viridis"
-    figure_width : int, optional
-        Width of each subplot in inches, by default 7
-    figure_height : int, optional
-        Height of each subplot in inches, by default 7
-    grid_layout : Tuple[int, int], optional
-        Custom grid layout (rows, columns), by default None (auto-determined)
-    edge_color : str, optional
-        Polygon edge color, by default 'black'
-    edge_width : float, optional
-        Polygon edge width, by default 0.5
-    alpha : float, optional
-        Polygon transparency, by default 0.8
-    title_fontsize : int, optional
-        Font size for FOV titles, by default 20
-    suptitle_fontsize : int, optional
-        Font size for main title, by default 24
-    filename : str, optional
-        Custom filename, by default None (auto-generated)
-    dpi : int, optional
-        Resolution for saved figure, by default 300
-    show_plot : bool, optional
-        Whether to display the plot, by default True
-    vmin : float, optional
-        Minimum value for color scale, by default None
-    vmax : float, optional
-        Maximum value for color scale, by default None
-    colorbar_position : str, optional
-        Position of colorbar ('right' or 'bottom'), by default 'right'
-    
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure object
-    """
-    # Check if polygon data exists
-    if spatioloji_obj.polygons is None:
-        raise ValueError("No polygon data available in spatioloji object")
-    
-    # Get configuration
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    fov_id_col = spatioloji_obj.config.fov_id_col
-    x_col, y_col = spatioloji_obj.config.get_coordinate_columns('local')
-    
-    # Create copy of polygon data
-    polygon_df = spatioloji_obj.polygons.copy()
-    
-    # Check required columns
-    required_cols = [cell_id_col, fov_id_col, x_col, y_col]
-    missing_cols = [col for col in required_cols if col not in polygon_df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in polygons: {missing_cols}")
-    
-    # If no FOV IDs provided, use all FOVs with images
-    if fov_ids is None:
-        if spatioloji_obj.images.n_total > 0:
-            fov_ids = spatioloji_obj.images.fov_ids
-        else:
-            # Fall back to all FOVs in polygon_df
-            fov_ids = sorted(polygon_df[fov_id_col].unique())
-    
-    # Convert FOV IDs to strings for consistency
-    fov_ids = [str(fid) for fid in fov_ids]
-    
-    # Get feature data
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature_column
-        feature_subset.rename(columns={'feature_value': feature_column}, inplace=True)
-        feature = feature_column
-    else:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature
-    
-    # Check if feature is numeric
-    if not pd.api.types.is_numeric_dtype(feature_subset[feature]):
-        raise ValueError(f"Feature '{feature}' must be numeric for continuous plotting")
-    
-    # Merge with feature data
-    merged_df = polygon_df.merge(feature_subset, on=cell_id_col)
-    
-    if len(merged_df) == 0:
-        raise ValueError("No matching cells found between polygon data and feature values")
-    
-    # Filter for selected FOVs
-    merged_df = merged_df[merged_df[fov_id_col].astype(str).isin(fov_ids)]
-    
-    if len(merged_df) == 0:
-        raise ValueError(f"No cells found in the selected FOVs: {fov_ids}")
-    
-    # Determine global color normalization
-    if vmin is None:
-        vmin = merged_df[feature].min()
-    if vmax is None:
-        vmax = merged_df[feature].max()
-    
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    
-    # Get colormap
-    cmap = cm.get_cmap(colormap)
-    
-    # Determine grid layout
-    if grid_layout is None:
-        n_plots = len(fov_ids)
-        grid_size = int(np.ceil(np.sqrt(n_plots)))
-        rows, cols = grid_size, grid_size
-    else:
-        rows, cols = grid_layout
-    
-    # Create figure and axes
-    fig, axs = plt.subplots(rows, cols, figsize=(figure_width*cols, figure_height*rows))
-    axs = axs.flatten() if hasattr(axs, 'flatten') else [axs]
-    
-    # Plot each FOV
-    for idx, fov_id in enumerate(fov_ids):
-        if idx >= len(axs):
-            print(f"Warning: Not enough subplots for FOV {fov_id}. Increase grid size.")
-            break
-        
-        ax = axs[idx]
-        
-        # Display FOV image as background if requested
-        image_width = None
-        image_height = None
-        
-        if background_img:
-            img = spatioloji_obj.get_image(str(fov_id))
-            if img is not None:
-                img = cv2.flip(img, 0)  # Flip vertically
-                ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                image_height, image_width = img.shape[:2]
-            else:
-                print(f"Warning: No image found for FOV {fov_id}")
-        
-        # Get cells in this FOV
-        fov_data = merged_df[merged_df[fov_id_col].astype(str) == str(fov_id)]
-        
-        if len(fov_data) == 0:
-            print(f"Warning: No cells found for FOV {fov_id}")
-            ax.text(0.5, 0.5, f"No data for FOV {fov_id}", ha='center', va='center')
-            if image_width and image_height:
-                ax.set_xlim(0, image_width)
-                ax.set_ylim(0, image_height)
-            ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-            ax.axis('off')
-            continue
-        
-        # If no image dimensions, determine from cell positions
-        if not image_width or not image_height:
-            image_width = fov_data[x_col].max() * 1.1
-            image_height = fov_data[y_col].max() * 1.1
-        
-        # Group cells by cell ID
-        cell_groups = fov_data.groupby(cell_id_col)
-        
-        # Process each cell
-        for cell_id, cell_vertices in cell_groups:
-            # Get feature value for this cell
-            feature_value = cell_vertices[feature].iloc[0]
-            
-            # Get color for this value
-            color = cmap(norm(feature_value))
-            
-            # Skip cells with fewer than 3 vertices
-            if len(cell_vertices) < 3:
-                print(f"Warning: Cell {cell_id} in FOV {fov_id} has fewer than 3 vertices. Skipping.")
-                continue
-            
-            # Create polygon coordinates
-            coords = cell_vertices[[x_col, y_col]].values
-            
-            # Create and add polygon
-            polygon = mpl.patches.Polygon(
-                coords,
-                closed=True,
-                facecolor=color,
-                edgecolor=edge_color,
-                linewidth=edge_width,
-                alpha=alpha
-            )
-            ax.add_patch(polygon)
-        
-        # Set plot properties
-        ax.set_aspect('equal')
-        ax.set_xlim(0, image_width)
-        ax.set_ylim(0, image_height)
-        ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-        ax.axis('off')
-    
-    # Hide unused subplots
-    for j in range(len(fov_ids), len(axs)):
-        axs[j].axis('off')
-    
-    # Add colorbar to the figure
-    if colorbar_position == 'right':
-        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-                           cax=cbar_ax)
-        cbar.set_label(feature_name)
-        plt.tight_layout(rect=[0, 0, 0.9, 0.95])
-    else:
-        cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.02])
-        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-                           cax=cbar_ax, orientation='horizontal')
-        cbar.set_label(feature_name)
-        plt.tight_layout(rect=[0, 0.1, 1, 0.95])
-    
-    # Set title
-    plt.suptitle(feature_name, fontsize=suptitle_fontsize)
-    plt.subplots_adjust(wspace=0.05, hspace=0.05)
-    
-    # Create directory if needed
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Generate filename if not provided
-    if filename is None:
-        safe_name = feature_name.replace(' ', '_').lower()
-        bg_suffix = "_with_bg" if background_img else ""
-        filename = f'local_polygon_{safe_name}_continuous{bg_suffix}.png'
-    
-    # Save figure
-    save_path = os.path.join(save_dir, filename)
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    print(f"Saved figure to {save_path}")
-    
-    # Show plot if requested
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
-    
-    return fig
+    Plot cell polygons per FOV (local coordinates), colored by any feature.
+    Auto-detects categorical vs. continuous.
 
+    Usage
+    -----
+    sj.plotting.plot_local_polygon(sp, feature='PanCK', fov_ids=['1','2','3'])
+    sj.plotting.plot_local_polygon(sp, feature='cell_type', fov_ids=['1','2'])
+    """
+    if sj_obj.polygons is None:
+        raise ValueError("No polygon data in spatioloji object")
 
-def plot_local_polygon_by_categorical(
-    spatioloji_obj,
-    feature: str,
-    fov_ids: Optional[List[Union[str, int]]] = None,
-    feature_df: Optional[pd.DataFrame] = None,
-    feature_column: Optional[str] = None,
-    background_img: bool = True,
-    save_dir: str = "./",
-    color_map: Optional[Dict[str, tuple]] = None,
-    figure_width: int = 7,
-    figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
-    edge_color: str = 'black',
-    edge_width: float = 0.5,
-    alpha: float = 0.8,
-    title_fontsize: int = 20,
-    suptitle_fontsize: int = 24,
-    filename: Optional[str] = None,
-    dpi: int = 300,
-    show_plot: bool = True
-) -> plt.Figure:
-    """
-    Create polygon plots colored by categorical features across multiple FOVs.
-    Uses local coordinates to show cells in each FOV.
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing polygon data and FOV images
-    feature : str
-        Feature name to visualize, or "metadata" to use feature_column
-    fov_ids : List[Union[str, int]], optional
-        List of FOV IDs to plot. If None, all FOVs with images are used
-    feature_df : pd.DataFrame, optional
-        External DataFrame with 'cell' column and feature column
-    feature_column : str, optional
-        Column name from cell_meta when feature="metadata"
-    background_img : bool, optional
-        Whether to display FOV images as background, by default True
-    save_dir : str, optional
-        Directory to save figure, by default "./"
-    color_map : Dict[str, tuple], optional
-        Category to color mapping, by default None (auto-assigned)
-    figure_width : int, optional
-        Width of each subplot in inches, by default 7
-    figure_height : int, optional
-        Height of each subplot in inches, by default 7
-    grid_layout : Tuple[int, int], optional
-        Custom grid layout (rows, columns), by default None (auto-determined)
-    edge_color : str, optional
-        Polygon edge color, by default 'black'
-    edge_width : float, optional
-        Polygon edge width, by default 0.5
-    alpha : float, optional
-        Polygon transparency, by default 0.8
-    title_fontsize : int, optional
-        Font size for FOV titles, by default 20
-    suptitle_fontsize : int, optional
-        Font size for main title, by default 24
-    filename : str, optional
-        Custom filename, by default None (auto-generated)
-    dpi : int, optional
-        Resolution for saved figure, by default 300
-    show_plot : bool, optional
-        Whether to display the plot, by default True
-    
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure object
-    """
-    # Check if polygon data exists
-    if spatioloji_obj.polygons is None:
-        raise ValueError("No polygon data available in spatioloji object")
-    
-    # Get configuration
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    fov_id_col = spatioloji_obj.config.fov_id_col
-    x_col, y_col = spatioloji_obj.config.get_coordinate_columns('local')
-    
-    # Create copy of polygon data
-    polygon_df = spatioloji_obj.polygons.copy()
-    
-    # Check required columns
-    required_cols = [cell_id_col, fov_id_col, x_col, y_col]
-    missing_cols = [col for col in required_cols if col not in polygon_df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in polygons: {missing_cols}")
-    
-    # If no FOV IDs provided, use all FOVs with images
+    cell_id_col = sj_obj.config.cell_id_col
+    fov_id_col  = sj_obj.config.fov_id_col
+    x_col, y_col = sj_obj.config.get_coordinate_columns('local')
+
+    poly_df = sj_obj.polygons.copy()
+
+    # ── FOV list ──────────────────────────────────────────────────────────────
     if fov_ids is None:
-        if spatioloji_obj.images.n_total > 0:
-            fov_ids = spatioloji_obj.images.fov_ids
-        else:
-            fov_ids = sorted(polygon_df[fov_id_col].unique())
-    
-    # Convert FOV IDs to strings
-    fov_ids = [str(fid) for fid in fov_ids]
-    
-    # Get feature data
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature_column
-        feature_subset.rename(columns={'feature_value': feature_column}, inplace=True)
-        feature = feature_column
-    else:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature
-    
-    # Check if feature is categorical or convert it
-    if not pd.api.types.is_categorical_dtype(feature_subset[feature]):
-        n_unique = feature_subset[feature].nunique()
-        
-        if n_unique > 20:
-            raise ValueError(f"Feature '{feature}' has {n_unique} unique values, too many for categorical plotting")
-        
-        print(f"Converting '{feature}' to categorical with {n_unique} categories.")
-        feature_subset[feature] = feature_subset[feature].astype('category')
-    
-    # Merge with feature data
-    merged_df = polygon_df.merge(feature_subset, on=cell_id_col)
-    
-    if len(merged_df) == 0:
-        raise ValueError("No matching cells found between polygon data and feature values")
-    
-    # Filter for selected FOVs
-    merged_df = merged_df[merged_df[fov_id_col].astype(str).isin(fov_ids)]
-    
-    if len(merged_df) == 0:
-        raise ValueError(f"No cells found in the selected FOVs: {fov_ids}")
-    
-    # Get categories
-    categories = feature_subset[feature].cat.categories
-    
-    # Create color map if not provided
-    if color_map is None:
-        color_palette = plt.cm.tab10.colors
-        color_map = {cat: color_palette[i % len(color_palette)] for i, cat in enumerate(categories)}
-    
-    # Determine grid layout
-    if grid_layout is None:
-        n_plots = len(fov_ids)
-        grid_size = int(np.ceil(np.sqrt(n_plots)))
-        rows, cols = grid_size, grid_size
-    else:
-        rows, cols = grid_layout
-    
-    # Create figure and axes
-    fig, axs = plt.subplots(rows, cols, figsize=(figure_width*cols, figure_height*rows))
-    axs = axs.flatten() if hasattr(axs, 'flatten') else [axs]
-    
-    # Track present categories
-    categories_present = set()
-    
-    # Plot each FOV
-    for idx, fov_id in enumerate(fov_ids):
-        if idx >= len(axs):
-            print(f"Warning: Not enough subplots for FOV {fov_id}. Increase grid size.")
-            break
-        
-        ax = axs[idx]
-        
-        # Display FOV image as background if requested
-        image_width = None
-        image_height = None
-        
-        if background_img:
-            img = spatioloji_obj.get_image(str(fov_id))
-            if img is not None:
-                img = cv2.flip(img, 0)
-                ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                image_height, image_width = img.shape[:2]
-            else:
-                print(f"Warning: No image found for FOV {fov_id}")
-        
-        # Get cells in this FOV
-        fov_data = merged_df[merged_df[fov_id_col].astype(str) == str(fov_id)]
-        
-        if len(fov_data) == 0:
-            print(f"Warning: No cells found for FOV {fov_id}")
-            ax.text(0.5, 0.5, f"No data for FOV {fov_id}", ha='center', va='center')
-            if image_width and image_height:
-                ax.set_xlim(0, image_width)
-                ax.set_ylim(0, image_height)
-            ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-            ax.axis('off')
-            continue
-        
-        # If no image dimensions, determine from cell positions
-        if not image_width or not image_height:
-            image_width = fov_data[x_col].max() * 1.1
-            image_height = fov_data[y_col].max() * 1.1
-        
-        # Group cells by category for this FOV
-        cell_categories = {}
-        
-        for category in categories:
-            category_cells = fov_data[fov_data[feature] == category][cell_id_col].unique()
-            
-            if len(category_cells) == 0:
-                continue
-            
-            categories_present.add(category)
-            cell_categories[category] = category_cells
-        
-        # Process all cells by category
-        for category, cells in cell_categories.items():
-            category_color = color_map[category]
-            
-            for cell_id in cells:
-                cell_vertices = fov_data[fov_data[cell_id_col] == cell_id]
-                
-                if len(cell_vertices) < 3:
-                    print(f"Warning: Cell {cell_id} in FOV {fov_id} has fewer than 3 vertices. Skipping.")
-                    continue
-                
-                coords = cell_vertices[[x_col, y_col]].values
-                
-                polygon = mpl.patches.Polygon(
-                    coords,
-                    closed=True,
-                    facecolor=category_color,
-                    edgecolor=edge_color,
-                    linewidth=edge_width,
-                    alpha=alpha
-                )
-                ax.add_patch(polygon)
-        
-        # Set plot properties
-        ax.set_aspect('equal')
-        ax.set_xlim(0, image_width)
-        ax.set_ylim(0, image_height)
-        ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-        ax.axis('off')
-    
-    # Hide unused subplots
-    for j in range(len(fov_ids), len(axs)):
-        axs[j].axis('off')
-    
-    # Add legend for all present categories
-    legend_patches = [Patch(facecolor=color_map[cat],
-                           edgecolor=edge_color,
-                           alpha=alpha,
-                           label=str(cat))
-                     for cat in sorted(categories_present)]
-    
-    fig.legend(
-        handles=legend_patches,
-        loc='center right',
-        bbox_to_anchor=(1.02, 0.5),
-        title=feature_name,
-        fontsize=20
+        fov_ids = sorted(poly_df[fov_id_col].unique().astype(str).tolist())
+    fov_ids = [str(f) for f in fov_ids]
+
+    # ── Feature data ──────────────────────────────────────────────────────────
+    feat_df  = _get_feature_data(sj_obj, feature, feature_df, feature_column)
+    feat_col = feature_column if (feature == "metadata" and feature_column) else feature
+
+    # ── Auto-detect kind & build color mapping ────────────────────────────────
+    kind = 'categorical' if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else 'continuous'
+    color_lookup, legend_handles, norm, cmap = _build_color_mapping(
+        feat_df[feat_col], kind=kind,
+        colormap=colormap, color_map=color_map,
+        vmin=vmin, vmax=vmax,
     )
-    
-    # Set title and adjust layout
-    plt.suptitle(feature_name, fontsize=suptitle_fontsize)
-    plt.tight_layout(rect=[0, 0, 0.95, 0.98])
-    plt.subplots_adjust(wspace=0.05, hspace=0.05)
-    
-    # Create directory if needed
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Generate filename if not provided
-    if filename is None:
-        safe_name = feature_name.replace(' ', '_').lower()
-        bg_suffix = "_with_bg" if background_img else ""
-        filename = f'local_polygon_{safe_name}_categorical{bg_suffix}.png'
-    
-    # Save figure
-    save_path = os.path.join(save_dir, filename)
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    print(f"Saved figure to {save_path}")
-    
-    # Show plot if requested
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
-    
-    return fig
 
-# ============================================================================
-# LOCAL DOT PLOTTING
-# ============================================================================
+    merged = poly_df.merge(feat_df, on=cell_id_col)
+    if merged.empty:
+        raise ValueError("No overlapping cells between polygons and feature data")
+    merged[fov_id_col] = merged[fov_id_col].astype(str)
+    
+    # ── Grid ──────────────────────────────────────────────────────────────────
+    fig, axs = _setup_grid(len(fov_ids), grid_layout, figure_width, figure_height)
 
-def plot_local_dots_by_features(
-    spatioloji_obj,
-    feature: str,
-    fov_ids: Optional[List[Union[str, int]]] = None,
-    feature_df: Optional[pd.DataFrame] = None,
-    feature_column: Optional[str] = None,
-    background_img: bool = True,
-    save_dir: str = "./",
-    colormap: str = "viridis",
-    figure_width: int = 7,
-    figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
-    dot_size: float = 20,
-    edge_color: str = 'black',
-    edge_width: float = 0.5,
-    alpha: float = 0.8,
-    title_fontsize: int = 20,
-    suptitle_fontsize: int = 24,
-    filename: Optional[str] = None,
-    dpi: int = 300,
-    show_plot: bool = True,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    colorbar_position: str = 'right'
-) -> plt.Figure:
-    """
-    Create dot plots colored by continuous features across multiple FOVs.
-    Uses local center coordinates to show cells in each FOV.
-    
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing cell metadata and FOV images
-    feature : str
-        Feature name to visualize, or "metadata" to use feature_column
-    fov_ids : List[Union[str, int]], optional
-        List of FOV IDs to plot. If None, all FOVs with images are used
-    feature_df : pd.DataFrame, optional
-        External DataFrame with 'cell' column and feature column
-    feature_column : str, optional
-        Column name from cell_meta when feature="metadata"
-    background_img : bool, optional
-        Whether to display FOV images as background, by default True
-    save_dir : str, optional
-        Directory to save figure, by default "./"
-    colormap : str, optional
-        Matplotlib colormap name, by default "viridis"
-    figure_width : int, optional
-        Width of each subplot in inches, by default 7
-    figure_height : int, optional
-        Height of each subplot in inches, by default 7
-    grid_layout : Tuple[int, int], optional
-        Custom grid layout (rows, columns), by default None (auto-determined)
-    dot_size : float, optional
-        Size of dots representing cells, by default 20
-    edge_color : str, optional
-        Dot edge color, by default 'black'
-    edge_width : float, optional
-        Dot edge width, by default 0.5
-    alpha : float, optional
-        Dot transparency, by default 0.8
-    title_fontsize : int, optional
-        Font size for FOV titles, by default 20
-    suptitle_fontsize : int, optional
-        Font size for main title, by default 24
-    filename : str, optional
-        Custom filename, by default None (auto-generated)
-    dpi : int, optional
-        Resolution for saved figure, by default 300
-    show_plot : bool, optional
-        Whether to display the plot, by default True
-    vmin : float, optional
-        Minimum value for color scale, by default None
-    vmax : float, optional
-        Maximum value for color scale, by default None
-    colorbar_position : str, optional
-        Position of colorbar ('right' or 'bottom'), by default 'right'
-    
-    Returns
-    -------
-    plt.Figure
-        Matplotlib figure object
-    """
-    # Get configuration
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    fov_id_col = spatioloji_obj.config.fov_id_col
-    
-    # Create copy of cell metadata
-    cell_meta = spatioloji_obj.cell_meta.reset_index().copy()
-    
-    # Check required columns for local center coordinates
-    required_cols = [cell_id_col, fov_id_col, 'CenterX_local_px', 'CenterY_local_px']
-    missing_cols = [col for col in required_cols if col not in cell_meta.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in cell_meta: {missing_cols}")
-    
-    cell_meta = cell_meta[required_cols]
-    
-    # If no FOV IDs provided, use all FOVs with images
-    if fov_ids is None:
-        if spatioloji_obj.images.n_total > 0:
-            fov_ids = spatioloji_obj.images.fov_ids
-        else:
-            fov_ids = sorted(cell_meta[fov_id_col].unique())
-    
-    # Convert FOV IDs to strings
-    fov_ids = [str(fid) for fid in fov_ids]
-    
-    # Get feature data
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature_column
-        feature_subset.rename(columns={'feature_value': feature_column}, inplace=True)
-        feature = feature_column
-    else:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature
-    
-    # Check if feature is numeric
-    if not pd.api.types.is_numeric_dtype(feature_subset[feature]):
-        raise ValueError(f"Feature '{feature}' must be numeric for continuous plotting")
-    
-    # Merge with feature data
-    merged_df = cell_meta.merge(feature_subset, on=cell_id_col)
-    
-    if len(merged_df) == 0:
-        raise ValueError("No matching cells found between cell_meta and feature values")
-    
-    # Filter for selected FOVs
-    merged_df = merged_df[merged_df[fov_id_col].astype(str).isin(fov_ids)]
-    
-    if len(merged_df) == 0:
-        raise ValueError(f"No cells found in the selected FOVs: {fov_ids}")
-    
-    # Determine global color normalization
-    if vmin is None:
-        vmin = merged_df[feature].min()
-    if vmax is None:
-        vmax = merged_df[feature].max()
-    
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
-    
-    # Get colormap
-    cmap = cm.get_cmap(colormap)
-    
-    # Determine grid layout
-    if grid_layout is None:
-        n_plots = len(fov_ids)
-        grid_size = int(np.ceil(np.sqrt(n_plots)))
-        rows, cols = grid_size, grid_size
-    else:
-        rows, cols = grid_layout
-    
-    # Create figure and axes
-    fig, axs = plt.subplots(rows, cols, figsize=(figure_width*cols, figure_height*rows))
-    axs = axs.flatten() if hasattr(axs, 'flatten') else [axs]
-    
-    # Plot each FOV
     for idx, fov_id in enumerate(fov_ids):
-        if idx >= len(axs):
-            print(f"Warning: Not enough subplots for FOV {fov_id}. Increase grid size.")
-            break
-        
         ax = axs[idx]
-        
-        # Display FOV image as background if requested
-        image_width = None
-        image_height = None
-        
-        if background_img:
-            img = spatioloji_obj.get_image(str(fov_id))
-            if img is not None:
-                img = cv2.flip(img, 0)  # Flip vertically
-                ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                image_height, image_width = img.shape[:2]
-            else:
-                print(f"Warning: No image found for FOV {fov_id}")
-        
-        # Get cells in this FOV
-        fov_data = merged_df[merged_df[fov_id_col].astype(str) == str(fov_id)]
-        
-        if len(fov_data) == 0:
-            print(f"Warning: No cells found for FOV {fov_id}")
-            ax.text(0.5, 0.5, f"No data for FOV {fov_id}", ha='center', va='center')
-            if image_width and image_height:
-                ax.set_xlim(0, image_width)
-                ax.set_ylim(0, image_height)
-            ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
+        fov_data = merged[merged[fov_id_col] == fov_id]
+
+        if fov_data.empty:
+            ax.set_title(f'FOV {fov_id} (no data)', fontsize=title_fontsize)
             ax.axis('off')
             continue
+          
+        # ── Shared axis limits from image size ───────
+        sample_img = sj_obj.get_image(fov_id)
+        if sample_img is None:
+            raise ValueError(f"Could not load image for FOV '{fov_ids[0]}' to determine shared dimensions")
+        shared_h, shared_w = sample_img.shape[:2]
         
-        # If no image dimensions, determine from cell positions
-        if not image_width or not image_height:
-            image_width = fov_data['CenterX_local_px'].max() * 1.1
-            image_height = fov_data['CenterY_local_px'].max() * 1.1
+        ax.set_xlim(0, shared_w)
+        ax.set_ylim(0, shared_h)
         
-        # Create scatter plot with feature-based coloring
-        scatter = ax.scatter(
-            fov_data['CenterX_local_px'],
-            fov_data['CenterY_local_px'],
-            s=dot_size,
-            c=fov_data[feature],
-            cmap=colormap,
-            norm=norm,
-            edgecolors=edge_color,
-            linewidths=edge_width,
-            alpha=alpha
+        # Optional background image
+        if background_img:
+            img = sj_obj.get_image(fov_id)
+            if img is not None:
+                ax.imshow(np.flipud(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)), origin='lower')
+
+        _render_polygons_on_ax(
+            ax, fov_data, x_col, y_col, cell_id_col, feat_col,
+            kind, color_lookup, norm, cmap, edge_color, edge_width, alpha,
         )
-        
-        # Set plot properties
-        ax.set_aspect('equal')
-        ax.set_xlim(0, image_width)
-        ax.set_ylim(0, image_height)
+
         ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-        ax.axis('off')
-    
-    # Hide unused subplots
+
+    # Hide unused axes
     for j in range(len(fov_ids), len(axs)):
         axs[j].axis('off')
-    
-    # Add colorbar to the figure
-    if colorbar_position == 'right':
-        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-                           cax=cbar_ax)
-        cbar.set_label(feature_name)
-        plt.tight_layout(rect=[0, 0, 0.9, 0.95])
+
+    # ── Shared legend / colorbar ──────────────────────────────────────────────
+    feat_name = feat_col
+    if kind == 'categorical':
+        fig.legend(handles=legend_handles, loc='center right',
+                   bbox_to_anchor=(1.02, 0.5), title=feat_name, fontsize=14)
+        plt.tight_layout(rect=[0, 0, 0.95, 0.98])
     else:
-        cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.02])
-        cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-                           cax=cbar_ax, orientation='horizontal')
-        cbar.set_label(feature_name)
-        plt.tight_layout(rect=[0, 0.1, 1, 0.95])
-    
-    # Set title
-    plt.suptitle(feature_name, fontsize=suptitle_fontsize)
+        sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        if colorbar_position == 'right':
+            cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+            fig.colorbar(sm, cax=cbar_ax, label=feat_name)
+            plt.tight_layout(rect=[0, 0, 0.9, 0.95])
+        else:
+            cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.02])
+            fig.colorbar(sm, cax=cbar_ax, orientation='horizontal', label=feat_name)
+            plt.tight_layout(rect=[0, 0.1, 1, 0.95])
+
+    plt.suptitle(feat_name, fontsize=suptitle_fontsize)
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
-    
-    # Create directory if needed
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Generate filename if not provided
+
+    # ── Save / show ───────────────────────────────────────────────────────────
     if filename is None:
-        safe_name = feature_name.replace(' ', '_').lower()
-        bg_suffix = "_with_bg" if background_img else ""
-        filename = f'local_dots_{safe_name}_continuous{bg_suffix}.png'
-    
-    # Save figure
-    save_path = os.path.join(save_dir, filename)
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    print(f"Saved figure to {save_path}")
-    
-    # Show plot if requested
-    if show_plot:
-        plt.show()
-    else:
-        plt.close()
-    
-    return fig
+        safe = feat_col.replace(' ', '_').lower()
+        bg = '_with_bg' if background_img else ''
+        filename = f"polygon_{safe}_local_{kind}{bg}.png"
 
+    return _finalize(fig, save_dir, filename, dpi, show_plot)
 
-def plot_local_dots_by_categorical(
-    spatioloji_obj,
-    feature: str,
-    fov_ids: Optional[List[Union[str, int]]] = None,
-    feature_df: Optional[pd.DataFrame] = None,
-    feature_column: Optional[str] = None,
-    background_img: bool = True,
-    save_dir: str = "./",
-    color_map: Optional[Dict[str, tuple]] = None,
-    figure_width: int = 7,
-    figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
-    dot_size: float = 20,
-    edge_color: str = 'black',
-    edge_width: float = 0.5,
-    alpha: float = 0.8,
-    title_fontsize: int = 20,
-    suptitle_fontsize: int = 24,
-    filename: Optional[str] = None,
-    dpi: int = 300,
-    show_plot: bool = True
-) -> plt.Figure:
+# =============================================================================
+# SECTION 4 — DOT RENDERING ENGINE
+# =============================================================================
+
+def _render_dots_on_ax(ax, df, x_col, y_col, feature,
+                        kind, color_lookup, norm, cmap,
+                        dot_size, edge_color, edge_width, alpha):
     """
-    Create dot plots colored by categorical features across multiple FOVs.
-    Uses local center coordinates to show cells in each FOV.
-    
+    Draw all cell dots onto a single Axes using ax.scatter.
+
     Parameters
     ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object containing cell metadata and FOV images
-    feature : str
-        Feature name to visualize, or "metadata" to use feature_column
-    fov_ids : List[Union[str, int]], optional
-        List of FOV IDs to plot. If None, all FOVs with images are used
-    feature_df : pd.DataFrame, optional
-        External DataFrame with 'cell' column and feature column
-    feature_column : str, optional
-        Column name from cell_meta when feature="metadata"
-    background_img : bool, optional
-        Whether to display FOV images as background, by default True
-    save_dir : str, optional
-        Directory to save figure, by default "./"
-    color_map : Dict[str, tuple], optional
-        Category to color mapping, by default None (auto-assigned)
-    figure_width : int, optional
-        Width of each subplot in inches, by default 7
-    figure_height : int, optional
-        Height of each subplot in inches, by default 7
-    grid_layout : Tuple[int, int], optional
-        Custom grid layout (rows, columns), by default None (auto-determined)
-    dot_size : float, optional
-        Size of dots representing cells, by default 20
-    edge_color : str, optional
-        Dot edge color, by default 'black'
-    edge_width : float, optional
-        Dot edge width, by default 0.5
-    alpha : float, optional
-        Dot transparency, by default 0.8
-    title_fontsize : int, optional
-        Font size for FOV titles, by default 20
-    suptitle_fontsize : int, optional
-        Font size for main title, by default 24
-    filename : str, optional
-        Custom filename, by default None (auto-generated)
-    dpi : int, optional
-        Resolution for saved figure, by default 300
-    show_plot : bool, optional
-        Whether to display the plot, by default True
-    
+    ax          : matplotlib Axes
+    df          : DataFrame with columns [x_col, y_col, feature]
+    kind        : 'categorical' or 'continuous'
+    color_lookup: Dict[category → color]  — used when kind='categorical'
+    norm, cmap  : used when kind='continuous'
+
     Returns
     -------
-    plt.Figure
-        Matplotlib figure object
+    scatter object (needed for colorbar when kind='continuous')
     """
-    # Get configuration
-    cell_id_col = spatioloji_obj.config.cell_id_col
-    fov_id_col = spatioloji_obj.config.fov_id_col
-    
-    # Create copy of cell metadata
-    cell_meta = spatioloji_obj.cell_meta.reset_index().copy()
-    
-    # Check required columns for local center coordinates
-    required_cols = [cell_id_col, fov_id_col, 'CenterX_local_px', 'CenterY_local_px']
-    missing_cols = [col for col in required_cols if col not in cell_meta.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns in cell_meta: {missing_cols}")
-    
-    cell_meta = cell_meta[required_cols]
-    
-    # If no FOV IDs provided, use all FOVs with images
-    if fov_ids is None:
-        if spatioloji_obj.images.n_total > 0:
-            fov_ids = spatioloji_obj.images.fov_ids
-        else:
-            fov_ids = sorted(cell_meta[fov_id_col].unique())
-    
-    # Convert FOV IDs to strings
-    fov_ids = [str(fid) for fid in fov_ids]
-    
-    # Get feature data
-    if feature == "metadata" and feature_column is not None:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature_column
-        feature_subset.rename(columns={'feature_value': feature_column}, inplace=True)
-        feature = feature_column
-    else:
-        feature_subset = _get_feature_data(spatioloji_obj, feature, feature_df, feature_column)
-        feature_name = feature
-    
-    # Check if feature is categorical or convert it
-    if not pd.api.types.is_categorical_dtype(feature_subset[feature]):
-        n_unique = feature_subset[feature].nunique()
-        
-        if n_unique > 20:
-            raise ValueError(f"Feature '{feature}' has {n_unique} unique values, too many for categorical plotting")
-        
-        print(f"Converting '{feature}' to categorical with {n_unique} categories.")
-        feature_subset[feature] = feature_subset[feature].astype('category')
-    
-    # Merge with feature data
-    merged_df = cell_meta.merge(feature_subset, on=cell_id_col)
-    
-    if len(merged_df) == 0:
-        raise ValueError("No matching cells found between cell_meta and feature values")
-    
-    # Filter for selected FOVs
-    merged_df = merged_df[merged_df[fov_id_col].astype(str).isin(fov_ids)]
-    
-    if len(merged_df) == 0:
-        raise ValueError(f"No cells found in the selected FOVs: {fov_ids}")
-    
-    # Get categories
-    categories = feature_subset[feature].cat.categories
-    
-    # Create color map if not provided
-    if color_map is None:
-        color_palette = plt.cm.tab10.colors
-        color_map = {cat: color_palette[i % len(color_palette)] for i, cat in enumerate(categories)}
-    
-    # Determine grid layout
-    if grid_layout is None:
-        n_plots = len(fov_ids)
-        grid_size = int(np.ceil(np.sqrt(n_plots)))
-        rows, cols = grid_size, grid_size
-    else:
-        rows, cols = grid_layout
-    
-    # Create figure and axes
-    fig, axs = plt.subplots(rows, cols, figsize=(figure_width*cols, figure_height*rows))
-    axs = axs.flatten() if hasattr(axs, 'flatten') else [axs]
-    
-    # Track present categories
-    categories_present = set()
-    
-    # Plot each FOV
-    for idx, fov_id in enumerate(fov_ids):
-        if idx >= len(axs):
-            print(f"Warning: Not enough subplots for FOV {fov_id}. Increase grid size.")
-            break
-        
-        ax = axs[idx]
-        
-        # Display FOV image as background if requested
-        image_width = None
-        image_height = None
-        
-        if background_img:
-            img = spatioloji_obj.get_image(str(fov_id))
-            if img is not None:
-                img = cv2.flip(img, 0)
-                ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                image_height, image_width = img.shape[:2]
-            else:
-                print(f"Warning: No image found for FOV {fov_id}")
-        
-        # Get cells in this FOV
-        fov_data = merged_df[merged_df[fov_id_col].astype(str) == str(fov_id)]
-        
-        if len(fov_data) == 0:
-            print(f"Warning: No cells found for FOV {fov_id}")
-            ax.text(0.5, 0.5, f"No data for FOV {fov_id}", ha='center', va='center')
-            if image_width and image_height:
-                ax.set_xlim(0, image_width)
-                ax.set_ylim(0, image_height)
-            ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-            ax.axis('off')
-            continue
-        
-        # If no image dimensions, determine from cell positions
-        if not image_width or not image_height:
-            image_width = fov_data['CenterX_local_px'].max() * 1.1
-            image_height = fov_data['CenterY_local_px'].max() * 1.1
-        
-        # Plot dots for each category
-        for category in categories:
-            category_cells = fov_data[fov_data[feature] == category]
-            
-            if len(category_cells) == 0:
-                continue
-            
-            categories_present.add(category)
-            
-            # Plot dots for this category
+    if kind == 'categorical':
+        # Draw each category separately so legend labels work naturally
+        scatter = None
+        for cat, grp in df.groupby(feature):
             ax.scatter(
-                category_cells['CenterX_local_px'],
-                category_cells['CenterY_local_px'],
+                grp[x_col], grp[y_col],
                 s=dot_size,
-                c=[color_map[category]],
+                c=[color_lookup.get(str(cat), (0.5, 0.5, 0.5))],
                 edgecolors=edge_color,
                 linewidths=edge_width,
                 alpha=alpha,
-                label=str(category)
+                label=str(cat),
             )
+    else:
+        scatter = ax.scatter(
+            df[x_col], df[y_col],
+            c=df[feature],
+            cmap=cmap,
+            norm=norm,
+            s=dot_size,
+            edgecolors=edge_color,
+            linewidths=edge_width,
+            alpha=alpha,
+        )
+
+    ax.set_aspect('equal')
+    ax.axis('off')
+    return scatter
+
+
+# =============================================================================
+# SECTION 4 — PUBLIC DOT FUNCTIONS
+# =============================================================================
+
+def plot_global_dots(
+    sj_obj,
+    feature: str,
+    feature_df=None,
+    feature_column: Optional[str] = None,
+    background_img: Optional[np.ndarray] = None,
+    min_x: Optional[float] = None,
+    min_y: Optional[float] = None,
+    # continuous params
+    colormap: str = "viridis",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    # categorical params
+    color_map: Optional[Dict] = None,
+    legend_loc: str = 'center left',
+    legend_bbox: Tuple[float, float] = (1.01, 0.5),
+    # shared style
+    dot_size: int = 20,
+    edge_color: Optional[str] = None,
+    edge_width: float = 0.0,
+    alpha: float = 1.0,
+    figsize: Tuple[int, int] = (12, 12),
+    fig_title: Optional[str] = None,
+    save_dir: str = "./",
+    filename: Optional[str] = None,
+    dpi: int = 300,
+    show_plot: bool = True,
+) -> plt.Figure:
+    """
+    Plot cell centroids in global coordinates, colored by any feature.
+    Auto-detects categorical vs. continuous based on data type.
+
+    Uses CenterX_global_px / CenterY_global_px from cell_meta.
+
+    Usage
+    -----
+    sj.plotting.plot_global_dots(sp, feature='PanCK')
+    sj.plotting.plot_global_dots(sp, feature='cell_type')
+    sj.plotting.plot_global_dots(sp, feature='metadata', feature_column='cluster')
+    """
+    cell_id_col = sj_obj.config.cell_id_col
+    meta = sj_obj.cell_meta.reset_index()
+
+    # ── Check required coordinate columns ─────────────────────────────────────
+    for col in ('CenterX_global_px', 'CenterY_global_px'):
+        if col not in meta.columns:
+            raise ValueError(f"Missing required column in cell_meta: '{col}'")
+
+    # ── Feature data ──────────────────────────────────────────────────────────
+    feat_df  = _get_feature_data(sj_obj, feature, feature_df, feature_column)
+    feat_col = feature_column if (feature == "metadata" and feature_column) else feature
+    feat_name = fig_title or feat_col
+
+    # ── Auto-detect kind & build color mapping ────────────────────────────────
+    kind = 'categorical' if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else 'continuous'
+    color_lookup, legend_handles, norm, cmap = _build_color_mapping(
+        feat_df[feat_col], kind=kind,
+        colormap=colormap, color_map=color_map,
+        vmin=vmin, vmax=vmax,
+    )
+
+    # ── Apply global offsets ──────────────────────────────────────────────────
+    coords = meta[[cell_id_col, 'CenterX_global_px', 'CenterY_global_px']].copy()
+    if min_x is None:
+        min_x = coords['CenterX_global_px'].min()
+    if min_y is None:
+        min_y = coords['CenterY_global_px'].min()
+    coords['x_plot'] = coords['CenterX_global_px'] - min_x
+    coords['y_plot'] = coords['CenterY_global_px'] - min_y
+
+    merged = coords.merge(feat_df, on=cell_id_col)
+    if merged.empty:
+        raise ValueError("No overlapping cells between cell_meta and feature data")
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if background_img is not None:
+        h, w = background_img.shape[:2]
+        ax.imshow(cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB), origin='upper')
+        ax.set_xlim(0, w)
+        ax.set_ylim(h, 0)
+
+    scatter = _render_dots_on_ax(
+        ax, merged, 'x_plot', 'y_plot', feat_col,
+        kind, color_lookup, norm, cmap,
+        dot_size, edge_color, edge_width, alpha,
+    )
+    if background_img is not None:
+        ax.invert_yaxis()
+    ax.set_title(feat_name, fontsize=14)
+
+    # ── Legend / colorbar ─────────────────────────────────────────────────────
+    if kind == 'categorical':
+        ax.legend(handles=legend_handles, loc=legend_loc,
+                  bbox_to_anchor=legend_bbox, title=feat_name)
+    else:
+        fig.colorbar(scatter, ax=ax, shrink=0.8, label=feat_name)
+
+    # ── Save / show ───────────────────────────────────────────────────────────
+    if filename is None:
+        safe = feat_col.replace(' ', '_').lower()
+        bg = '_with_bg' if background_img is not None else ''
+        filename = f"dots_{safe}_global_{kind}{bg}.png"
+
+    return _finalize(fig, save_dir, filename, dpi, show_plot)
+
+
+def plot_local_dots(
+    sj_obj,
+    feature: str,
+    fov_ids: Optional[List[Union[str, int]]] = None,
+    feature_df=None,
+    feature_column: Optional[str] = None,
+    background_img: bool = True,
+    # continuous params
+    colormap: str = "viridis",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    colorbar_position: str = 'right',
+    # categorical params
+    color_map: Optional[Dict] = None,
+    # shared style
+    dot_size: float = 20,
+    edge_color: str = 'none',
+    edge_width: float = 0.0,
+    alpha: float = 0.8,
+    figure_width: int = 7,
+    figure_height: int = 7,
+    grid_layout: Optional[Tuple[int, int]] = None,
+    title_fontsize: int = 20,
+    suptitle_fontsize: int = 24,
+    save_dir: str = "./",
+    filename: Optional[str] = None,
+    dpi: int = 300,
+    show_plot: bool = True,
+) -> plt.Figure:
+    """
+    Plot cell centroids per FOV (local coordinates), colored by any feature.
+    Auto-detects categorical vs. continuous.
+
+    Uses CenterX_local_px / CenterY_local_px from cell_meta.
+
+    Usage
+    -----
+    sj.plotting.plot_local_dots(sp, feature='PanCK', fov_ids=['1','2','3'])
+    sj.plotting.plot_local_dots(sp, feature='cell_type', fov_ids=['1','2'])
+    """
+    cell_id_col = sj_obj.config.cell_id_col
+    fov_id_col  = sj_obj.config.fov_id_col
+    meta = sj_obj.cell_meta.reset_index()
+
+    # ── Check required coordinate columns ─────────────────────────────────────
+    for col in ('CenterX_local_px', 'CenterY_local_px'):
+        if col not in meta.columns:
+            raise ValueError(f"Missing required column in cell_meta: '{col}'")
+
+    # ── FOV list ──────────────────────────────────────────────────────────────
+    if fov_ids is None:
+        fov_ids = sorted(meta[fov_id_col].unique().astype(str).tolist())
+    fov_ids = [str(f) for f in fov_ids]
+
+    # ── Feature data ──────────────────────────────────────────────────────────
+    feat_df  = _get_feature_data(sj_obj, feature, feature_df, feature_column)
+    feat_col = feature_column if (feature == "metadata" and feature_column) else feature
+
+    # ── Auto-detect kind & build color mapping ────────────────────────────────
+    kind = 'categorical' if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else 'continuous'
+    color_lookup, legend_handles, norm, cmap = _build_color_mapping(
+        feat_df[feat_col], kind=kind,
+        colormap=colormap, color_map=color_map,
+        vmin=vmin, vmax=vmax,
+    )
+
+    coords = meta[[cell_id_col, fov_id_col,
+                   'CenterX_local_px', 'CenterY_local_px']].copy()
+    merged = coords.merge(feat_df, on=cell_id_col)
+    if merged.empty:
+        raise ValueError("No overlapping cells between cell_meta and feature data")
+    merged[fov_id_col] = merged[fov_id_col].astype(str)
+
+    # ── Grid ──────────────────────────────────────────────────────────────────
+    fig, axs = _setup_grid(len(fov_ids), grid_layout, figure_width, figure_height)
+
+    for idx, fov_id in enumerate(fov_ids):
+        ax = axs[idx]
+        fov_data = merged[merged[fov_id_col] == fov_id]
+
+        if fov_data.empty:
+            ax.set_title(f'FOV {fov_id} (no data)', fontsize=title_fontsize)
+            ax.axis('off')
+            continue
+        # ── Shared axis limits from image size ───────
+        sample_img = sj_obj.get_image(fov_id)
+        if sample_img is None:
+            raise ValueError(f"Could not load image for FOV '{fov_ids[0]}' to determine shared dimensions")
+        shared_h, shared_w = sample_img.shape[:2]
         
-        # Set plot properties
-        ax.set_aspect('equal')
-        ax.set_xlim(0, image_width)
-        ax.set_ylim(0, image_height)
+        ax.set_xlim(0, shared_w)
+        ax.set_ylim(0, shared_h)
+        
+        # Optional background image
+        if background_img:
+            img = sj_obj.get_image(fov_id)
+            if img is not None:
+                h, w = img.shape[:2]
+                ax.imshow(np.flipud(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)), origin='lower')
+
+        scatter = _render_dots_on_ax(
+            ax, fov_data, 'CenterX_local_px', 'CenterY_local_px', feat_col,
+            kind, color_lookup, norm, cmap,
+            dot_size, edge_color, edge_width, alpha,
+        )
+        
+
         ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
-        ax.axis('off')
-    
-    # Hide unused subplots
+
+    # Hide unused axes
     for j in range(len(fov_ids), len(axs)):
         axs[j].axis('off')
-    
-    # Add legend for all present categories
-    legend_patches = [Patch(facecolor=color_map[cat],
-                           edgecolor=edge_color,
-                           alpha=alpha,
-                           label=str(cat))
-                     for cat in sorted(categories_present)]
-    
-    fig.legend(
-        handles=legend_patches,
-        loc='center right',
-        bbox_to_anchor=(1.02, 0.5),
-        title=feature_name,
-        fontsize=20
-    )
-    
-    # Set title and adjust layout
-    plt.suptitle(feature_name, fontsize=suptitle_fontsize)
-    plt.tight_layout(rect=[0, 0, 0.95, 0.98])
-    plt.subplots_adjust(wspace=0.05, hspace=0.05)
-    
-    # Create directory if needed
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Generate filename if not provided
-    if filename is None:
-        safe_name = feature_name.replace(' ', '_').lower()
-        bg_suffix = "_with_bg" if background_img else ""
-        filename = f'local_dots_{safe_name}_categorical{bg_suffix}.png'
-    
-    # Save figure
-    save_path = os.path.join(save_dir, filename)
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    print(f"Saved figure to {save_path}")
-    
-    # Show plot if requested
-    if show_plot:
-        plt.show()
+
+    # ── Shared legend / colorbar ──────────────────────────────────────────────
+    feat_name = feat_col
+    if kind == 'categorical':
+        fig.legend(handles=legend_handles, loc='center right',
+                   bbox_to_anchor=(1.02, 0.5), title=feat_name, fontsize=14)
+        plt.tight_layout(rect=[0, 0, 0.95, 0.98])
     else:
-        plt.close()
+        sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        if colorbar_position == 'right':
+            cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+            fig.colorbar(sm, cax=cbar_ax, label=feat_name)
+            plt.tight_layout(rect=[0, 0, 0.9, 0.95])
+        else:
+            cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.02])
+            fig.colorbar(sm, cax=cbar_ax, orientation='horizontal', label=feat_name)
+            plt.tight_layout(rect=[0, 0.1, 1, 0.95])
+
+    plt.suptitle(feat_name, fontsize=suptitle_fontsize)
+    plt.subplots_adjust(wspace=0.05, hspace=0.05)
+
+    # ── Save / show ───────────────────────────────────────────────────────────
+    if filename is None:
+        safe = feat_col.replace(' ', '_').lower()
+        bg = '_with_bg' if background_img else ''
+        filename = f"dots_{safe}_local_{kind}{bg}.png"
+
+    return _finalize(fig, save_dir, filename, dpi, show_plot)
+
+# =============================================================================
+# SECTION A — GENE EXPRESSION HELPER
+# =============================================================================
+
+def _get_gene_expression(sj_obj, gene: str,
+                         layer: Optional[str] = 'log_normalized') -> pd.DataFrame:
+    """
+    Return a two-column DataFrame: [cell_id_col, gene].
+    Same shape as _get_feature_data output — plugs into existing rendering pipeline.
+
+    Parameters
+    ----------
+    sj_obj : spatioloji
+    gene   : str — must exist in sj_obj.gene_index
+    layer  : str or None
+        None       → raw expression (sj_obj.expression)
+        'layername' → sj_obj.layers['layername']
+    """
+    cell_id = sj_obj.config.cell_id_col
+
+    # Validate gene exists
+    if gene not in sj_obj.gene_index:
+        raise ValueError(
+            f"Gene '{gene}' not found. "
+            f"Check sj_obj.gene_index for available genes."
+        )
+
+    # Extract expression vector (n_cells,)
+    if layer is None:
+        expr = sj_obj.get_expression(gene_names=gene).flatten()
+    else:
+        if layer not in sj_obj.layers:
+            raise ValueError(
+                f"Layer '{layer}' not found. "
+                f"Available layers: {list(sj_obj.layers.keys())}"
+            )
+        layer_data = sj_obj.get_layer(layer)
+        gene_idx   = sj_obj._get_gene_indices([gene])[0]
+
+        from scipy import sparse
+        if sparse.issparse(layer_data):
+            expr = layer_data[:, gene_idx].toarray().flatten()
+        else:
+            expr = layer_data[:, gene_idx].flatten()
+
+    # Build DataFrame aligned to master cell index
+    return pd.DataFrame({
+        cell_id: sj_obj.cell_index.astype(str),
+        gene:    expr,
+    })
     
-    return fig
+# =============================================================================
+# SECTION B — GENE POLYGON FUNCTIONS
+# =============================================================================
+
+def plot_global_polygon_gene(
+    sj_obj,
+    gene: str,
+    layer: Optional[str] = 'log_normalized',
+    background_img: Optional[np.ndarray] = None,
+    min_x: Optional[float] = None,
+    min_y: Optional[float] = None,
+    colormap: str = "magma",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    edge_color: str = "none",
+    edge_width: float = 0.01,
+    alpha: float = 1.0,
+    figsize: Tuple[int, int] = (12, 12),
+    save_dir: str = "./",
+    filename: Optional[str] = None,
+    dpi: int = 300,
+    show_plot: bool = True,
+) -> plt.Figure:
+    """
+    Plot cell polygons in global coordinates colored by gene expression.
+
+    Usage
+    -----
+    sj.visualization.plot_global_polygon_gene(sp, gene='PanCK')
+    sj.visualization.plot_global_polygon_gene(sp, gene='CD3D', layer='normalized')
+    sj.visualization.plot_global_polygon_gene(sp, gene='EPCAM', layer=None)  # raw
+    """
+    feat_df = _get_gene_expression(sj_obj, gene, layer)
+    layer_label = layer or 'raw'
+    fig_title = f"{gene} ({layer_label})"
+
+    return plot_global_polygon(
+        sj_obj,
+        feature=gene,
+        feature_df=feat_df,
+        background_img=background_img,
+        min_x=min_x, min_y=min_y,
+        colormap=colormap,
+        vmin=vmin, vmax=vmax,
+        edge_color=edge_color,
+        edge_width=edge_width,
+        alpha=alpha,
+        figsize=figsize,
+        fig_title=fig_title,
+        save_dir=save_dir,
+        filename=filename or f"polygon_{gene}_{layer_label}_global{'_bg' if background_img is not None else ''}.png",
+        dpi=dpi,
+        show_plot=show_plot,
+    )
+
+
+def plot_local_polygon_gene(
+    sj_obj,
+    gene: str,
+    layer: Optional[str] = 'log_normalized',
+    fov_ids: Optional[List[Union[str, int]]] = None,
+    background_img: bool = True,
+    colormap: str = "magma",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    colorbar_position: str = 'right',
+    edge_color: str = 'none',
+    edge_width: float = 0.01,
+    alpha: float = 1.0,
+    figure_width: int = 7,
+    figure_height: int = 7,
+    grid_layout: Optional[Tuple[int, int]] = None,
+    title_fontsize: int = 20,
+    suptitle_fontsize: int = 24,
+    save_dir: str = "./",
+    filename: Optional[str] = None,
+    dpi: int = 300,
+    show_plot: bool = True,
+) -> plt.Figure:
+    """
+    Plot cell polygons per FOV colored by gene expression.
+
+    Usage
+    -----
+    sj.visualization.plot_local_polygon_gene(sp, gene='PanCK', fov_ids=['001','002'])
+    sj.visualization.plot_local_polygon_gene(sp, gene='CD3D', layer='normalized')
+    """
+    feat_df = _get_gene_expression(sj_obj, gene, layer)
+    layer_label = layer or 'raw'
+
+    return plot_local_polygon(
+        sj_obj,
+        feature=gene,
+        feature_df=feat_df,
+        fov_ids=fov_ids,
+        background_img=background_img,
+        colormap=colormap,
+        vmin=vmin, vmax=vmax,
+        colorbar_position=colorbar_position,
+        edge_color=edge_color,
+        edge_width=edge_width,
+        alpha=alpha,
+        figure_width=figure_width,
+        figure_height=figure_height,
+        grid_layout=grid_layout,
+        title_fontsize=title_fontsize,
+        suptitle_fontsize=suptitle_fontsize,
+        save_dir=save_dir,
+        filename=filename or f"polygon_{gene}_{layer_label}_local{'_bg' if background_img is True else ''}.png",
+        dpi=dpi,
+        show_plot=show_plot,
+    )
+
+# =============================================================================
+# SECTION C — GENE DOT FUNCTIONS
+# =============================================================================
+
+def plot_global_dots_gene(
+    sj_obj,
+    gene: str,
+    layer: Optional[str] = 'log_normalized',
+    background_img: Optional[np.ndarray] = None,
+    min_x: Optional[float] = None,
+    min_y: Optional[float] = None,
+    colormap: str = "magma",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    dot_size: int = 20,
+    edge_color: Optional[str] = None,
+    edge_width: float = 0.0,
+    alpha: float = 1.0,
+    figsize: Tuple[int, int] = (12, 12),
+    save_dir: str = "./",
+    filename: Optional[str] = None,
+    dpi: int = 300,
+    show_plot: bool = True,
+) -> plt.Figure:
+    """
+    Plot cell centroids in global coordinates colored by gene expression.
+
+    Usage
+    -----
+    sj.visualization.plot_global_dots_gene(sp, gene='PanCK')
+    sj.visualization.plot_global_dots_gene(sp, gene='CD3D', layer='normalized')
+    sj.visualization.plot_global_dots_gene(sp, gene='EPCAM', layer=None)  # raw
+    """
+    feat_df = _get_gene_expression(sj_obj, gene, layer)
+    layer_label = layer or 'raw'
+    fig_title = f"{gene} ({layer_label})"
+
+    return plot_global_dots(
+        sj_obj,
+        feature=gene,
+        feature_df=feat_df,
+        background_img=background_img,
+        min_x=min_x, min_y=min_y,
+        colormap=colormap,
+        vmin=vmin, vmax=vmax,
+        dot_size=dot_size,
+        edge_color=edge_color,
+        edge_width=edge_width,
+        alpha=alpha,
+        figsize=figsize,
+        fig_title=fig_title,
+        save_dir=save_dir,
+        filename=filename or f"dots_{gene}_{layer_label}_global{'_bg' if background_img is not None else ''}.png",
+        dpi=dpi,
+        show_plot=show_plot,
+    )
+
+
+def plot_local_dots_gene(
+    sj_obj,
+    gene: str,
+    layer: Optional[str] = 'log_normalized',
+    fov_ids: Optional[List[Union[str, int]]] = None,
+    background_img: bool = True,
+    colormap: str = "magma",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    colorbar_position: str = 'right',
+    dot_size: float = 20,
+    edge_color: str = 'none',
+    edge_width: float = 0.0,
+    alpha: float = 0.8,
+    figure_width: int = 7,
+    figure_height: int = 7,
+    grid_layout: Optional[Tuple[int, int]] = None,
+    title_fontsize: int = 20,
+    suptitle_fontsize: int = 24,
+    save_dir: str = "./",
+    filename: Optional[str] = None,
+    dpi: int = 300,
+    show_plot: bool = True,
+) -> plt.Figure:
+    """
+    Plot cell centroids per FOV colored by gene expression.
+
+    Usage
+    -----
+    sj.visualization.plot_local_dots_gene(sp, gene='PanCK', fov_ids=['001','002'])
+    sj.visualization.plot_local_dots_gene(sp, gene='CD3D', layer='normalized')
+    """
+    feat_df = _get_gene_expression(sj_obj, gene, layer)
+    layer_label = layer or 'raw'
+
+    return plot_local_dots(
+        sj_obj,
+        feature=gene,
+        feature_df=feat_df,
+        fov_ids=fov_ids,
+        background_img=background_img,
+        colormap=colormap,
+        vmin=vmin, vmax=vmax,
+        colorbar_position=colorbar_position,
+        dot_size=dot_size,
+        edge_color=edge_color,
+        edge_width=edge_width,
+        alpha=alpha,
+        figure_width=figure_width,
+        figure_height=figure_height,
+        grid_layout=grid_layout,
+        title_fontsize=title_fontsize,
+        suptitle_fontsize=suptitle_fontsize,
+        save_dir=save_dir,
+        filename=filename or f"dots_{gene}_{layer_label}_local{'_bg' if background_img is True else ''}.png",
+        dpi=dpi,
+        show_plot=show_plot,
+    )

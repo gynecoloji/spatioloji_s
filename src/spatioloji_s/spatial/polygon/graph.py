@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-
 @dataclass
 class PolygonSpatialGraph:
     """
@@ -172,14 +171,21 @@ def build_contact_graph(sp: 'spatioloji',
     n_cells = len(gdf)
     
     # Drop cells with missing/invalid geometry
-    valid_mask = gdf.geometry.notna() & gdf.geometry.is_valid
-    if not valid_mask.all():
-        n_invalid = (~valid_mask).sum()
-        print(f"  ⚠ Dropping {n_invalid} cells with invalid/missing geometry")
-        gdf = gdf[valid_mask]
-        cell_index = gdf.index
-        n_cells = len(gdf)
+    from shapely.validation import make_valid
     
+    null_mask = gdf.geometry.isna()
+    if null_mask.any():
+        print(f"  ⚠ Dropping {null_mask.sum()} cells with null geometry")
+        gdf = gdf[~null_mask]
+    
+    invalid_mask = ~gdf.geometry.is_valid
+    if invalid_mask.any():
+        print(f"  → Repairing {invalid_mask.sum()} invalid geometries...")
+        gdf.loc[invalid_mask, 'geometry'] = gdf.loc[invalid_mask, 'geometry'].apply(make_valid)
+    
+    cell_index = gdf.index
+    n_cells = len(gdf)
+        
     # Use spatial join for efficient pairwise detection
     # sjoin finds all pairs satisfying the predicate
     joined = gpd.sjoin(
@@ -189,14 +195,14 @@ def build_contact_graph(sp: 'spatioloji',
         predicate=predicate
     )
     
-    # Remove self-joins
-    joined = joined[joined.index != joined['index_right']]
+    right_col = [c for c in joined.columns if c.endswith('_right')][0]
+    joined = joined[joined.index != joined[right_col]]
     
     # Map cell IDs to integer positions
     id_to_pos = {cid: i for i, cid in enumerate(cell_index)}
     
     rows = np.array([id_to_pos[cid] for cid in joined.index])
-    cols = np.array([id_to_pos[cid] for cid in joined['index_right']])
+    cols = np.array([id_to_pos[cid] for cid in joined[right_col]])    
     
     # Build sparse adjacency (symmetric)
     data = np.ones(len(rows), dtype=np.float32)
@@ -262,13 +268,20 @@ def build_buffer_graph(sp: 'spatioloji',
     n_cells = len(gdf)
     
     # Drop invalid geometries
-    valid_mask = gdf.geometry.notna() & gdf.geometry.is_valid
-    if not valid_mask.all():
-        n_invalid = (~valid_mask).sum()
-        print(f"  ⚠ Dropping {n_invalid} cells with invalid/missing geometry")
-        gdf = gdf[valid_mask]
-        cell_index = gdf.index
-        n_cells = len(gdf)
+    from shapely.validation import make_valid
+    
+    null_mask = gdf.geometry.isna()
+    if null_mask.any():
+        print(f"  ⚠ Dropping {null_mask.sum()} cells with null geometry")
+        gdf = gdf[~null_mask]
+    
+    invalid_mask = ~gdf.geometry.is_valid
+    if invalid_mask.any():
+        print(f"  → Repairing {invalid_mask.sum()} invalid geometries...")
+        gdf.loc[invalid_mask, 'geometry'] = gdf.loc[invalid_mask, 'geometry'].apply(make_valid)
+    
+    cell_index = gdf.index
+    n_cells = len(gdf)
     
     # Create buffered version for neighbor detection
     gdf_buffered = gdf.copy()
@@ -282,13 +295,13 @@ def build_buffer_graph(sp: 'spatioloji',
         predicate='intersects'
     )
     
-    # Remove self-joins
-    joined = joined[joined.index != joined['index_right']]
+    right_col = [c for c in joined.columns if c.endswith('_right')][0]
+    joined = joined[joined.index != joined[right_col]]
     
     # Remove duplicate pairs (keep only one direction for distance calc)
     pairs = pd.DataFrame({
         'cell_a': joined.index,
-        'cell_b': joined['index_right']
+        'cell_b': joined[right_col]
     })
     pairs = pairs[pairs['cell_a'] < pairs['cell_b']].drop_duplicates()
     
@@ -384,13 +397,20 @@ def build_knn_graph(sp: 'spatioloji',
     n_cells = len(gdf)
     
     # Drop invalid geometries
-    valid_mask = gdf.geometry.notna() & gdf.geometry.is_valid
-    if not valid_mask.all():
-        n_invalid = (~valid_mask).sum()
-        print(f"  ⚠ Dropping {n_invalid} cells with invalid/missing geometry")
-        gdf = gdf[valid_mask]
-        cell_index = gdf.index
-        n_cells = len(gdf)
+    from shapely.validation import make_valid
+    
+    null_mask = gdf.geometry.isna()
+    if null_mask.any():
+        print(f"  ⚠ Dropping {null_mask.sum()} cells with null geometry")
+        gdf = gdf[~null_mask]
+    
+    invalid_mask = ~gdf.geometry.is_valid
+    if invalid_mask.any():
+        print(f"  → Repairing {invalid_mask.sum()} invalid geometries...")
+        gdf.loc[invalid_mask, 'geometry'] = gdf.loc[invalid_mask, 'geometry'].apply(make_valid)
+    
+    cell_index = gdf.index
+    n_cells = len(gdf)
     
     if k >= n_cells:
         raise ValueError(f"k={k} must be less than n_cells={n_cells}")
