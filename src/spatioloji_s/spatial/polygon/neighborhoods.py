@@ -487,3 +487,130 @@ def boundary_cells(sp: 'spatioloji',
     
     return is_boundary
     
+def harmonize_niches(
+    comp_dict: dict,
+    n_niches: int = 5,
+    method: str = 'kmeans',
+    seed: int = 42
+) -> pd.Series:
+    """
+    Assign globally consistent niche labels across FOVs.
+
+    Since niche_identification() runs per-FOV, niche labels are locally
+    arbitrary (niche_0 in FOV1 ≠ niche_0 in FOV2). This function solves
+    that by concatenating all per-FOV neighborhood composition profiles
+    and clustering them globally — so labels reflect actual tissue
+    environments, not FOV-specific numbering.
+
+    Workflow
+    --------
+    1. Run neighborhood_composition() per FOV (store=False)
+    2. Pass all results into this function
+    3. Use returned global labels downstream
+
+    Parameters
+    ----------
+    comp_dict : dict
+        {fov_id: composition_DataFrame} where each DataFrame is the
+        output of neighborhood_composition() for that FOV.
+        Rows = cells, columns = cell types, values = fractions.
+    n_niches : int
+        Number of global niches
+    method : str
+        'kmeans' or 'leiden'
+    seed : int
+        Random seed
+
+    Returns
+    -------
+    pd.Series
+        Global niche label per cell (indexed by cell_id, covers all FOVs).
+        Cells with no neighbors get NaN.
+
+    Examples
+    --------
+    >>> comp_dict = {}
+    >>> for fov_id, sp_fov in iter_fovs(sp):
+    ...     graph = spoly.build_contact_graph(sp_fov)
+    ...     comp = spoly.neighborhood_composition(
+    ...         sp_fov, graph, group_col='leiden', store=False
+    ...     )
+    ...     comp_dict[fov_id] = comp
+    >>>
+    >>> global_niches = harmonize_niches(comp_dict, n_niches=5, method='kmeans')
+    >>> # Map back to sp.cell_meta
+    >>> sp.cell_meta['global_niche'] = global_niches.reindex(sp.cell_index)
+    """
+    print(f"\n[Neighborhoods] Harmonizing niches across {len(comp_dict)} FOVs...")
+
+    # ── Step 1: Concatenate all FOV compositions ──────────────────────────────
+    # Align columns (cell types) across FOVs — fill missing types with 0
+    all_comp = pd.concat(comp_dict.values(), axis=0).fillna(0.0)
+
+    # Only cluster cells that actually have neighbors (row sum > 0)
+    has_neighbors = all_comp.sum(axis=1) > 0
+    valid_comp = all_comp[has_neighbors]
+
+    print(f"  → {len(all_comp)} total cells, {has_neighbors.sum()} with neighbors")
+    print(f"  → {all_comp.shape[1]} cell types in composition space")
+
+    if len(valid_comp) < n_niches:
+        raise ValueError(
+            f"Only {len(valid_comp)} cells with neighbors across all FOVs, "
+            f"need at least {n_niches}."
+        )
+
+    # ── Step 2: Global clustering ─────────────────────────────────────────────
+    labels = pd.Series(np.nan, index=all_comp.index, dtype=object)
+
+    if method == 'kmeans':
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.cluster import KMeans
+
+        scaler = StandardScaler()
+        scaled = scaler.fit_transform(valid_comp)
+
+        km = KMeans(n_clusters=n_niches, random_state=seed, n_init=10)
+        cluster_labels = km.fit_predict(scaled)
+        labels[has_neighbors] = [f'niche_{c}' for c in cluster_labels]
+
+        print(f"  → KMeans inertia: {km.inertia_:.1f}")
+
+    elif method == 'leiden':
+        try:
+            import scanpy as sc
+            import anndata
+        except ImportError:
+            raise ImportError("Leiden requires scanpy: pip install scanpy")
+
+        adata = anndata.AnnData(X=valid_comp.values)
+        adata.obs_names = valid_comp.index.astype(str)
+        sc.pp.neighbors(adata, n_neighbors=15, use_rep='X')
+        sc.tl.leiden(adata, resolution=n_niches / 5.0)
+        labels[has_neighbors] = [f'niche_{c}' for c in adata.obs['leiden']]
+
+    else:
+        raise ValueError(f"Unknown method: '{method}'. Use 'kmeans' or 'leiden'.")
+
+    # ── Step 3: Report niche composition summary ──────────────────────────────
+    # Show what cell types characterize each global niche
+    print(f"\n  ✓ Global niche summary ({n_niches} niches):")
+
+    valid_labels = labels[has_neighbors]
+    for niche in sorted(valid_labels.dropna().unique()):
+        niche_cells = valid_labels[valid_labels == niche].index
+        centroid = valid_comp.loc[niche_cells].mean()
+        top_types = centroid.nlargest(3)
+        top_str = ', '.join(
+            f"{t}={v:.2f}" for t, v in top_types.items() if v > 0
+        )
+        # FOV distribution
+        fov_counts = {}
+        for fov_id, comp in comp_dict.items():
+            n = (niche_cells.isin(comp.index)).sum()
+            if n > 0:
+                fov_counts[fov_id] = n
+        print(f"    {niche}: {len(niche_cells)} cells | top types: {top_str}")
+        print(f"      FOVs: { {k: v for k, v in fov_counts.items()} }")
+
+    return labels

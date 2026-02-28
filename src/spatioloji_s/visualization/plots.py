@@ -267,7 +267,7 @@ def stitch_fov_images(
 # SECTION 3 — POLYGON RENDERING ENGINE
 # =============================================================================
 
-def _render_polygons_on_ax(ax, df, x_col, y_col, cell_id_col, feature,
+def _render_polygons_on_ax(ax, gdf, feature,
                             kind, color_lookup, norm, cmap,
                             edge_color, edge_width, alpha):
     """
@@ -283,16 +283,19 @@ def _render_polygons_on_ax(ax, df, x_col, y_col, cell_id_col, feature,
     """
     polys, face_colors = [], []
 
-    for cell_id, grp in df.groupby(cell_id_col):
-        coords = grp[[x_col, y_col]].values
+    for cell_id, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+
+        # Extract exterior coords — vertex order guaranteed by Shapely
+        coords = np.array(geom.exterior.coords)
         polys.append(coords)
 
         if kind == 'categorical':
-            val = grp[feature].iloc[0]
-            face_colors.append(color_lookup.get(str(val), (0.5, 0.5, 0.5, 1.0)))
+            face_colors.append(color_lookup.get(str(row[feature]), (0.5, 0.5, 0.5, 1.0)))
         else:
-            val = grp[feature].iloc[0]
-            face_colors.append(cmap(norm(val)))
+            face_colors.append(cmap(norm(row[feature])))
 
     collection = PolyCollection(
         polys,
@@ -376,29 +379,33 @@ def plot_global_polygon(
     )
 
     # ── Apply global offsets ──────────────────────────────────────────────────
-    poly_df = sj_obj.polygons.copy()
+    gdf = sj_obj.to_geopandas(coord_type='global', include_metadata=False)
+    # Apply global offset to geometry
     if min_x is None:
-        min_x = poly_df[x_col].min()
+        min_x = sj_obj.polygons[x_col].min()
     if min_y is None:
-        min_y = poly_df[y_col].min()
-    poly_df['x_plot'] = poly_df[x_col] - min_x
-    poly_df['y_plot'] = poly_df[y_col] - min_y
+        min_y = sj_obj.polygons[y_col].min()
 
-    merged = poly_df.merge(feat_df, on=cell_id_col)
-    if merged.empty:
+    from shapely.affinity import translate
+    gdf['geometry'] = gdf['geometry'].apply(
+        lambda geom: translate(geom, xoff=-min_x, yoff=-min_y)
+    )
+
+    # Merge feature onto gdf (gdf is indexed by cell_id)
+    gdf = gdf.join(feat_df.set_index(cell_id_col)[[feat_col]], how='inner')
+    if gdf.empty:
         raise ValueError("No overlapping cells between polygons and feature data")
 
-    # ── Figure ────────────────────────────────────────────────────────────────
+    # Figure
     fig, ax = plt.subplots(figsize=figsize)
-
     if background_img is not None:
         h, w = background_img.shape[:2]
         ax.imshow(cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB), origin='upper')
         ax.set_xlim(0, w)
-        ax.set_ylim(h, 0)  # y-down to match cv2
+        ax.set_ylim(h, 0)
 
     _render_polygons_on_ax(
-        ax, merged, 'x_plot', 'y_plot', cell_id_col, feat_col,
+        ax, gdf, feat_col,
         kind, color_lookup, norm, cmap, edge_color, edge_width, alpha,
     )
 
@@ -431,14 +438,11 @@ def plot_local_polygon(
     feature_df=None,
     feature_column: Optional[str] = None,
     background_img: bool = True,
-    # continuous params
     colormap: str = "viridis",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     colorbar_position: str = 'right',
-    # categorical params
     color_map: Optional[Dict] = None,
-    # shared style
     edge_color: str = 'black',
     edge_width: float = 0.5,
     alpha: float = 0.8,
@@ -452,28 +456,12 @@ def plot_local_polygon(
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
-    """
-    Plot cell polygons per FOV (local coordinates), colored by any feature.
-    Auto-detects categorical vs. continuous.
 
-    Usage
-    -----
-    sj.plotting.plot_local_polygon(sp, feature='PanCK', fov_ids=['1','2','3'])
-    sj.plotting.plot_local_polygon(sp, feature='cell_type', fov_ids=['1','2'])
-    """
     if sj_obj.polygons is None:
         raise ValueError("No polygon data in spatioloji object")
 
     cell_id_col = sj_obj.config.cell_id_col
     fov_id_col  = sj_obj.config.fov_id_col
-    x_col, y_col = sj_obj.config.get_coordinate_columns('local')
-
-    poly_df = sj_obj.polygons.copy()
-
-    # ── FOV list ──────────────────────────────────────────────────────────────
-    if fov_ids is None:
-        fov_ids = sorted(poly_df[fov_id_col].unique().astype(str).tolist())
-    fov_ids = [str(f) for f in fov_ids]
 
     # ── Feature data ──────────────────────────────────────────────────────────
     feat_df  = _get_feature_data(sj_obj, feature, feature_df, feature_column)
@@ -487,46 +475,50 @@ def plot_local_polygon(
         vmin=vmin, vmax=vmax,
     )
 
-    merged = poly_df.merge(feat_df, on=cell_id_col)
-    if merged.empty:
+    # ── Build GDF (local coords) — vertex order guaranteed by Shapely ─────────
+    gdf = sj_obj.to_geopandas(coord_type='local', include_metadata=False)
+    gdf[fov_id_col] = sj_obj.cell_meta[fov_id_col].astype(str)
+    gdf = gdf.join(feat_df.set_index(cell_id_col)[[feat_col]], how='inner')
+    if gdf.empty:
         raise ValueError("No overlapping cells between polygons and feature data")
-    merged[fov_id_col] = merged[fov_id_col].astype(str)
-    
+
+    # ── FOV list ──────────────────────────────────────────────────────────────
+    if fov_ids is None:
+        fov_ids = sorted(gdf[fov_id_col].unique().tolist())
+    fov_ids = [str(f) for f in fov_ids]
+
     # ── Grid ──────────────────────────────────────────────────────────────────
     fig, axs = _setup_grid(len(fov_ids), grid_layout, figure_width, figure_height)
 
     for idx, fov_id in enumerate(fov_ids):
         ax = axs[idx]
-        fov_data = merged[merged[fov_id_col] == fov_id]
-
-        if fov_data.empty:
+        fov_gdf = gdf[gdf[fov_id_col] == fov_id]
+        
+        # ── Shared image dimensions (consistent across all subplots) ─────────────
+        sample_img = sj_obj.get_image(fov_id)
+        if sample_img is None:
+            raise ValueError(f"Could not load image for FOV '{fov_ids[0]}'")
+        shared_h, shared_w = sample_img.shape[:2]
+        
+        if fov_gdf.empty:
             ax.set_title(f'FOV {fov_id} (no data)', fontsize=title_fontsize)
             ax.axis('off')
             continue
-          
-        # ── Shared axis limits from image size ───────
-        sample_img = sj_obj.get_image(fov_id)
-        if sample_img is None:
-            raise ValueError(f"Could not load image for FOV '{fov_ids[0]}' to determine shared dimensions")
-        shared_h, shared_w = sample_img.shape[:2]
-        
-        ax.set_xlim(0, shared_w)
-        ax.set_ylim(0, shared_h)
-        
-        # Optional background image
+
         if background_img:
             img = sj_obj.get_image(fov_id)
             if img is not None:
                 ax.imshow(np.flipud(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)), origin='lower')
 
         _render_polygons_on_ax(
-            ax, fov_data, x_col, y_col, cell_id_col, feat_col,
+            ax, fov_gdf, feat_col,
             kind, color_lookup, norm, cmap, edge_color, edge_width, alpha,
         )
 
+        ax.set_xlim(0, shared_w)
+        ax.set_ylim(0, shared_h)
         ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
 
-    # Hide unused axes
     for j in range(len(fov_ids), len(axs)):
         axs[j].axis('off')
 
@@ -551,7 +543,6 @@ def plot_local_polygon(
     plt.suptitle(feat_name, fontsize=suptitle_fontsize)
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
 
-    # ── Save / show ───────────────────────────────────────────────────────────
     if filename is None:
         safe = feat_col.replace(' ', '_').lower()
         bg = '_with_bg' if background_img else ''

@@ -85,7 +85,7 @@ def nearest_neighbor_distances(
         for ct in np.unique(labels):
             mask = labels == ct
             ct_nnd = nnd[mask]
-            print(f"      {ct:>20s}: mean={ct_nnd.mean():.2f}, "
+            print(f"      {str(ct):>20s}: mean={ct_nnd.mean():.2f}, "
                   f"median={np.median(ct_nnd):.2f}, n={mask.sum()}")
     
     return result

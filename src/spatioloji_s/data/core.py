@@ -778,6 +778,8 @@ class spatioloji:
         - Polygons
         - FOVs (only FOVs with remaining cells)
         - Images (only for remaining FOVs)
+        - Layers (row-subsetted to keep only selected cells)
+        - Embeddings (row-subsetted to keep only selected cells)
         
         Parameters
         ----------
@@ -843,7 +845,28 @@ class spatioloji:
             config=self.config
         )
         
+        # ── Subset layers (rows = cells) ──────────────────────────────────────
+        # Both sparse and dense matrices support row indexing with integer arrays.
+        # new_obj._layers is empty after __init__; populate it here directly
+        # so the subsetting bypasses shape validation in add_layer().
+        for name, mat in self._layers.items():
+            new_obj._layers[name] = mat[indices, :]
+
+        # ── Subset embeddings (rows = cells) ──────────────────────────────────────
+        # Only subset 2D arrays (n_cells × n_dims).
+        # 1D arrays like X_pca_variance / X_pca_variance_ratio are per-component
+        # statistics with no cell axis — copy them as-is instead.
+        for name, emb in self._embeddings.items():
+            if emb.ndim == 2:
+                new_obj._embeddings[name] = emb[indices, :]
+            else:
+                new_obj._embeddings[name] = emb.copy()
+
         print(f"✓ Created subset: {new_obj.n_cells} cells, {new_obj.n_fovs} FOVs")
+        if self._layers:
+            print(f"  Layers subsetted (cell axis): {list(self._layers.keys())}")
+        if self._embeddings:
+            print(f"  Embeddings subsetted: {list(self._embeddings.keys())}")
         
         return new_obj
     
@@ -852,6 +875,14 @@ class spatioloji:
                        copy: bool = True) -> 'spatioloji':
         """
         Create new spatioloji with subset of genes.
+        
+        Subsets:
+        - Expression matrix (gene axis)
+        - Gene metadata
+        - Layers (column-subsetted to keep only selected genes)
+        
+        Note: Embeddings are cell-level representations and have no gene
+        axis, so they are NOT subsetted here and are not propagated.
         
         Parameters
         ----------
@@ -895,7 +926,19 @@ class spatioloji:
             config=self.config
         )
         
+        # ── Subset layers (columns = genes) ───────────────────────────────────
+        # Layers share the gene axis with the expression matrix.
+        # Both sparse and dense matrices support column indexing.
+        for name, mat in self._layers.items():
+            new_obj._layers[name] = mat[:, indices]
+
+        # Embeddings are cell-level only (no gene axis) — not propagated here.
+        # If you need embeddings after gene subsetting, re-run dimensionality
+        # reduction on the subsetted object.
+
         print(f"✓ Created subset: {new_obj.n_genes} genes")
+        if self._layers:
+            print(f"  Layers subsetted (gene axis): {list(self._layers.keys())}")
         
         return new_obj
     
@@ -909,6 +952,7 @@ class spatioloji:
         - Cells belonging to these FOVs
         - FOV positions
         - Images
+        - Layers and embeddings (via subset_by_cells)
         
         Parameters
         ----------
@@ -937,7 +981,7 @@ class spatioloji:
         if len(cell_indices) == 0:
             raise ValueError("No cells found in specified FOVs")
         
-        # Use subset_by_cells (which handles everything)
+        # Use subset_by_cells (which handles layers + embeddings automatically)
         subset_cell_ids = self._cell_index[cell_indices]
         
         return self.subset_by_cells(subset_cell_ids, copy=copy)
