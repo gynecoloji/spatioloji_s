@@ -47,7 +47,7 @@ pip install magic-impute
 ## Quick Start
 
 ```python
-import spatioloji as sj
+import spatioloji_s as sj
 
 # Load from files
 sp = sj.spatioloji.from_files(
