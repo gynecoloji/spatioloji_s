@@ -1,6 +1,6 @@
 # spatioloji_s
 
-![PyPI version](https://img.shields.io/pypi/v/spatioloji_s.svg)
+[![PyPI version](https://img.shields.io/pypi/v/spatioloji-s.svg)](https://pypi.org/project/spatioloji-s/)
 [![Documentation Status](https://readthedocs.org/projects/spatioloji_s/badge/?version=latest)](https://spatioloji_s.readthedocs.io/en/latest/?version=latest)
 
 **spatioloji_s** is a Python package for spatial transcriptomics analysis, purpose-built for image-based single-cell RNA sequencing data (e.g., CosMx, MERFISH, Xenium). It provides an integrated, computationally efficient workflow — from raw data loading through quality control, processing, and spatial analysis — all within a consistent, easy-to-use data structure.
