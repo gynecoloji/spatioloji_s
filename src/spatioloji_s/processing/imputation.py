@@ -14,15 +14,15 @@ from sklearn.neighbors import NearestNeighbors
 
 def magic_impute(
     spatioloji_obj,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = False,
     n_pca_components: int = 100,
     knn: int = 5,
     t: int = 3,
     genes: str | list[str] | None = None,
     conda_env: str | None = None,
-    output_layer: str = 'magic_imputed',
-    inplace: bool = True
+    output_layer: str = "magic_imputed",
+    inplace: bool = True,
 ):
     """
     MAGIC (Markov Affinity-based Graph Imputation of Cells) imputation.
@@ -119,9 +119,7 @@ def magic_impute(
     # If conda_env is specified, run in separate environment
     if conda_env is not None:
         print(f"  Running MAGIC in conda environment: '{conda_env}'")
-        X_imputed = _run_magic_in_conda_env(
-            X, n_pca_components, knn, t, gene_indices, conda_env
-        )
+        X_imputed = _run_magic_in_conda_env(X, n_pca_components, knn, t, gene_indices, conda_env)
     else:
         # Try to import magic from current environment
         try:
@@ -136,12 +134,7 @@ def magic_impute(
 
         # Create MAGIC operator
         print(f"  Building k-NN graph (n_pca={n_pca_components})...")
-        magic_op = magic.MAGIC(
-            n_pca=n_pca_components,
-            knn=knn,
-            t=t,
-            verbose=0
-        )
+        magic_op = magic.MAGIC(n_pca=n_pca_components, knn=knn, t=t, verbose=0)
 
         # Fit and transform
         print("  Running MAGIC diffusion...")
@@ -174,20 +167,20 @@ def _run_magic_in_conda_env(X, n_pca_components, knn, t, gene_indices, conda_env
     # Create temporary directory
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save input data
-        input_file = os.path.join(tmpdir, 'magic_input.npz')
+        input_file = os.path.join(tmpdir, "magic_input.npz")
         np.savez_compressed(
             input_file,
             X=X,
             n_pca_components=n_pca_components,
             knn=knn,
             t=t,
-            gene_indices=gene_indices if gene_indices is not None else np.array([])
+            gene_indices=gene_indices if gene_indices is not None else np.array([]),
         )
 
-        output_file = os.path.join(tmpdir, 'magic_output.npy')
+        output_file = os.path.join(tmpdir, "magic_output.npy")
 
         # Create Python script for MAGIC
-        script_file = os.path.join(tmpdir, 'run_magic.py')
+        script_file = os.path.join(tmpdir, "run_magic.py")
         script_content = f"""
 import numpy as np
 import magic
@@ -230,7 +223,7 @@ print("MAGIC imputation complete!")
 print(f"Output shape: {{X_imputed.shape}}")
 """
 
-        with open(script_file, 'w') as f:
+        with open(script_file, "w") as f:
             f.write(script_content)
 
         # Run script in conda environment
@@ -239,32 +232,22 @@ print(f"Output shape: {{X_imputed.shape}}")
         # Try different conda activation methods
         try:
             # Method 1: Using conda run (newer conda versions)
-            cmd = ['conda', 'run', '-n', conda_env, 'python', script_file]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            cmd = ["conda", "run", "-n", conda_env, "python", script_file]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             print(result.stdout)
 
         except (subprocess.CalledProcessError, FileNotFoundError) as e1:
             try:
                 # Method 2: Using shell script with source activate
-                shell_script = os.path.join(tmpdir, 'run_magic.sh')
-                with open(shell_script, 'w') as f:
+                shell_script = os.path.join(tmpdir, "run_magic.sh")
+                with open(shell_script, "w") as f:
                     f.write(f"""#!/bin/bash
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate {conda_env}
 python {script_file}
 """)
 
-                result = subprocess.run(
-                    ['bash', shell_script],
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
+                result = subprocess.run(["bash", shell_script], capture_output=True, text=True, check=True)
                 print(result.stdout)
 
             except Exception as e2:
@@ -289,15 +272,16 @@ python {script_file}
 
         return X_imputed
 
+
 def knn_smooth(
     spatioloji_obj,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = False,
     n_neighbors: int = 15,
     n_pcs: int = 50,
     use_pca: bool = True,
-    output_layer: str = 'knn_smoothed',
-    inplace: bool = True
+    output_layer: str = "knn_smoothed",
+    inplace: bool = True,
 ):
     """
     k-NN smoothing imputation.
@@ -351,8 +335,8 @@ def knn_smooth(
     # Get data for neighbor finding
     if use_pca:
         # Use PCA coordinates
-        if hasattr(spatioloji_obj, '_embeddings') and 'X_pca' in spatioloji_obj._embeddings:
-            X_neighbors = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X_neighbors = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
             print(f"  Using first {n_pcs} PCs for neighbor finding")
         else:
             print("  Computing PCA for neighbor finding...")
@@ -362,8 +346,8 @@ def knn_smooth(
         X_neighbors = X
 
         # Subset to HVGs if requested
-        if use_highly_variable and 'highly_variable' in spatioloji_obj.gene_meta.columns:
-            gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+        if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
             if gene_mask.sum() > 0:
                 X_neighbors = X[:, gene_mask]
                 print(f"  Using {gene_mask.sum()} HVGs for neighbor finding")
@@ -375,7 +359,7 @@ def knn_smooth(
 
     # Convert distances to weights (Gaussian kernel)
     sigma = np.median(distances[:, -1])  # Adaptive bandwidth
-    weights = np.exp(-distances**2 / (2 * sigma**2))
+    weights = np.exp(-(distances**2) / (2 * sigma**2))
     weights = weights / weights.sum(axis=1, keepdims=True)  # Normalize
 
     # Smooth expression
@@ -403,8 +387,8 @@ def alra_impute(
     k: int | None = None,
     q: int = 10,
     quantile_prob: float = 0.001,
-    output_layer: str = 'alra_imputed',
-    inplace: bool = True
+    output_layer: str = "alra_imputed",
+    inplace: bool = True,
 ):
     """
     ALRA (Adaptively-thresholded Low Rank Approximation) imputation.
@@ -464,8 +448,8 @@ def alra_impute(
 
     # Subset to HVGs if requested
     gene_mask = None
-    if use_highly_variable and 'highly_variable' in spatioloji_obj.gene_meta.columns:
-        gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+        gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
         if gene_mask.sum() > 0:
             X_impute = X[:, gene_mask]
             print(f"  Imputing {gene_mask.sum()} highly variable genes")
@@ -578,8 +562,8 @@ def dca_impute(
     use_highly_variable: bool = False,
     epochs: int = 300,
     hidden_size: tuple[int, int, int] = (64, 32, 64),
-    output_layer: str = 'dca_imputed',
-    inplace: bool = True
+    output_layer: str = "dca_imputed",
+    inplace: bool = True,
 ):
     """
     DCA (Deep Count Autoencoder) imputation.
@@ -627,9 +611,7 @@ def dca_impute(
         from dca.api import dca
     except ImportError as err:
         raise ImportError(
-            "DCA requires dca package. "
-            "Install with: pip install dca\n"
-            "Note: Also requires TensorFlow"
+            "DCA requires dca package. " "Install with: pip install dca\n" "Note: Also requires TensorFlow"
         ) from err
 
     print(f"\nDCA imputation (epochs={epochs})")
@@ -645,8 +627,8 @@ def dca_impute(
 
     # Subset to HVGs if requested
     gene_mask = None
-    if use_highly_variable and 'highly_variable' in spatioloji_obj.gene_meta.columns:
-        gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+        gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
         if gene_mask.sum() > 0:
             X_impute = X[:, gene_mask]
             print(f"  Imputing {gene_mask.sum()} highly variable genes")
@@ -657,16 +639,12 @@ def dca_impute(
 
     # Convert to AnnData for DCA
     import anndata
+
     adata_temp = anndata.AnnData(X=X_impute)
 
     # Run DCA
     print("  Running DCA...")
-    dca(
-        adata_temp,
-        epochs=epochs,
-        hidden_size=hidden_size,
-        verbose=True
-    )
+    dca(adata_temp, epochs=epochs, hidden_size=hidden_size, verbose=True)
 
     X_imputed = adata_temp.X
     if sparse.issparse(X_imputed):
@@ -689,12 +667,12 @@ def dca_impute(
 
 def compare_imputation_methods(
     spatioloji_obj,
-    layer: str = 'log_normalized',
+    layer: str = "log_normalized",
     test_genes: list[str] | None = None,
     n_test_genes: int = 10,
     methods: list[str] | None = None,
     magic_conda_env: str | None = None,  # NEW PARAMETER
-    random_state: int = 42
+    random_state: int = 42,
 ) -> pd.DataFrame:
     """
     Compare different imputation methods.
@@ -745,7 +723,7 @@ def compare_imputation_methods(
     from sklearn.metrics import mean_squared_error
 
     if methods is None:
-      methods = ['knn_smooth', 'alra']
+        methods = ["knn_smooth", "alra"]
 
     print(f"\nComparing imputation methods: {methods}")
     print(f"  Testing on {n_test_genes} genes")
@@ -800,28 +778,29 @@ def compare_imputation_methods(
 
         # Create temporary spatioloji with masked data
         import copy
+
         sp_temp = copy.deepcopy(spatioloji_obj)
-        sp_temp.add_layer('test_masked', X_masked, overwrite=True)
+        sp_temp.add_layer("test_masked", X_masked, overwrite=True)
 
         # Run imputation
         try:
-            if method == 'knn_smooth':
-                knn_smooth(sp_temp, layer='test_masked', output_layer='imputed', inplace=True)
-            elif method == 'alra':
-                alra_impute(sp_temp, layer='test_masked', output_layer='imputed', inplace=True)
-            elif method == 'magic':
+            if method == "knn_smooth":
+                knn_smooth(sp_temp, layer="test_masked", output_layer="imputed", inplace=True)
+            elif method == "alra":
+                alra_impute(sp_temp, layer="test_masked", output_layer="imputed", inplace=True)
+            elif method == "magic":
                 magic_impute(
                     sp_temp,
-                    layer='test_masked',
+                    layer="test_masked",
                     conda_env=magic_conda_env,  # Use specified environment
-                    output_layer='imputed',
-                    inplace=True
+                    output_layer="imputed",
+                    inplace=True,
                 )
             else:
                 print(f"    Unknown method: {method}")
                 continue
 
-            X_imputed = sp_temp.get_layer('imputed')
+            X_imputed = sp_temp.get_layer("imputed")
 
             # Extract imputed values at masked positions
             imputed_values = [X_imputed[i, j] for i, j in mask_positions]
@@ -831,12 +810,7 @@ def compare_imputation_methods(
             mse = mean_squared_error(true_values, imputed_values)
             rmse = np.sqrt(mse)
 
-            results.append({
-                'method': method,
-                'correlation': correlation,
-                'mse': mse,
-                'rmse': rmse
-            })
+            results.append({"method": method, "correlation": correlation, "mse": mse, "rmse": rmse})
 
             print(f"    Correlation: {correlation:.3f}")
             print(f"    RMSE: {rmse:.3f}")

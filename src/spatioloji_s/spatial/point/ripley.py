@@ -5,6 +5,7 @@ Classic point process statistics for analyzing spatial clustering
 and dispersion patterns. Works directly from cell coordinates
 without requiring a pre-built graph.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -42,6 +43,7 @@ class RipleyResult:
     label : str
         Description (e.g., gene name or cell type).
     """
+
     r: np.ndarray
     statistic: np.ndarray
     csr_expected: np.ndarray
@@ -49,7 +51,7 @@ class RipleyResult:
     correction: str
     envelope_lo: np.ndarray | None = None
     envelope_hi: np.ndarray | None = None
-    label: str = ''
+    label: str = ""
 
     @property
     def deviation(self) -> np.ndarray:
@@ -59,14 +61,14 @@ class RipleyResult:
     def summary(self) -> dict:
         dev = self.deviation
         return {
-            'function': self.function_type,
-            'label': self.label,
-            'correction': self.correction,
-            'max_r': self.r.max(),
-            'n_distances': len(self.r),
-            'max_deviation': dev.max(),
-            'min_deviation': dev.min(),
-            'has_envelope': self.envelope_lo is not None,
+            "function": self.function_type,
+            "label": self.label,
+            "correction": self.correction,
+            "max_r": self.r.max(),
+            "n_distances": len(self.r),
+            "max_deviation": dev.max(),
+            "min_deviation": dev.min(),
+            "has_envelope": self.envelope_lo is not None,
         }
 
     def __repr__(self) -> str:
@@ -80,11 +82,11 @@ class RipleyResult:
 
 def ripleys_k(
     sj: spatioloji,
-    coord_type: str = 'global',
+    coord_type: str = "global",
     cell_ids: list[str] | None = None,
     max_r: float | None = None,
     n_steps: int = 50,
-    correction: str = 'ripley',
+    correction: str = "ripley",
 ) -> RipleyResult:
     """
     Compute Ripley's K function.
@@ -131,10 +133,10 @@ def ripleys_k(
 
     for ri, r in enumerate(r_values):
         # Count all pairs within distance r
-        count = tree.query_pairs(r, output_type='ndarray')
+        count = tree.query_pairs(r, output_type="ndarray")
         n_pairs = len(count)
 
-        if correction == 'ripley' and n_pairs > 0:
+        if correction == "ripley" and n_pairs > 0:
             # Ripley isotropic edge correction
             # Weight each pair by 1 / (fraction of circle inside bbox)
             weighted_count = 0.0
@@ -148,18 +150,17 @@ def ripleys_k(
             # No correction: simple count
             K_values[ri] = area * 2 * n_pairs / (n * (n - 1))
 
-    csr_expected = np.pi * r_values ** 2
+    csr_expected = np.pi * r_values**2
 
-    print(f"  ✓ Ripley's K: n={n}, max_r={max_r:.1f}, "
-          f"correction={correction}")
+    print(f"  ✓ Ripley's K: n={n}, max_r={max_r:.1f}, " f"correction={correction}")
 
     return RipleyResult(
         r=r_values,
         statistic=K_values,
         csr_expected=csr_expected,
-        function_type='K',
+        function_type="K",
         correction=correction,
-        label='all_cells',
+        label="all_cells",
     )
 
 
@@ -232,20 +233,18 @@ def _edge_correction_weight(
 
     for dist_to_edge in [dx_min, dx_max, dy_min, dy_max]:
         if d > dist_to_edge and dist_to_edge >= 0:
-            fraction_inside -= np.arccos(
-                np.clip(dist_to_edge / d, -1, 1)
-            ) / (2 * np.pi)
+            fraction_inside -= np.arccos(np.clip(dist_to_edge / d, -1, 1)) / (2 * np.pi)
 
     return max(fraction_inside, 0.01)  # floor to avoid division by ~0
 
 
 def ripleys_l(
     sj: spatioloji,
-    coord_type: str = 'global',
+    coord_type: str = "global",
     cell_ids: list[str] | None = None,
     max_r: float | None = None,
     n_steps: int = 50,
-    correction: str = 'ripley',
+    correction: str = "ripley",
 ) -> RipleyResult:
     """
     Compute Ripley's L function (variance-stabilized K).
@@ -276,8 +275,12 @@ def ripleys_l(
     """
     # Compute K first
     k_result = ripleys_k(
-        sj, coord_type=coord_type, cell_ids=cell_ids,
-        max_r=max_r, n_steps=n_steps, correction=correction,
+        sj,
+        coord_type=coord_type,
+        cell_ids=cell_ids,
+        max_r=max_r,
+        n_steps=n_steps,
+        correction=correction,
     )
 
     # Transform: L(r) = sqrt(K(r)/pi) - r
@@ -290,20 +293,21 @@ def ripleys_l(
         r=k_result.r,
         statistic=L_values,
         csr_expected=csr_expected,
-        function_type='L',
+        function_type="L",
         correction=correction,
-        label='all_cells',
+        label="all_cells",
     )
+
 
 def cross_k(
     sj: spatioloji,
     cell_type_col: str,
     type_a: str,
     type_b: str,
-    coord_type: str = 'global',
+    coord_type: str = "global",
     max_r: float | None = None,
     n_steps: int = 50,
-    correction: str = 'ripley',
+    correction: str = "ripley",
 ) -> RipleyResult:
     """
     Compute cross-K function between two cell types.
@@ -349,8 +353,7 @@ def cross_k(
     n_b = len(coords_b)
 
     if n_a == 0 or n_b == 0:
-        raise ValueError(f"No cells found for type_a='{type_a}' "
-                         f"({n_a}) or type_b='{type_b}' ({n_b})")
+        raise ValueError(f"No cells found for type_a='{type_a}' " f"({n_a}) or type_b='{type_b}' ({n_b})")
 
     # Bounding box from all cells
     xmin, ymin = all_coords.min(axis=0)
@@ -377,11 +380,9 @@ def cross_k(
             # Find type_b neighbors within r of this type_a cell
             neighbors = tree_b.query_ball_point(coords_a[i], r)
 
-            if correction == 'ripley':
+            if correction == "ripley":
                 for j_idx in neighbors:
-                    d = np.sqrt(np.sum(
-                        (coords_a[i] - coords_b[j_idx]) ** 2
-                    ))
+                    d = np.sqrt(np.sum((coords_a[i] - coords_b[j_idx]) ** 2))
                     if d > 0:
                         w = _edge_correction_weight(coords_a[i], d, bbox)
                         total_weighted += 1.0 / w
@@ -391,16 +392,15 @@ def cross_k(
         lambda_b = n_b / area
         K_values[ri] = total_weighted / (n_a * lambda_b)
 
-    csr_expected = np.pi * r_values ** 2
+    csr_expected = np.pi * r_values**2
 
-    print(f"  ✓ Cross-K ({type_a}→{type_b}): n_a={n_a}, n_b={n_b}, "
-          f"max_r={max_r:.1f}")
+    print(f"  ✓ Cross-K ({type_a}→{type_b}): n_a={n_a}, n_b={n_b}, " f"max_r={max_r:.1f}")
 
     return RipleyResult(
         r=r_values,
         statistic=K_values,
         csr_expected=csr_expected,
-        function_type='cross-K',
+        function_type="cross-K",
         correction=correction,
         label=f"{type_a}→{type_b}",
     )
@@ -411,10 +411,10 @@ def cross_l(
     cell_type_col: str,
     type_a: str,
     type_b: str,
-    coord_type: str = 'global',
+    coord_type: str = "global",
     max_r: float | None = None,
     n_steps: int = 50,
-    correction: str = 'ripley',
+    correction: str = "ripley",
 ) -> RipleyResult:
     """
     Compute cross-L function (variance-stabilized cross-K).
@@ -445,22 +445,26 @@ def cross_l(
         Cross-L values.
     """
     k_result = cross_k(
-        sj, cell_type_col, type_a, type_b,
-        coord_type=coord_type, max_r=max_r,
-        n_steps=n_steps, correction=correction,
+        sj,
+        cell_type_col,
+        type_a,
+        type_b,
+        coord_type=coord_type,
+        max_r=max_r,
+        n_steps=n_steps,
+        correction=correction,
     )
 
     L_values = np.sqrt(k_result.statistic / np.pi) - k_result.r
     csr_expected = np.zeros_like(k_result.r)
 
-    print(f"  ✓ Cross-L ({type_a}→{type_b}): "
-          f"max deviation = {np.max(np.abs(L_values)):.4f}")
+    print(f"  ✓ Cross-L ({type_a}→{type_b}): " f"max deviation = {np.max(np.abs(L_values)):.4f}")
 
     return RipleyResult(
         r=k_result.r,
         statistic=L_values,
         csr_expected=csr_expected,
-        function_type='cross-L',
+        function_type="cross-L",
         correction=k_result.correction,
         label=f"{type_a}→{type_b}",
     )
@@ -468,8 +472,8 @@ def cross_l(
 
 def simulation_envelope(
     sj: spatioloji,
-    function: str = 'L',
-    coord_type: str = 'global',
+    function: str = "L",
+    coord_type: str = "global",
     cell_ids: list[str] | None = None,
     cell_type_col: str | None = None,
     type_a: str | None = None,
@@ -478,7 +482,7 @@ def simulation_envelope(
     confidence: float = 0.95,
     max_r: float | None = None,
     n_steps: int = 50,
-    correction: str = 'ripley',
+    correction: str = "ripley",
     seed: int | None = None,
 ) -> RipleyResult:
     """
@@ -523,26 +527,22 @@ def simulation_envelope(
         Observed statistic with envelope_lo and envelope_hi filled.
     """
     rng = np.random.default_rng(seed)
-    is_cross = function.startswith('cross')
+    is_cross = function.startswith("cross")
 
     # Validate inputs for cross functions
     if is_cross:
         if cell_type_col is None or type_a is None or type_b is None:
-            raise ValueError(
-                "cross functions require cell_type_col, type_a, and type_b"
-            )
+            raise ValueError("cross functions require cell_type_col, type_a, and type_b")
 
     # Step 1: Compute observed
-    if function == 'K':
+    if function == "K":
         observed = ripleys_k(sj, coord_type, cell_ids, max_r, n_steps, correction)
-    elif function == 'L':
+    elif function == "L":
         observed = ripleys_l(sj, coord_type, cell_ids, max_r, n_steps, correction)
-    elif function == 'cross-K':
-        observed = cross_k(sj, cell_type_col, type_a, type_b,
-                           coord_type, max_r, n_steps, correction)
-    elif function == 'cross-L':
-        observed = cross_l(sj, cell_type_col, type_a, type_b,
-                           coord_type, max_r, n_steps, correction)
+    elif function == "cross-K":
+        observed = cross_k(sj, cell_type_col, type_a, type_b, coord_type, max_r, n_steps, correction)
+    elif function == "cross-L":
+        observed = cross_l(sj, cell_type_col, type_a, type_b, coord_type, max_r, n_steps, correction)
     else:
         raise ValueError(f"Unknown function: {function}")
 
@@ -566,11 +566,9 @@ def simulation_envelope(
             rand_coords = np.column_stack([rand_x, rand_y])
 
             # Compute statistic for random points
-            sim_result = _compute_k_from_coords(
-                rand_coords, bbox, area, r_values, correction
-            )
+            sim_result = _compute_k_from_coords(rand_coords, bbox, area, r_values, correction)
 
-            if function == 'L':
+            if function == "L":
                 sim_stats[s] = np.sqrt(sim_result / np.pi) - r_values
             else:
                 sim_stats[s] = sim_result
@@ -583,13 +581,11 @@ def simulation_envelope(
             shuffled = rng.permutation(labels)
             sj.cell_meta[cell_type_col] = shuffled
 
-            if function == 'cross-K':
-                sim = cross_k(sj, cell_type_col, type_a, type_b,
-                              coord_type, max_r, n_steps, correction)
+            if function == "cross-K":
+                sim = cross_k(sj, cell_type_col, type_a, type_b, coord_type, max_r, n_steps, correction)
                 sim_stats[s] = sim.statistic
             else:
-                sim = cross_l(sj, cell_type_col, type_a, type_b,
-                              coord_type, max_r, n_steps, correction)
+                sim = cross_l(sj, cell_type_col, type_a, type_b, coord_type, max_r, n_steps, correction)
                 sim_stats[s] = sim.statistic
 
         # Restore original labels
@@ -606,9 +602,9 @@ def simulation_envelope(
     # Report
     above = np.sum(observed.statistic > envelope_hi)
     below = np.sum(observed.statistic < envelope_lo)
-    print(f"  ✓ Envelope ({confidence:.0%}): "
-          f"{above} distances above, {below} below, "
-          f"{n_r - above - below} inside")
+    print(
+        f"  ✓ Envelope ({confidence:.0%}): " f"{above} distances above, {below} below, " f"{n_r - above - below} inside"
+    )
 
     # Return observed with envelope attached
     observed.envelope_lo = envelope_lo
@@ -633,10 +629,10 @@ def _compute_k_from_coords(
     K_values = np.zeros(len(r_values))
 
     for ri, r in enumerate(r_values):
-        pairs = tree.query_pairs(r, output_type='ndarray')
+        pairs = tree.query_pairs(r, output_type="ndarray")
         n_pairs = len(pairs)
 
-        if correction == 'ripley' and n_pairs > 0:
+        if correction == "ripley" and n_pairs > 0:
             weighted = 0.0
             for idx_i, idx_j in pairs:
                 d = np.sqrt(np.sum((coords[idx_i] - coords[idx_j]) ** 2))

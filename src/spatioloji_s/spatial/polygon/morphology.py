@@ -5,6 +5,7 @@ Extracts biologically meaningful shape descriptors per cell.
 All metrics are computed from polygon geometry and stored
 back into sp.cell_meta.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -19,10 +20,9 @@ import pandas as pd
 from .graph import _get_gdf
 
 
-def compute_morphology(sp: spatioloji,
-                       coord_type: str = 'global',
-                       metrics: list[str] | None = None,
-                       store: bool = True) -> pd.DataFrame:
+def compute_morphology(
+    sp: spatioloji, coord_type: str = "global", metrics: list[str] | None = None, store: bool = True
+) -> pd.DataFrame:
     """
     Compute cell shape metrics from polygon geometry.
 
@@ -61,18 +61,12 @@ def compute_morphology(sp: spatioloji,
     >>> sp.cell_meta['morph_circularity']
     """
 
-    all_metrics = [
-        'area', 'perimeter', 'circularity', 'elongation',
-        'solidity', 'compactness', 'convexity'
-    ]
+    all_metrics = ["area", "perimeter", "circularity", "elongation", "solidity", "compactness", "convexity"]
 
     if metrics is not None:
         invalid = set(metrics) - set(all_metrics)
         if invalid:
-            raise ValueError(
-                f"Unknown metrics: {invalid}. "
-                f"Available: {all_metrics}"
-            )
+            raise ValueError(f"Unknown metrics: {invalid}. " f"Available: {all_metrics}")
         compute = metrics
     else:
         compute = all_metrics
@@ -95,50 +89,44 @@ def compute_morphology(sp: spatioloji,
         poly_area = geom.area
         poly_perimeter = geom.length
 
-        if 'area' in compute:
-            results['area'][i] = poly_area
+        if "area" in compute:
+            results["area"][i] = poly_area
 
-        if 'perimeter' in compute:
-            results['perimeter'][i] = poly_perimeter
+        if "perimeter" in compute:
+            results["perimeter"][i] = poly_perimeter
 
-        if 'circularity' in compute:
+        if "circularity" in compute:
             if poly_perimeter > 0:
-                results['circularity'][i] = (
-                    4.0 * np.pi * poly_area / (poly_perimeter ** 2)
-                )
+                results["circularity"][i] = 4.0 * np.pi * poly_area / (poly_perimeter**2)
 
         # Elongation and compactness need minimum rotated rectangle
-        if any(m in compute for m in ['elongation', 'compactness']):
+        if any(m in compute for m in ["elongation", "compactness"]):
             try:
                 mrr = geom.minimum_rotated_rectangle
                 coords = np.array(mrr.exterior.coords)
-                edge_lengths = np.sqrt(
-                    np.sum(np.diff(coords, axis=0) ** 2, axis=1)
-                )
+                edge_lengths = np.sqrt(np.sum(np.diff(coords, axis=0) ** 2, axis=1))
                 major = edge_lengths.max()
                 minor = edge_lengths.min()
 
-                if 'elongation' in compute and minor > 0:
-                    results['elongation'][i] = major / minor
+                if "elongation" in compute and minor > 0:
+                    results["elongation"][i] = major / minor
 
-                if 'compactness' in compute and major > 0:
-                    results['compactness'][i] = (
-                        np.sqrt(4.0 * poly_area / np.pi) / major
-                    )
+                if "compactness" in compute and major > 0:
+                    results["compactness"][i] = np.sqrt(4.0 * poly_area / np.pi) / major
             except Exception:
                 pass
 
-        if 'solidity' in compute:
+        if "solidity" in compute:
             convex = geom.convex_hull
             convex_area = convex.area
             if convex_area > 0:
-                results['solidity'][i] = poly_area / convex_area
+                results["solidity"][i] = poly_area / convex_area
 
-        if 'convexity' in compute:
+        if "convexity" in compute:
             convex = geom.convex_hull
             convex_perimeter = convex.length
             if poly_perimeter > 0:
-                results['convexity'][i] = convex_perimeter / poly_perimeter
+                results["convexity"][i] = convex_perimeter / poly_perimeter
 
     # Build DataFrame aligned to cell_index
     morph_df = pd.DataFrame(results, index=gdf.index)
@@ -147,7 +135,7 @@ def compute_morphology(sp: spatioloji,
     # Store in cell_meta
     if store:
         for col in morph_df.columns:
-            sp.cell_meta[f'morph_{col}'] = morph_df[col].values
+            sp.cell_meta[f"morph_{col}"] = morph_df[col].values
         print("  ✓ Stored in cell_meta with 'morph_' prefix")
 
     n_valid = morph_df.notna().all(axis=1).sum()
@@ -155,13 +143,16 @@ def compute_morphology(sp: spatioloji,
 
     return morph_df
 
-def classify_morphology(sp: spatioloji,
-                        method: str = 'threshold',
-                        n_classes: int = 3,
-                        circularity_thresh: float = 0.7,
-                        elongation_thresh: float = 2.0,
-                        solidity_thresh: float = 0.85,
-                        store: bool = True) -> pd.Series:
+
+def classify_morphology(
+    sp: spatioloji,
+    method: str = "threshold",
+    n_classes: int = 3,
+    circularity_thresh: float = 0.7,
+    elongation_thresh: float = 2.0,
+    solidity_thresh: float = 0.85,
+    store: bool = True,
+) -> pd.Series:
     """
     Classify cells by shape into morphological categories.
 
@@ -206,18 +197,15 @@ def classify_morphology(sp: spatioloji,
     print(f"\n[Morphology] Classifying cells (method='{method}')...")
 
     # Check that morphology has been computed
-    morph_cols = [c for c in sp.cell_meta.columns if c.startswith('morph_')]
+    morph_cols = [c for c in sp.cell_meta.columns if c.startswith("morph_")]
     if not morph_cols:
-        raise ValueError(
-            "No morphology metrics found in cell_meta. "
-            "Run compute_morphology(sp) first."
-        )
+        raise ValueError("No morphology metrics found in cell_meta. " "Run compute_morphology(sp) first.")
 
     labels = pd.Series(index=sp.cell_index, dtype=object)
 
-    if method == 'threshold':
+    if method == "threshold":
         # Validate required columns exist
-        required = ['morph_circularity', 'morph_elongation', 'morph_solidity']
+        required = ["morph_circularity", "morph_elongation", "morph_solidity"]
         missing = [c for c in required if c not in sp.cell_meta.columns]
         if missing:
             raise ValueError(
@@ -225,25 +213,25 @@ def classify_morphology(sp: spatioloji,
                 "Run compute_morphology(sp) with these metrics."
             )
 
-        circ = sp.cell_meta['morph_circularity']
-        elong = sp.cell_meta['morph_elongation']
-        solid = sp.cell_meta['morph_solidity']
+        circ = sp.cell_meta["morph_circularity"]
+        elong = sp.cell_meta["morph_elongation"]
+        solid = sp.cell_meta["morph_solidity"]
 
         # Classification rules (order matters: first match wins)
         # 1. Low solidity → irregular (concavities dominate)
         # 2. High elongation → elongated
         # 3. High circularity → round
         # 4. Fallback → irregular
-        labels[:] = 'irregular'
-        labels[circ >= circularity_thresh] = 'round'
-        labels[elong >= elongation_thresh] = 'elongated'
-        labels[solid < solidity_thresh] = 'irregular'
+        labels[:] = "irregular"
+        labels[circ >= circularity_thresh] = "round"
+        labels[elong >= elongation_thresh] = "elongated"
+        labels[solid < solidity_thresh] = "irregular"
 
         # NaN metrics → unclassified
         has_nan = circ.isna() | elong.isna() | solid.isna()
         labels[has_nan] = np.nan
 
-    elif method == 'kmeans':
+    elif method == "kmeans":
         from sklearn.cluster import KMeans
         from sklearn.preprocessing import StandardScaler
 
@@ -273,28 +261,26 @@ def classify_morphology(sp: spatioloji,
         print(f"  → KMeans inertia: {km.inertia_:.1f}")
 
     else:
-        raise ValueError(
-            f"Unknown method: '{method}'. Use 'threshold' or 'kmeans'."
-        )
+        raise ValueError(f"Unknown method: '{method}'. Use 'threshold' or 'kmeans'.")
 
     # Store
     if store:
-        sp.cell_meta['morph_class'] = labels.values
+        sp.cell_meta["morph_class"] = labels.values
         print("  ✓ Stored in cell_meta['morph_class']")
 
     # Report
     counts = labels.value_counts(dropna=False)
     print("  ✓ Classification results:")
     for cls, n in counts.items():
-        label = cls if pd.notna(cls) else 'unclassified'
+        label = cls if pd.notna(cls) else "unclassified"
         print(f"    {label}: {n:,} cells")
 
     return labels
 
-def morphology_by_group(sp: spatioloji,
-                        group_col: str,
-                        metrics: list[str] | None = None,
-                        test: str = 'kruskal') -> dict[str, pd.DataFrame]:
+
+def morphology_by_group(
+    sp: spatioloji, group_col: str, metrics: list[str] | None = None, test: str = "kruskal"
+) -> dict[str, pd.DataFrame]:
     """
     Compare morphology metrics across cell groups.
 
@@ -338,17 +324,14 @@ def morphology_by_group(sp: spatioloji,
         raise ValueError(f"'{group_col}' not found in cell_meta")
 
     # Find available morphology columns
-    all_morph_cols = [c for c in sp.cell_meta.columns if c.startswith('morph_')
-                      and c != 'morph_class']
+    all_morph_cols = [c for c in sp.cell_meta.columns if c.startswith("morph_") and c != "morph_class"]
 
     if not all_morph_cols:
-        raise ValueError(
-            "No morphology metrics found. Run compute_morphology(sp) first."
-        )
+        raise ValueError("No morphology metrics found. Run compute_morphology(sp) first.")
 
     # Select metrics
     if metrics is not None:
-        morph_cols = [f'morph_{m}' for m in metrics]
+        morph_cols = [f"morph_{m}" for m in metrics]
         missing = [c for c in morph_cols if c not in sp.cell_meta.columns]
         if missing:
             raise ValueError(f"Metrics not found in cell_meta: {missing}")
@@ -356,7 +339,7 @@ def morphology_by_group(sp: spatioloji,
         morph_cols = all_morph_cols
 
     # Clean metric names (without prefix) for display
-    metric_names = [c.replace('morph_', '') for c in morph_cols]
+    metric_names = [c.replace("morph_", "") for c in morph_cols]
 
     groups = sp.cell_meta[group_col].dropna()
     unique_groups = groups.unique()
@@ -371,16 +354,18 @@ def morphology_by_group(sp: spatioloji,
         grouped = data.groupby(group_col)[col]
 
         for grp_name, grp_data in grouped:
-            summary_records.append({
-                'metric': name,
-                'group': grp_name,
-                'n': len(grp_data),
-                'mean': grp_data.mean(),
-                'median': grp_data.median(),
-                'std': grp_data.std(),
-                'q25': grp_data.quantile(0.25),
-                'q75': grp_data.quantile(0.75)
-            })
+            summary_records.append(
+                {
+                    "metric": name,
+                    "group": grp_name,
+                    "n": len(grp_data),
+                    "mean": grp_data.mean(),
+                    "median": grp_data.median(),
+                    "std": grp_data.std(),
+                    "q25": grp_data.quantile(0.25),
+                    "q75": grp_data.quantile(0.75),
+                }
+            )
 
     summary_df = pd.DataFrame(summary_records)
 
@@ -390,50 +375,38 @@ def morphology_by_group(sp: spatioloji,
         data = sp.cell_meta[[group_col, col]].dropna()
 
         # Split into groups
-        group_arrays = [
-            grp_data[col].values
-            for _, grp_data in data.groupby(group_col)
-        ]
+        group_arrays = [grp_data[col].values for _, grp_data in data.groupby(group_col)]
 
         # Need at least 2 groups with data
         group_arrays = [g for g in group_arrays if len(g) > 0]
 
         if len(group_arrays) < 2:
-            test_records.append({
-                'metric': name,
-                'test': test,
-                'statistic': np.nan,
-                'p_value': np.nan,
-                'significant': False
-            })
+            test_records.append(
+                {"metric": name, "test": test, "statistic": np.nan, "p_value": np.nan, "significant": False}
+            )
             continue
 
-        if test == 'kruskal':
+        if test == "kruskal":
             stat, pval = scipy_stats.kruskal(*group_arrays)
-        elif test == 'anova':
+        elif test == "anova":
             stat, pval = scipy_stats.f_oneway(*group_arrays)
         else:
             raise ValueError(f"Unknown test: '{test}'. Use 'kruskal' or 'anova'.")
 
-        test_records.append({
-            'metric': name,
-            'test': test,
-            'statistic': stat,
-            'p_value': pval,
-            'significant': pval < 0.05
-        })
+        test_records.append(
+            {"metric": name, "test": test, "statistic": stat, "p_value": pval, "significant": pval < 0.05}
+        )
 
     tests_df = pd.DataFrame(test_records)
 
     # Report
     print(f"\n  Statistical tests ({test}):")
     for _, row in tests_df.iterrows():
-        sig = "***" if row['p_value'] < 0.001 else (
-              "**" if row['p_value'] < 0.01 else (
-              "*" if row['p_value'] < 0.05 else "ns"))
+        sig = (
+            "***"
+            if row["p_value"] < 0.001
+            else ("**" if row["p_value"] < 0.01 else ("*" if row["p_value"] < 0.05 else "ns"))
+        )
         print(f"    {row['metric']:>15s}: p={row['p_value']:.2e} {sig}")
 
-    return {
-        'summary': summary_df,
-        'tests': tests_df
-    }
+    return {"summary": summary_df, "tests": tests_df}

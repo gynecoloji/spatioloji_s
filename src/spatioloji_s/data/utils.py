@@ -4,6 +4,7 @@ utils.py - Utility functions for spatioloji objects
 Provides helper functions for data conversion, export, and common
 operations that complement the core spatioloji functionality.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -19,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 # ========== Data Export Utilities ==========
+
 
 def export_to_csv_bundle(sp, output_dir: str, include_qc: bool = True) -> None:
     """
@@ -55,34 +57,37 @@ def export_to_csv_bundle(sp, output_dir: str, include_qc: bool = True) -> None:
     # 1. Expression matrix
     print("  → Exporting expression matrix...")
     expr_df = sp.expression.to_dataframe()
-    expr_df.to_csv(output_path / 'expression_matrix.csv')
+    expr_df.to_csv(output_path / "expression_matrix.csv")
 
     # 2. Cell metadata
     print("  → Exporting cell metadata...")
-    sp.cell_meta.to_csv(output_path / 'cell_metadata.csv')
+    sp.cell_meta.to_csv(output_path / "cell_metadata.csv")
 
     # 3. Gene metadata
     print("  → Exporting gene metadata...")
-    sp.gene_meta.to_csv(output_path / 'gene_metadata.csv')
+    sp.gene_meta.to_csv(output_path / "gene_metadata.csv")
 
     # 4. Spatial coordinates
     print("  → Exporting spatial coordinates...")
-    spatial_df = pd.DataFrame({
-        'x_local': sp.spatial.x_local,
-        'y_local': sp.spatial.y_local,
-        'x_global': sp.spatial.x_global,
-        'y_global': sp.spatial.y_global
-    }, index=sp.cell_index)
-    spatial_df.to_csv(output_path / 'spatial_coords.csv')
+    spatial_df = pd.DataFrame(
+        {
+            "x_local": sp.spatial.x_local,
+            "y_local": sp.spatial.y_local,
+            "x_global": sp.spatial.x_global,
+            "y_global": sp.spatial.y_global,
+        },
+        index=sp.cell_index,
+    )
+    spatial_df.to_csv(output_path / "spatial_coords.csv")
 
     # 5. Polygons
     if sp.polygons is not None:
         print("  → Exporting polygons...")
-        sp.polygons.to_csv(output_path / 'polygons.csv', index=False)
+        sp.polygons.to_csv(output_path / "polygons.csv", index=False)
 
     # 6. FOV positions
     print("  → Exporting FOV positions...")
-    sp.fov_positions.to_csv(output_path / 'fov_positions.csv')
+    sp.fov_positions.to_csv(output_path / "fov_positions.csv")
 
     # 7. Image metadata
     if sp.images.n_total > 0:
@@ -91,23 +96,23 @@ def export_to_csv_bundle(sp, output_dir: str, include_qc: bool = True) -> None:
         for fov_id in sp.images.fov_ids:
             meta = sp.images.get_metadata(fov_id)
             if meta:
-                image_meta_list.append({
-                    'fov_id': fov_id,
-                    'width': meta.width,
-                    'height': meta.height,
-                    'n_channels': meta.n_channels,
-                    'path': str(meta.path) if meta.path else None,
-                    'is_loaded': meta.is_loaded
-                })
+                image_meta_list.append(
+                    {
+                        "fov_id": fov_id,
+                        "width": meta.width,
+                        "height": meta.height,
+                        "n_channels": meta.n_channels,
+                        "path": str(meta.path) if meta.path else None,
+                        "is_loaded": meta.is_loaded,
+                    }
+                )
 
-        pd.DataFrame(image_meta_list).to_csv(
-            output_path / 'image_metadata.csv', index=False
-        )
+        pd.DataFrame(image_meta_list).to_csv(output_path / "image_metadata.csv", index=False)
 
     # 8. Summary info
     print("  → Exporting summary...")
     summary = sp.summary()
-    with open(output_path / 'summary.json', 'w') as f:
+    with open(output_path / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
     print(f"\n✓ Export complete: {output_dir}")
@@ -160,25 +165,21 @@ def export_to_seurat_files(sp, output_dir: str) -> None:
     # Expression matrix (genes as rows for Seurat)
     print("  → Creating counts.csv (genes × cells)...")
     expr_df = sp.expression.to_dataframe().T  # Transpose for Seurat
-    expr_df.to_csv(output_path / 'counts.csv')
+    expr_df.to_csv(output_path / "counts.csv")
 
     # Metadata with coordinates
     print("  → Creating metadata.csv...")
     metadata = sp.cell_meta.copy()
-    metadata['x_local'] = sp.spatial.x_local
-    metadata['y_local'] = sp.spatial.y_local
-    metadata['x_global'] = sp.spatial.x_global
-    metadata['y_global'] = sp.spatial.y_global
-    metadata.to_csv(output_path / 'metadata.csv')
+    metadata["x_local"] = sp.spatial.x_local
+    metadata["y_local"] = sp.spatial.y_local
+    metadata["x_global"] = sp.spatial.x_global
+    metadata["y_global"] = sp.spatial.y_global
+    metadata.to_csv(output_path / "metadata.csv")
 
     # Separate spatial coordinates
     print("  → Creating spatial_coords.csv...")
-    spatial_df = pd.DataFrame({
-        'cell': sp.cell_index,
-        'x': sp.spatial.x_global,
-        'y': sp.spatial.y_global
-    })
-    spatial_df.to_csv(output_path / 'spatial_coords.csv', index=False)
+    spatial_df = pd.DataFrame({"cell": sp.cell_index, "x": sp.spatial.x_global, "y": sp.spatial.y_global})
+    spatial_df.to_csv(output_path / "spatial_coords.csv", index=False)
 
     print("\n✓ Seurat export complete!")
 
@@ -214,17 +215,11 @@ def export_to_squidpy(sp) -> anndata.AnnData:
     print("\nConverting to Squidpy-compatible AnnData...")
 
     # Use spatioloji's built-in conversion
-    adata = sp.to_anndata(include_spatial=True, spatial_key='spatial')
+    adata = sp.to_anndata(include_spatial=True, spatial_key="spatial")
 
     # Add Squidpy-specific metadata
-    adata.uns['spatial'] = {
-        'spatioloji': {
-            'images': {},
-            'scalefactors': {
-                'tissue_hires_scalef': 1.0,
-                'spot_diameter_fullres': 1.0
-            }
-        }
+    adata.uns["spatial"] = {
+        "spatioloji": {"images": {}, "scalefactors": {"tissue_hires_scalef": 1.0, "spot_diameter_fullres": 1.0}}
     }
 
     print("✓ Created AnnData with spatial coordinates")
@@ -235,8 +230,8 @@ def export_to_squidpy(sp) -> anndata.AnnData:
 
 # ========== Data Alignment Utilities ==========
 
-def align_dataframe_to_cells(sp, df: pd.DataFrame,
-                            id_column: str | None = None) -> pd.DataFrame:
+
+def align_dataframe_to_cells(sp, df: pd.DataFrame, id_column: str | None = None) -> pd.DataFrame:
     """
     Align any DataFrame to spatioloji's master cell index.
 
@@ -293,8 +288,7 @@ def align_dataframe_to_cells(sp, df: pd.DataFrame,
     return aligned
 
 
-def align_dataframe_to_genes(sp, df: pd.DataFrame,
-                            id_column: str | None = None) -> pd.DataFrame:
+def align_dataframe_to_genes(sp, df: pd.DataFrame, id_column: str | None = None) -> pd.DataFrame:
     """
     Align any DataFrame to spatioloji's master gene index.
 
@@ -337,11 +331,10 @@ def align_dataframe_to_genes(sp, df: pd.DataFrame,
 
 # ========== Coordinate Conversion Utilities ==========
 
-def convert_coordinates(coords: np.ndarray,
-                       from_type: str,
-                       to_type: str,
-                       fov_positions: pd.DataFrame,
-                       fov_ids: np.ndarray) -> np.ndarray:
+
+def convert_coordinates(
+    coords: np.ndarray, from_type: str, to_type: str, fov_positions: pd.DataFrame, fov_ids: np.ndarray
+) -> np.ndarray:
     """
     Convert between local and global coordinates.
 
@@ -375,26 +368,26 @@ def convert_coordinates(coords: np.ndarray,
     if from_type == to_type:
         return coords.copy()
 
-    if from_type == 'local' and to_type == 'global':
+    if from_type == "local" and to_type == "global":
         # Local → Global: add FOV positions
         result = coords.copy()
         for fov_id in np.unique(fov_ids):
             mask = fov_ids == fov_id
             if fov_id in fov_positions.index:
-                fov_x = fov_positions.loc[fov_id, 'x_global_px']
-                fov_y = fov_positions.loc[fov_id, 'y_global_px']
+                fov_x = fov_positions.loc[fov_id, "x_global_px"]
+                fov_y = fov_positions.loc[fov_id, "y_global_px"]
                 result[mask, 0] += fov_x
                 result[mask, 1] += fov_y
         return result
 
-    elif from_type == 'global' and to_type == 'local':
+    elif from_type == "global" and to_type == "local":
         # Global → Local: subtract FOV positions
         result = coords.copy()
         for fov_id in np.unique(fov_ids):
             mask = fov_ids == fov_id
             if fov_id in fov_positions.index:
-                fov_x = fov_positions.loc[fov_id, 'x_global_px']
-                fov_y = fov_positions.loc[fov_id, 'y_global_px']
+                fov_x = fov_positions.loc[fov_id, "x_global_px"]
+                fov_y = fov_positions.loc[fov_id, "y_global_px"]
                 result[mask, 0] -= fov_x
                 result[mask, 1] -= fov_y
         return result
@@ -435,34 +428,38 @@ def calculate_cell_centroids(sp, use_polygons: bool = True) -> pd.DataFrame:
         # Calculate from polygons
         cell_id_col = sp.config.cell_id_col
 
-        centroids = sp.polygons.groupby(cell_id_col).agg({
-            sp.config.x_local_col: 'mean',
-            sp.config.y_local_col: 'mean',
-            sp.config.x_global_col: 'mean',
-            sp.config.y_global_col: 'mean'
-        })
+        centroids = sp.polygons.groupby(cell_id_col).agg(
+            {
+                sp.config.x_local_col: "mean",
+                sp.config.y_local_col: "mean",
+                sp.config.x_global_col: "mean",
+                sp.config.y_global_col: "mean",
+            }
+        )
 
-        centroids.columns = ['x_local', 'y_local', 'x_global', 'y_global']
+        centroids.columns = ["x_local", "y_local", "x_global", "y_global"]
 
         # Align to master cell index
         centroids = centroids.reindex(sp.cell_index)
     else:
         # Use stored coordinates
-        centroids = pd.DataFrame({
-            'x_local': sp.spatial.x_local,
-            'y_local': sp.spatial.y_local,
-            'x_global': sp.spatial.x_global,
-            'y_global': sp.spatial.y_global
-        }, index=sp.cell_index)
+        centroids = pd.DataFrame(
+            {
+                "x_local": sp.spatial.x_local,
+                "y_local": sp.spatial.y_local,
+                "x_global": sp.spatial.x_global,
+                "y_global": sp.spatial.y_global,
+            },
+            index=sp.cell_index,
+        )
 
     return centroids
 
 
 # ========== Spatial Query Utilities ==========
 
-def get_cells_in_polygon(sp,
-                         polygon_coords: np.ndarray,
-                         coord_type: str = 'global') -> list[str]:
+
+def get_cells_in_polygon(sp, polygon_coords: np.ndarray, coord_type: str = "global") -> list[str]:
     """
     Get cells within a polygon region.
 
@@ -511,10 +508,7 @@ def get_cells_in_polygon(sp,
     return cell_ids
 
 
-def get_cells_in_circle(sp,
-                        center: tuple[float, float],
-                        radius: float,
-                        coord_type: str = 'global') -> list[str]:
+def get_cells_in_circle(sp, center: tuple[float, float], radius: float, coord_type: str = "global") -> list[str]:
     """
     Get cells within a circular region.
 
@@ -592,22 +586,23 @@ def get_fov_bounds(sp, fov_id: str) -> dict[str, float]:
     cells_in_fov = sp.get_cells_in_fov(fov_id)
 
     if len(cells_in_fov) == 0:
-        return {'xmin': 0, 'xmax': 0, 'ymin': 0, 'ymax': 0}
+        return {"xmin": 0, "xmax": 0, "ymin": 0, "ymax": 0}
 
     # Get coordinates (global)
-    coords = sp.get_spatial_coords(cell_ids=cells_in_fov, coord_type='global')
+    coords = sp.get_spatial_coords(cell_ids=cells_in_fov, coord_type="global")
 
     bounds = {
-        'xmin': coords[:, 0].min(),
-        'xmax': coords[:, 0].max(),
-        'ymin': coords[:, 1].min(),
-        'ymax': coords[:, 1].max()
+        "xmin": coords[:, 0].min(),
+        "xmax": coords[:, 0].max(),
+        "ymin": coords[:, 1].min(),
+        "ymax": coords[:, 1].max(),
     }
 
     return bounds
 
 
 # ========== Gene List Utilities ==========
+
 
 def parse_gene_list(gene_input: str | list[str] | Path) -> list[str]:
     """
@@ -635,7 +630,7 @@ def parse_gene_list(gene_input: str | list[str] | Path) -> list[str]:
     if isinstance(gene_input, list):
         return gene_input
 
-    if isinstance(gene_input, (str, Path)):
+    if isinstance(gene_input, str | Path):
         gene_path = Path(gene_input)
 
         # Check if it's a file
@@ -645,7 +640,7 @@ def parse_gene_list(gene_input: str | list[str] | Path) -> list[str]:
             return genes
 
         # Treat as comma-separated string
-        genes = [g.strip() for g in str(gene_input).split(',')]
+        genes = [g.strip() for g in str(gene_input).split(",")]
         return genes
 
     raise TypeError(f"Unsupported gene_input type: {type(gene_input)}")
@@ -696,10 +691,10 @@ def filter_genes_by_list(sp, gene_names: str | list[str] | Path) -> spatioloji:
 
 # ========== Validation Utilities ==========
 
-def validate_input_data(polygons: pd.DataFrame,
-                       cell_meta: pd.DataFrame,
-                       expression: np.ndarray,
-                       config) -> dict[str, bool]:
+
+def validate_input_data(
+    polygons: pd.DataFrame, cell_meta: pd.DataFrame, expression: np.ndarray, config
+) -> dict[str, bool]:
     """
     Validate input data before creating spatioloji.
 
@@ -725,32 +720,29 @@ def validate_input_data(polygons: pd.DataFrame,
     # Check polygons
     if config.cell_id_col not in polygons.columns:
         issues.append(f"Polygons missing '{config.cell_id_col}' column")
-        results['polygons_cell_col'] = False
+        results["polygons_cell_col"] = False
     else:
-        results['polygons_cell_col'] = True
+        results["polygons_cell_col"] = True
 
     # Check cell_meta
     if config.cell_id_col not in cell_meta.columns:
         issues.append(f"Cell metadata missing '{config.cell_id_col}' column")
-        results['cell_meta_cell_col'] = False
+        results["cell_meta_cell_col"] = False
     else:
-        results['cell_meta_cell_col'] = True
+        results["cell_meta_cell_col"] = True
 
     # Check dimensions
     n_cells_expr = expression.shape[0]
     n_cells_meta = len(cell_meta)
 
     if n_cells_expr != n_cells_meta:
-        issues.append(
-            f"Expression rows ({n_cells_expr}) != "
-            f"cell metadata rows ({n_cells_meta})"
-        )
-        results['dimension_match'] = False
+        issues.append(f"Expression rows ({n_cells_expr}) != " f"cell metadata rows ({n_cells_meta})")
+        results["dimension_match"] = False
     else:
-        results['dimension_match'] = True
+        results["dimension_match"] = True
 
     # Overall
-    results['valid'] = len(issues) == 0
+    results["valid"] = len(issues) == 0
 
     if issues:
         print("Validation issues:")
@@ -764,9 +756,8 @@ def validate_input_data(polygons: pd.DataFrame,
 
 # ========== Miscellaneous Utilities ==========
 
-def format_cell_ids(cell_ids: list[str],
-                   prefix: str = '',
-                   pad_length: int | None = None) -> list[str]:
+
+def format_cell_ids(cell_ids: list[str], prefix: str = "", pad_length: int | None = None) -> list[str]:
     """
     Format cell IDs with prefix and padding.
 
@@ -795,7 +786,7 @@ def format_cell_ids(cell_ids: list[str],
     for cid in cell_ids:
         # Try to extract number
         try:
-            num = int(''.join(filter(str.isdigit, str(cid))))
+            num = int("".join(filter(str.isdigit, str(cid))))
             if pad_length:
                 formatted_id = f"{prefix}{num:0{pad_length}d}"
             else:
@@ -809,8 +800,7 @@ def format_cell_ids(cell_ids: list[str],
     return formatted
 
 
-def chunk_data(data: list | np.ndarray | pd.Index,
-               chunk_size: int) -> list:
+def chunk_data(data: list | np.ndarray | pd.Index, chunk_size: int) -> list:
     """
     Split data into chunks.
 
@@ -837,14 +827,12 @@ def chunk_data(data: list | np.ndarray | pd.Index,
     chunks = []
 
     for i in range(0, len(data_list), chunk_size):
-        chunks.append(data_list[i:i + chunk_size])
+        chunks.append(data_list[i : i + chunk_size])
 
     return chunks
 
 
-def safe_divide(numerator: np.ndarray,
-               denominator: np.ndarray,
-               fill_value: float = 0.0) -> np.ndarray:
+def safe_divide(numerator: np.ndarray, denominator: np.ndarray, fill_value: float = 0.0) -> np.ndarray:
     """
     Safely divide arrays, handling division by zero.
 
@@ -866,7 +854,7 @@ def safe_divide(numerator: np.ndarray,
     --------
     >>> ratio = safe_divide(counts, total_counts, fill_value=0.0)
     """
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         result = numerator / denominator
         result[~np.isfinite(result)] = fill_value
 
@@ -904,21 +892,24 @@ def get_summary_stats(sp, metric: str) -> pd.Series:
 
     data = sp.cell_meta[metric]
 
-    stats = pd.Series({
-        'count': len(data),
-        'mean': data.mean(),
-        'std': data.std(),
-        'min': data.min(),
-        '25%': data.quantile(0.25),
-        '50%': data.quantile(0.50),
-        '75%': data.quantile(0.75),
-        'max': data.max()
-    })
+    stats = pd.Series(
+        {
+            "count": len(data),
+            "mean": data.mean(),
+            "std": data.std(),
+            "min": data.min(),
+            "25%": data.quantile(0.25),
+            "50%": data.quantile(0.50),
+            "75%": data.quantile(0.75),
+            "max": data.max(),
+        }
+    )
 
     return stats
 
 
 # ========== Quick Summary Functions ==========
+
 
 def quick_summary(sp) -> None:
     """
@@ -941,18 +932,17 @@ def quick_summary(sp) -> None:
 
     summary = sp.summary()
 
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("SPATIOLOJI SUMMARY")
-    print("="*50)
+    print("=" * 50)
     print(f"Cells:              {summary['n_cells']:>12,}")
     print(f"Genes:              {summary['n_genes']:>12,}")
     print(f"FOVs:               {summary['n_fovs']:>12}")
-    print(f"Images:             {summary['n_images']:>12} "
-          f"({summary['n_images_loaded']} loaded)")
+    print(f"Images:             {summary['n_images']:>12} " f"({summary['n_images_loaded']} loaded)")
     print("-" * 50)
     print(f"Avg cells/FOV:      {summary['avg_cells_per_fov']:>12.1f}")
     print(f"Expression format:  {'Sparse' if summary['is_sparse'] else 'Dense':>12}")
     print(f"Sparsity:           {summary['sparsity']:>11.1%}")
     print(f"Has polygons:       {'Yes' if summary['has_polygons'] else 'No':>12}")
     print(f"Memory usage:       {summary['memory_usage_mb']:>11.1f} MB")
-    print("="*50 + "\n")
+    print("=" * 50 + "\n")

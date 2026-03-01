@@ -24,29 +24,29 @@ from scipy import sparse
 # SECTION 1 — PRIVATE HELPERS
 # =============================================================================
 
-def _finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int,
-                   show: bool) -> plt.Figure:
+
+def _finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) -> plt.Figure:
     """Shared save / show / close logic."""
     plt.tight_layout()
     if save_path:
-        fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         print(f"Saved to {save_path}")
     if not show:
         plt.close(fig)
-        return None      # Jupyter has no object to render
+        return None  # Jupyter has no object to render
     plt.close(fig)
     return fig
 
 
 def _clean_axes(ax: plt.Axes) -> None:
     """Remove top/right spines."""
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
 
 def _require_embedding(spatioloji_obj, key: str, hint: str) -> np.ndarray:
     """Fetch an embedding array or raise a helpful error."""
-    emb = getattr(spatioloji_obj, '_embeddings', None) or {}
+    emb = getattr(spatioloji_obj, "_embeddings", None) or {}
     if key not in emb:
         raise ValueError(f"{key} not found. {hint}")
     return emb[key]
@@ -66,18 +66,14 @@ def _build_norm(vmin, vmax, vcenter):
     return Normalize(vmin=vmin, vmax=vmax)
 
 
-def _get_gene_expression(spatioloji_obj, gene_name: str,
-                         layer: str | None = None) -> np.ndarray:
+def _get_gene_expression(spatioloji_obj, gene_name: str, layer: str | None = None) -> np.ndarray:
     """
     Get 1-D gene expression array from any layer.
 
     Raises ValueError if the gene is missing.
     """
     if gene_name not in spatioloji_obj.gene_index:
-        raise ValueError(
-            f"Gene '{gene_name}' not found in dataset "
-            f"({spatioloji_obj.n_genes} genes available)."
-        )
+        raise ValueError(f"Gene '{gene_name}' not found in dataset " f"({spatioloji_obj.n_genes} genes available).")
     if layer is None:
         return spatioloji_obj.get_expression(gene_names=gene_name).flatten()
 
@@ -88,8 +84,7 @@ def _get_gene_expression(spatioloji_obj, gene_name: str,
     return layer_data[:, gene_idx].flatten()
 
 
-def _validate_and_filter_genes(spatioloji_obj, genes: list[str],
-                               verbose: bool = True) -> list[str]:
+def _validate_and_filter_genes(spatioloji_obj, genes: list[str], verbose: bool = True) -> list[str]:
     """Return only genes present in the dataset; warn about missing ones."""
     available = set(spatioloji_obj.gene_index)
     valid = [g for g in genes if g in available]
@@ -97,23 +92,16 @@ def _validate_and_filter_genes(spatioloji_obj, genes: list[str],
 
     if missing and verbose:
         preview = missing[:10]
-        suffix = '...' if len(missing) > 10 else ''
-        warnings.warn(
-            f"{len(missing)} gene(s) not found and will be skipped: "
-            f"{preview}{suffix}", stacklevel=2
-        )
+        suffix = "..." if len(missing) > 10 else ""
+        warnings.warn(f"{len(missing)} gene(s) not found and will be skipped: " f"{preview}{suffix}", stacklevel=2)
     if not valid:
         raise ValueError(
-            "None of the specified genes were found in the dataset "
-            f"({spatioloji_obj.n_genes} genes available)."
+            "None of the specified genes were found in the dataset " f"({spatioloji_obj.n_genes} genes available)."
         )
     return valid
 
 
-def _get_categorical_colors(
-    n: int,
-    spec: str | list | dict | None = None
-) -> list:
+def _get_categorical_colors(n: int, spec: str | list | dict | None = None) -> list:
     """
     Produce *n* colours from a flexible specification.
 
@@ -144,11 +132,11 @@ def _get_categorical_colors(
 
     # default
     if n <= 20:
-        cmap = plt.get_cmap('tab20')
+        cmap = plt.get_cmap("tab20")
         return [cmap(i / max(n - 1, 1)) for i in range(n)]
 
     colors = []
-    for name in ('tab20', 'tab20b', 'tab20c'):
+    for name in ("tab20", "tab20b", "tab20c"):
         cm = plt.get_cmap(name)
         colors.extend(cm(i / 19) for i in range(20))
     return colors[:n]
@@ -158,14 +146,15 @@ def _get_categorical_colors(
 # SECTION 2 — CORE SCATTER ENGINE
 # =============================================================================
 
+
 def _scatter_embedding(
     spatioloji_obj,
     coords: np.ndarray,
     *,
     # What to colour by — exactly one of these should be set
-    color_by: str | None = None,        # cell_meta column
-    gene: str | None = None,            # gene name
-    layer: str | None = 'log_normalized',
+    color_by: str | None = None,  # cell_meta column
+    gene: str | None = None,  # gene name
+    layer: str | None = "log_normalized",
     # Colour options
     color_map: str | list | dict | None = None,
     palette: str | list | dict | None = None,
@@ -179,11 +168,11 @@ def _scatter_embedding(
     alpha: float = 0.7,
     sort_by_value: bool = False,
     # Labels & legend
-    xlabel: str = 'Dim 1',
-    ylabel: str = 'Dim 2',
+    xlabel: str = "Dim 1",
+    ylabel: str = "Dim 2",
     title: str | None = None,
     legend: bool = True,
-    legend_loc: str = 'right margin',
+    legend_loc: str = "right margin",
     colorbar_label: str | None = None,
     # Figure
     ax: plt.Axes | None = None,
@@ -217,72 +206,86 @@ def _scatter_embedding(
 
         order = np.argsort(values) if sort_by_value else np.arange(len(values))
         sc = ax.scatter(
-            coords[order, 0], coords[order, 1],
-            c=values[order], s=point_size, alpha=alpha,
-            cmap=cmap_spec or 'viridis', norm=norm, edgecolors='none',
+            coords[order, 0],
+            coords[order, 1],
+            c=values[order],
+            s=point_size,
+            alpha=alpha,
+            cmap=cmap_spec or "viridis",
+            norm=norm,
+            edgecolors="none",
         )
         if legend:
             cbar = plt.colorbar(sc, ax=ax)
-            cbar.set_label(colorbar_label or 'Expression')
-        title = title or f'{gene} Expression'
+            cbar.set_label(colorbar_label or "Expression")
+        title = title or f"{gene} Expression"
 
     # --- metadata colouring -----------------------------------------------
     elif color_by is not None:
         if color_by not in spatioloji_obj.cell_meta.columns:
             raise ValueError(f"Column '{color_by}' not found in cell_meta")
         data = spatioloji_obj.cell_meta[color_by]
-        is_cat = (
-            pd.api.types.is_categorical_dtype(data)
-            or pd.api.types.is_object_dtype(data)
-            or data.nunique() < 50
-        )
+        is_cat = pd.api.types.is_categorical_dtype(data) or pd.api.types.is_object_dtype(data) or data.nunique() < 50
 
         if is_cat:
-            cats = data.astype('category')
+            cats = data.astype("category")
             unique = cats.cat.categories
             if colors is not None:
-                clist = [colors.get(str(c), '#808080') for c in unique]
+                clist = [colors.get(str(c), "#808080") for c in unique]
             else:
                 clist = _get_categorical_colors(len(unique), cmap_spec)
             for i, cat in enumerate(unique):
                 mask = cats == cat
                 ax.scatter(
-                    coords[mask, 0], coords[mask, 1],
-                    c=[clist[i]], s=point_size, alpha=alpha,
-                    label=str(cat), edgecolors='none',
+                    coords[mask, 0],
+                    coords[mask, 1],
+                    c=[clist[i]],
+                    s=point_size,
+                    alpha=alpha,
+                    label=str(cat),
+                    edgecolors="none",
                 )
             if legend:
                 kw = dict(frameon=False, markerscale=2, title=color_by)
-                if legend_loc == 'right margin':
-                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', **kw)
+                if legend_loc == "right margin":
+                    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", **kw)
                 else:
                     ax.legend(loc=legend_loc, **kw)
         else:
             norm = _build_norm(vmin, vmax, vcenter)
             sc = ax.scatter(
-                coords[:, 0], coords[:, 1],
-                c=data.values, s=point_size, alpha=alpha,
-                cmap=cmap_spec or 'viridis', norm=norm, edgecolors='none',
+                coords[:, 0],
+                coords[:, 1],
+                c=data.values,
+                s=point_size,
+                alpha=alpha,
+                cmap=cmap_spec or "viridis",
+                norm=norm,
+                edgecolors="none",
             )
             if legend:
                 cbar = plt.colorbar(sc, ax=ax)
                 cbar.set_label(colorbar_label or color_by)
-        title = title or f'{color_by}'
+        title = title or f"{color_by}"
 
     # --- no colouring -----------------------------------------------------
     else:
         ax.scatter(
-            coords[:, 0], coords[:, 1],
-            s=point_size, alpha=alpha, c='steelblue', edgecolors='none',
+            coords[:, 0],
+            coords[:, 1],
+            s=point_size,
+            alpha=alpha,
+            c="steelblue",
+            edgecolors="none",
         )
-        title = title or ''
+        title = title or ""
 
     ax.set_xlabel(xlabel, fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_title(title, fontsize=14, fontweight="bold")
     _clean_axes(ax)
 
-    ax.set_aspect('equal', adjustable='datalim')
+    ax.set_aspect("equal", adjustable="datalim")
 
     if own_fig:
         return _finalize_plot(fig, save_path, dpi, show)
@@ -293,11 +296,12 @@ def _scatter_embedding(
 # SECTION 3 — PUBLIC API (thin wrappers)
 # =============================================================================
 
+
 def plot_umap(
     spatioloji_obj,
     color_by: str | None = None,
     gene: str | None = None,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     *,
     color_map: str | list | dict | None = None,
     palette: str | list | dict | None = None,
@@ -310,7 +314,7 @@ def plot_umap(
     alpha: float = 0.7,
     sort_by_value: bool = False,
     legend: bool = True,
-    legend_loc: str = 'right margin',
+    legend_loc: str = "right margin",
     colorbar_label: str | None = None,
     title: str | None = None,
     figsize: tuple[float, float] = (8, 6),
@@ -364,20 +368,33 @@ def plot_umap(
     >>> sj.plotting.plot_umap(sp, color_by='total_counts', color_map='plasma')
     >>> sj.plotting.plot_umap(sp, gene='CD3D', robust=True, sort_by_value=True)
     """
-    umap = _require_embedding(
-        spatioloji_obj, 'X_umap',
-        "Run UMAP first:  sj.processing.umap(sp, use_pca=True)"
-    )
+    umap = _require_embedding(spatioloji_obj, "X_umap", "Run UMAP first:  sj.processing.umap(sp, use_pca=True)")
     return _scatter_embedding(
-        spatioloji_obj, umap,
-        color_by=color_by, gene=gene, layer=layer,
-        color_map=color_map, palette=palette, colors=colors,
-        vmin=vmin, vmax=vmax, vcenter=vcenter, robust=robust,
-        point_size=point_size, alpha=alpha, sort_by_value=sort_by_value,
-        xlabel='UMAP1', ylabel='UMAP2',
-        title=title, legend=legend, legend_loc=legend_loc,
+        spatioloji_obj,
+        umap,
+        color_by=color_by,
+        gene=gene,
+        layer=layer,
+        color_map=color_map,
+        palette=palette,
+        colors=colors,
+        vmin=vmin,
+        vmax=vmax,
+        vcenter=vcenter,
+        robust=robust,
+        point_size=point_size,
+        alpha=alpha,
+        sort_by_value=sort_by_value,
+        xlabel="UMAP1",
+        ylabel="UMAP2",
+        title=title,
+        legend=legend,
+        legend_loc=legend_loc,
         colorbar_label=colorbar_label,
-        figsize=figsize, save_path=save_path, dpi=dpi, show=show,
+        figsize=figsize,
+        save_path=save_path,
+        dpi=dpi,
+        show=show,
     )
 
 
@@ -385,7 +402,7 @@ def plot_pca(
     spatioloji_obj,
     color_by: str | None = None,
     gene: str | None = None,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     pcs: tuple[int, int] = (1, 2),
     *,
     color_map: str | list | dict | None = None,
@@ -419,30 +436,39 @@ def plot_pca(
     >>> sj.plotting.plot_pca(sp, color_by='leiden')
     >>> sj.plotting.plot_pca(sp, pcs=(2, 3), gene='CD3D')
     """
-    pca = _require_embedding(
-        spatioloji_obj, 'X_pca',
-        "Run PCA first:  sj.processing.pca(sp, n_comps=50)"
-    )
+    pca = _require_embedding(spatioloji_obj, "X_pca", "Run PCA first:  sj.processing.pca(sp, n_comps=50)")
     i, j = pcs[0] - 1, pcs[1] - 1
     coords = pca[:, [i, j]]
 
     # Build axis labels with variance if available
-    xl, yl = f'PC{pcs[0]}', f'PC{pcs[1]}'
+    xl, yl = f"PC{pcs[0]}", f"PC{pcs[1]}"
     if show_variance:
-        vr = spatioloji_obj.embeddings.get('X_pca_variance_ratio')
+        vr = spatioloji_obj.embeddings.get("X_pca_variance_ratio")
         if vr is not None:
-            xl += f' ({vr[i] * 100:.1f}%)'
-            yl += f' ({vr[j] * 100:.1f}%)'
+            xl += f" ({vr[i] * 100:.1f}%)"
+            yl += f" ({vr[j] * 100:.1f}%)"
 
     return _scatter_embedding(
-        spatioloji_obj, coords,
-        color_by=color_by, gene=gene, layer=layer,
-        color_map=color_map, palette=palette, colors=colors,
-        vmin=vmin, vmax=vmax,
-        point_size=point_size, alpha=alpha,
-        xlabel=xl, ylabel=yl,
-        title=title or 'PCA', legend=legend,
-        figsize=figsize, save_path=save_path, dpi=dpi, show=show,
+        spatioloji_obj,
+        coords,
+        color_by=color_by,
+        gene=gene,
+        layer=layer,
+        color_map=color_map,
+        palette=palette,
+        colors=colors,
+        vmin=vmin,
+        vmax=vmax,
+        point_size=point_size,
+        alpha=alpha,
+        xlabel=xl,
+        ylabel=yl,
+        title=title or "PCA",
+        legend=legend,
+        figsize=figsize,
+        save_path=save_path,
+        dpi=dpi,
+        show=show,
     )
 
 
@@ -450,7 +476,7 @@ def plot_umap_grid(
     spatioloji_obj,
     features: list[str] | None = None,
     genes: list[str] | None = None,
-    layer: str = 'log_normalized',
+    layer: str = "log_normalized",
     color_maps: dict[str, str] | None = None,
     ncols: int = 3,
     point_size: float = 3.0,
@@ -479,16 +505,13 @@ def plot_umap_grid(
     --------
     >>> sj.plotting.plot_umap_grid(sp, features=['leiden'], genes=['EPCAM','CD3D'])
     """
-    umap = _require_embedding(
-        spatioloji_obj, 'X_umap',
-        "Run UMAP first:  sj.processing.umap(sp, use_pca=True)"
-    )
+    umap = _require_embedding(spatioloji_obj, "X_umap", "Run UMAP first:  sj.processing.umap(sp, use_pca=True)")
 
     items: list[tuple[str, str]] = []  # (name, kind)  kind ∈ {'feature', 'gene'}
-    for f in (features or []):
-        items.append((f, 'feature'))
-    for g in (genes or []):
-        items.append((g, 'gene'))
+    for f in features or []:
+        items.append((f, "feature"))
+    for g in genes or []:
+        items.append((g, "gene"))
 
     n = len(items)
     if n == 0:
@@ -507,36 +530,49 @@ def plot_umap_grid(
         ax = axes[idx]
         cmap = cmaps.get(name)
 
-        if kind == 'gene':
+        if kind == "gene":
             try:
                 _scatter_embedding(
-                    spatioloji_obj, umap, gene=name, layer=layer,
-                    color_map=cmap or 'viridis', point_size=point_size, alpha=0.7,
-                    xlabel='UMAP1', ylabel='UMAP2', title=name,
-                    ax=ax, show=False,
+                    spatioloji_obj,
+                    umap,
+                    gene=name,
+                    layer=layer,
+                    color_map=cmap or "viridis",
+                    point_size=point_size,
+                    alpha=0.7,
+                    xlabel="UMAP1",
+                    ylabel="UMAP2",
+                    title=name,
+                    ax=ax,
+                    show=False,
                 )
             except ValueError:
-                ax.text(0.5, 0.5, f"'{name}' not found",
-                        ha='center', va='center', transform=ax.transAxes)
+                ax.text(0.5, 0.5, f"'{name}' not found", ha="center", va="center", transform=ax.transAxes)
                 ax.set_xticks([])
                 ax.set_yticks([])
         else:
             if name not in spatioloji_obj.cell_meta.columns:
-                ax.text(0.5, 0.5, f"'{name}' not found",
-                        ha='center', va='center', transform=ax.transAxes)
+                ax.text(0.5, 0.5, f"'{name}' not found", ha="center", va="center", transform=ax.transAxes)
                 ax.set_xticks([])
                 ax.set_yticks([])
                 continue
             _scatter_embedding(
-                spatioloji_obj, umap, color_by=name,
-                color_map=cmap, point_size=point_size, alpha=0.7,
-                xlabel='UMAP1', ylabel='UMAP2', title=name,
-                ax=ax, show=False,
+                spatioloji_obj,
+                umap,
+                color_by=name,
+                color_map=cmap,
+                point_size=point_size,
+                alpha=0.7,
+                xlabel="UMAP1",
+                ylabel="UMAP2",
+                title=name,
+                ax=ax,
+                show=False,
             )
 
     # hide unused axes
     for idx in range(n, len(axes)):
-        axes[idx].axis('off')
+        axes[idx].axis("off")
 
     return _finalize_plot(fig, save_path, dpi, show)
 
@@ -547,8 +583,8 @@ def plot_umap_grid(
 
 # ---- helpers shared by Section 4 -----------------------------------------
 
-def _resolve_group_order(groups: pd.Series,
-                         group_order: list[str] | None) -> list[str]:
+
+def _resolve_group_order(groups: pd.Series, group_order: list[str] | None) -> list[str]:
     """
     Return an ordered list of group labels.
 
@@ -563,27 +599,25 @@ def _resolve_group_order(groups: pd.Series,
         if missing:
             warnings.warn(f"Groups not in data and will be skipped: {missing}", stacklevel=2)
         if not present:
-            raise ValueError(
-                f"None of the groups in group_order exist. "
-                f"Available: {sorted(available)}"
-            )
+            raise ValueError(f"None of the groups in group_order exist. " f"Available: {sorted(available)}")
         return present
     return sorted(available)
 
 
 # ---- violin --------------------------------------------------------------
 
+
 def plot_violin(
     spatioloji_obj,
     genes: str | list[str],
-    group_by: str = 'leiden',
-    layer: str = 'log_normalized',
+    group_by: str = "leiden",
+    layer: str = "log_normalized",
     group_order: list[str] | None = None,
     color_map: str | list | None = None,
     colors: dict[str, str] | None = None,
     figsize: tuple[float, float] | None = None,
     rotation: int = 45,
-    ylabel: str | None = 'Expression',
+    ylabel: str | None = "Expression",
     save_path: str | None = None,
     dpi: int = 300,
     show: bool = True,
@@ -625,9 +659,9 @@ def plot_violin(
 
     # colours
     if colors is not None:
-        violin_colors = [colors.get(str(g), 'steelblue') for g in unique_groups]
+        violin_colors = [colors.get(str(g), "steelblue") for g in unique_groups]
     else:
-        violin_colors = _get_categorical_colors(n_groups, color_map or 'tab20')
+        violin_colors = _get_categorical_colors(n_groups, color_map or "tab20")
 
     n_genes = len(genes)
     if figsize is None:
@@ -648,41 +682,40 @@ def plot_violin(
                 labels.append(g)
 
         if not data_list:
-            ax.text(0.5, 0.5, f"No data for {gene}",
-                    ha='center', va='center', transform=ax.transAxes)
+            ax.text(0.5, 0.5, f"No data for {gene}", ha="center", va="center", transform=ax.transAxes)
             continue
 
-        parts = ax.violinplot(data_list, positions=range(len(data_list)),
-                              showmeans=True, showextrema=True)
-        for i, body in enumerate(parts['bodies']):
+        parts = ax.violinplot(data_list, positions=range(len(data_list)), showmeans=True, showextrema=True)
+        for i, body in enumerate(parts["bodies"]):
             body.set_facecolor(violin_colors[i])
             body.set_alpha(0.7)
 
         ax.set_xticks(range(len(labels)))
-        ax.set_xticklabels(labels, rotation=rotation, ha='right')
-        ax.set_ylabel(ylabel if idx == 0 else '', fontsize=11)
-        ax.set_title(gene, fontsize=12, fontweight='bold')
+        ax.set_xticklabels(labels, rotation=rotation, ha="right")
+        ax.set_ylabel(ylabel if idx == 0 else "", fontsize=11)
+        ax.set_title(gene, fontsize=12, fontweight="bold")
         _clean_axes(ax)
-        ax.grid(axis='y', alpha=0.3)
+        ax.grid(axis="y", alpha=0.3)
 
     return _finalize_plot(fig, save_path, dpi, show)
 
 
 # ---- heatmap -------------------------------------------------------------
 
+
 def plot_heatmap(
     spatioloji_obj,
     genes: str | list[str],
-    group_by: str = 'leiden',
-    layer: str = 'log_normalized',
+    group_by: str = "leiden",
+    layer: str = "log_normalized",
     group_order: list[str] | None = None,
     gene_order: list[str] | None = None,
-    scale: Literal['none', 'row', 'column'] = 'row',
+    scale: Literal["none", "row", "column"] = "row",
     cluster_genes: bool = False,
     cluster_groups: bool = False,
     show_gene_names: bool = True,
     show_group_names: bool = True,
-    color_map: str = 'RdBu_r',
+    color_map: str = "RdBu_r",
     vmin: float | None = None,
     vmax: float | None = None,
     vcenter: float | None = 0,
@@ -745,10 +778,10 @@ def plot_heatmap(
                 expr[i, j] = vals[mask].mean()
 
     # --- scaling ----------------------------------------------------------
-    if scale == 'row':
+    if scale == "row":
         std = expr.std(axis=1, keepdims=True) + 1e-10
         expr = (expr - expr.mean(axis=1, keepdims=True)) / std
-    elif scale == 'column':
+    elif scale == "column":
         std = expr.std(axis=0, keepdims=True) + 1e-10
         expr = (expr - expr.mean(axis=0, keepdims=True)) / std
 
@@ -756,8 +789,8 @@ def plot_heatmap(
     gene_link = group_link = None
     if cluster_genes and n_genes > 1:
         try:
-            gene_link = linkage(pdist(expr), method='average')
-            leaves = dendrogram(gene_link, no_plot=True)['leaves']
+            gene_link = linkage(pdist(expr), method="average")
+            leaves = dendrogram(gene_link, no_plot=True)["leaves"]
             expr = expr[leaves]
             genes = [genes[k] for k in leaves]
         except Exception as e:
@@ -765,8 +798,8 @@ def plot_heatmap(
 
     if cluster_groups and n_groups > 1:
         try:
-            group_link = linkage(pdist(expr.T), method='average')
-            leaves = dendrogram(group_link, no_plot=True)['leaves']
+            group_link = linkage(pdist(expr.T), method="average")
+            leaves = dendrogram(group_link, no_plot=True)["leaves"]
             expr = expr[:, leaves]
             unique_groups = [unique_groups[k] for k in leaves]
         except Exception as e:
@@ -788,22 +821,25 @@ def plot_heatmap(
     has_cd = cluster_groups and group_link is not None
 
     if has_gd and has_cd:
-        gs = GridSpec(2, 2, figure=fig,
-                      width_ratios=[dendrogram_ratio, 1],
-                      height_ratios=[dendrogram_ratio, 1],
-                      hspace=0.02, wspace=0.02)
+        gs = GridSpec(
+            2,
+            2,
+            figure=fig,
+            width_ratios=[dendrogram_ratio, 1],
+            height_ratios=[dendrogram_ratio, 1],
+            hspace=0.02,
+            wspace=0.02,
+        )
         ax_heat = fig.add_subplot(gs[1, 1])
         ax_gd = fig.add_subplot(gs[1, 0], sharey=ax_heat)
         ax_cd = fig.add_subplot(gs[0, 1], sharex=ax_heat)
     elif has_gd:
-        gs = GridSpec(1, 2, figure=fig,
-                      width_ratios=[dendrogram_ratio, 1], wspace=0.02)
+        gs = GridSpec(1, 2, figure=fig, width_ratios=[dendrogram_ratio, 1], wspace=0.02)
         ax_heat = fig.add_subplot(gs[0, 1])
         ax_gd = fig.add_subplot(gs[0, 0], sharey=ax_heat)
         ax_cd = None
     elif has_cd:
-        gs = GridSpec(2, 1, figure=fig,
-                      height_ratios=[dendrogram_ratio, 1], hspace=0.02)
+        gs = GridSpec(2, 1, figure=fig, height_ratios=[dendrogram_ratio, 1], hspace=0.02)
         ax_heat = fig.add_subplot(gs[1, 0])
         ax_cd = fig.add_subplot(gs[0, 0], sharex=ax_heat)
         ax_gd = None
@@ -812,12 +848,10 @@ def plot_heatmap(
         ax_gd = ax_cd = None
 
     # --- draw heatmap -----------------------------------------------------
-    im = ax_heat.imshow(expr, aspect='auto', cmap=color_map, norm=norm,
-                        interpolation='nearest')
+    im = ax_heat.imshow(expr, aspect="auto", cmap=color_map, norm=norm, interpolation="nearest")
     ax_heat.set_xticks(range(n_groups))
     ax_heat.set_yticks(range(n_genes))
-    ax_heat.set_xticklabels(unique_groups if show_group_names else [],
-                            rotation=90, ha='center')
+    ax_heat.set_xticklabels(unique_groups if show_group_names else [], rotation=90, ha="center")
     ax_heat.set_yticklabels(genes if show_gene_names else [])
     if has_cd:
         ax_heat.xaxis.tick_top()
@@ -833,34 +867,34 @@ def plot_heatmap(
             s.set_visible(False)
 
     if ax_gd is not None:
-        _draw_dendro(ax_gd, gene_link, 'left')
+        _draw_dendro(ax_gd, gene_link, "left")
     if ax_cd is not None:
-        _draw_dendro(ax_cd, group_link, 'top')
+        _draw_dendro(ax_cd, group_link, "top")
 
     # colorbar
     if cbar_pos is not None:
         cbar = plt.colorbar(im, cax=fig.add_axes(cbar_pos))
     else:
         cbar = plt.colorbar(im, ax=ax_heat, fraction=0.046, pad=0.04)
-    cbar.set_label('Z-score' if scale in ('row', 'column') else 'Expression')
+    cbar.set_label("Z-score" if scale in ("row", "column") else "Expression")
 
-    plt.suptitle(f'Gene Expression - {group_by}', fontsize=14,
-                 fontweight='bold', y=0.98)
+    plt.suptitle(f"Gene Expression - {group_by}", fontsize=14, fontweight="bold", y=0.98)
 
     return _finalize_plot(fig, save_path, dpi, show)
 
 
 # ---- dotplot --------------------------------------------------------------
 
+
 def plot_dotplot(
     spatioloji_obj,
     genes: str | list[str],
-    group_by: str = 'leiden',
-    layer: str = 'log_normalized',
+    group_by: str = "leiden",
+    layer: str = "log_normalized",
     group_order: list[str] | None = None,
     gene_order: list[str] | None = None,
     size_scale: tuple[float, float] = (20, 200),
-    color_map: str = 'Reds',
+    color_map: str = "Reds",
     vmin: float | None = None,
     vmax: float | None = None,
     show_gene_names: bool = True,
@@ -919,29 +953,35 @@ def plot_dotplot(
     sizes = size_scale[0] + frac_expr.flatten() * (size_scale[1] - size_scale[0])
 
     sc = ax.scatter(
-        X.flatten(), Y.flatten(),
-        c=mean_expr.flatten(), s=sizes,
-        cmap=color_map, vmin=vmin, vmax=vmax,
-        edgecolors='black', linewidths=0.5, alpha=0.8,
+        X.flatten(),
+        Y.flatten(),
+        c=mean_expr.flatten(),
+        s=sizes,
+        cmap=color_map,
+        vmin=vmin,
+        vmax=vmax,
+        edgecolors="black",
+        linewidths=0.5,
+        alpha=0.8,
     )
 
     ax.set_xticks(range(n_groups))
     ax.set_yticks(range(n_genes))
-    ax.set_xticklabels(unique_groups if show_group_names else [], rotation=90, ha='center')
+    ax.set_xticklabels(unique_groups if show_group_names else [], rotation=90, ha="center")
     ax.set_yticklabels(genes if show_gene_names else [])
     ax.invert_yaxis()
     ax.set_xlim(-0.5, n_groups - 0.5)
     ax.set_ylim(n_genes - 0.5, -0.5)
 
     cbar = plt.colorbar(sc, ax=ax, pad=0.02, aspect=30)
-    cbar.set_label('Mean Expression', fontsize=10)
+    cbar.set_label("Mean Expression", fontsize=10)
 
     # size legend
     _dot_size_legend(ax, size_scale)
 
     ax.set_xlabel(group_by, fontsize=12)
-    ax.set_ylabel('Genes', fontsize=12)
-    ax.set_title('Gene Expression Dot Plot', fontsize=14, fontweight='bold')
+    ax.set_ylabel("Genes", fontsize=12)
+    ax.set_title("Gene Expression Dot Plot", fontsize=14, fontweight="bold")
     _clean_axes(ax)
     ax.grid(False)
 
@@ -951,26 +991,43 @@ def plot_dotplot(
 def _dot_size_legend(ax, size_scale):
     """Add a dot-size legend for fraction-expressing."""
     fracs = [0, 0.25, 0.5, 0.75, 1.0]
-    labels = ['0%', '25%', '50%', '75%', '100%']
+    labels = ["0%", "25%", "50%", "75%", "100%"]
     handles = [
-        ax.scatter([], [], s=size_scale[0] + f * (size_scale[1] - size_scale[0]),
-                   c='gray', edgecolors='black', linewidths=0.5, alpha=0.8)
+        ax.scatter(
+            [],
+            [],
+            s=size_scale[0] + f * (size_scale[1] - size_scale[0]),
+            c="gray",
+            edgecolors="black",
+            linewidths=0.5,
+            alpha=0.8,
+        )
         for f in fracs
     ]
-    ax.legend(handles, labels, title='% Expressing',
-              loc='center left', bbox_to_anchor=(1.15, 0.5),
-              frameon=False, scatterpoints=1, fontsize=9, title_fontsize=10)
+    ax.legend(
+        handles,
+        labels,
+        title="% Expressing",
+        loc="center left",
+        bbox_to_anchor=(1.15, 0.5),
+        frameon=False,
+        scatterpoints=1,
+        fontsize=9,
+        title_fontsize=10,
+    )
 
 
 # =============================================================================
 # BACKWARD-COMPATIBLE ALIASES  (can be removed in a future version)
 # =============================================================================
 
-def plot_umap_by_clusters(spatioloji_obj, cluster_column='leiden', **kwargs):
+
+def plot_umap_by_clusters(spatioloji_obj, cluster_column="leiden", **kwargs):
     """Deprecated: use ``plot_umap(sp, color_by=...)`` instead."""
     warnings.warn(
         "plot_umap_by_clusters is deprecated; use plot_umap(sp, color_by=...) instead.",
-        DeprecationWarning, stacklevel=2,
+        DeprecationWarning,
+        stacklevel=2,
     )
     return plot_umap(spatioloji_obj, color_by=cluster_column, **kwargs)
 
@@ -979,7 +1036,8 @@ def plot_umap_by_gene(spatioloji_obj, gene_name, **kwargs):
     """Deprecated: use ``plot_umap(sp, gene=...)`` instead."""
     warnings.warn(
         "plot_umap_by_gene is deprecated; use plot_umap(sp, gene=...) instead.",
-        DeprecationWarning, stacklevel=2,
+        DeprecationWarning,
+        stacklevel=2,
     )
     return plot_umap(spatioloji_obj, gene=gene_name, **kwargs)
 
@@ -988,6 +1046,7 @@ def plot_umap_by_feature(spatioloji_obj, feature, **kwargs):
     """Deprecated: use ``plot_umap(sp, color_by=...)`` instead."""
     warnings.warn(
         "plot_umap_by_feature is deprecated; use plot_umap(sp, color_by=...) instead.",
-        DeprecationWarning, stacklevel=2,
+        DeprecationWarning,
+        stacklevel=2,
     )
     return plot_umap(spatioloji_obj, color_by=feature, **kwargs)

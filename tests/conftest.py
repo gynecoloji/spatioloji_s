@@ -25,21 +25,21 @@ How fixtures work:
 import numpy as np
 import pandas as pd
 import pytest
-
 from spatioloji_s.data.core import spatioloji
 
 # ===========================================================================
 # Constants — the size of our fake dataset
 # ===========================================================================
 
-N_CELLS = 60   # total fake cells (30 per FOV)
-N_GENES = 25   # total fake genes
-N_FOVS  = 2    # two fake FOVs (field of views)
+N_CELLS = 60  # total fake cells (30 per FOV)
+N_GENES = 25  # total fake genes
+N_FOVS = 2  # two fake FOVs (field of views)
 
 
 # ===========================================================================
 # Fixture 1: minimal spatioloji object (no polygons, no images)
 # ===========================================================================
+
 
 @pytest.fixture
 def sp_basic():
@@ -55,61 +55,71 @@ def sp_basic():
     60 cells × 25 genes, split across 2 FOVs.
     """
 
-    np.random.seed(42)                          # fix random seed → reproducible
+    np.random.seed(42)  # fix random seed → reproducible
 
     # --- Expression matrix (cells × genes) ---
     # We use integers 0-9 so the matrix is sparse-ish (many zeros)
     expression = np.random.randint(0, 5, (N_CELLS, N_GENES)).astype(float)
 
     # --- Cell and gene identifiers ---
-    cell_ids   = [f"cell_{i}"  for i in range(N_CELLS)]
-    gene_names = [f"gene_{i}"  for i in range(N_GENES)]
+    cell_ids = [f"cell_{i}" for i in range(N_CELLS)]
+    gene_names = [f"gene_{i}" for i in range(N_GENES)]
 
     # --- Cell metadata ---
     # fov: first 30 cells → FOV "1", next 30 → FOV "2"
     # cell_type: randomly assigned A or B
-    cell_meta = pd.DataFrame({
-        'fov':       ['1'] * 30 + ['2'] * 30,
-        'cell_type': np.random.choice(['TypeA', 'TypeB'], N_CELLS),
-        'n_counts':  expression.sum(axis=1),      # total counts per cell
-    }, index=cell_ids)
+    cell_meta = pd.DataFrame(
+        {
+            "fov": ["1"] * 30 + ["2"] * 30,
+            "cell_type": np.random.choice(["TypeA", "TypeB"], N_CELLS),
+            "n_counts": expression.sum(axis=1),  # total counts per cell
+        },
+        index=cell_ids,
+    )
 
     # --- Gene metadata ---
     # NegProbe: last 2 genes are negative control probes
-    gene_meta = pd.DataFrame({
-        'NegProbe': [False] * (N_GENES - 2) + [True, True],
-    }, index=gene_names)
+    gene_meta = pd.DataFrame(
+        {
+            "NegProbe": [False] * (N_GENES - 2) + [True, True],
+        },
+        index=gene_names,
+    )
 
     # --- Spatial coordinates ---
     # global x/y: scattered in a 1000×1000 space
     # local x/y:  within each FOV (0–500)
     spatial = {
-        'x_global': np.random.uniform(0, 1000, N_CELLS),
-        'y_global': np.random.uniform(0, 1000, N_CELLS),
-        'x_local':  np.random.uniform(0, 500,  N_CELLS),
-        'y_local':  np.random.uniform(0, 500,  N_CELLS),
+        "x_global": np.random.uniform(0, 1000, N_CELLS),
+        "y_global": np.random.uniform(0, 1000, N_CELLS),
+        "x_local": np.random.uniform(0, 500, N_CELLS),
+        "y_local": np.random.uniform(0, 500, N_CELLS),
     }
 
     # --- FOV positions ---
-    fov_positions = pd.DataFrame({
-        'x_offset': [0,   500],
-        'y_offset': [0,   500],
-    }, index=pd.Index(['1', '2'], name='fov'))
+    fov_positions = pd.DataFrame(
+        {
+            "x_offset": [0, 500],
+            "y_offset": [0, 500],
+        },
+        index=pd.Index(["1", "2"], name="fov"),
+    )
 
     return spatioloji(
-        expression    = expression,
-        cell_ids      = cell_ids,
-        gene_names    = gene_names,
-        cell_metadata = cell_meta,
-        gene_metadata = gene_meta,
-        spatial_coords= spatial,
-        fov_positions = fov_positions,
+        expression=expression,
+        cell_ids=cell_ids,
+        gene_names=gene_names,
+        cell_metadata=cell_meta,
+        gene_metadata=gene_meta,
+        spatial_coords=spatial,
+        fov_positions=fov_positions,
     )
 
 
 # ===========================================================================
 # Fixture 2: spatioloji object WITH polygon data
 # ===========================================================================
+
 
 @pytest.fixture
 def sp_with_polygons(sp_basic):
@@ -130,10 +140,14 @@ def sp_with_polygons(sp_basic):
     rows = []
     for cid, cx, cy in zip(cell_ids, x, y, strict=False):
         # A tiny 5×5 square around the centroid — 4 corners + closing vertex
-        for vx, vy in [(cx-2, cy-2), (cx+2, cy-2),
-                       (cx+2, cy+2), (cx-2, cy+2),
-                       (cx-2, cy-2)]:              # close the polygon
-            rows.append({'cell': cid, 'x_global_px': vx, 'y_global_px': vy})
+        for vx, vy in [
+            (cx - 2, cy - 2),
+            (cx + 2, cy - 2),
+            (cx + 2, cy + 2),
+            (cx - 2, cy + 2),
+            (cx - 2, cy - 2),
+        ]:  # close the polygon
+            rows.append({"cell": cid, "x_global_px": vx, "y_global_px": vy})
 
     polygons = pd.DataFrame(rows)
 
@@ -141,45 +155,55 @@ def sp_with_polygons(sp_basic):
     np.random.seed(42)
     expression = np.random.randint(0, 5, (N_CELLS, N_GENES)).astype(float)
     cell_ids_list = [f"cell_{i}" for i in range(N_CELLS)]
-    gene_names    = [f"gene_{i}" for i in range(N_GENES)]
+    gene_names = [f"gene_{i}" for i in range(N_GENES)]
 
-    cell_meta = pd.DataFrame({
-        'fov':       ['1'] * 30 + ['2'] * 30,
-        'cell_type': np.random.choice(['TypeA', 'TypeB'], N_CELLS),
-        'n_counts':  expression.sum(axis=1),
-    }, index=cell_ids_list)
+    cell_meta = pd.DataFrame(
+        {
+            "fov": ["1"] * 30 + ["2"] * 30,
+            "cell_type": np.random.choice(["TypeA", "TypeB"], N_CELLS),
+            "n_counts": expression.sum(axis=1),
+        },
+        index=cell_ids_list,
+    )
 
-    gene_meta = pd.DataFrame({
-        'NegProbe': [False] * (N_GENES - 2) + [True, True],
-    }, index=gene_names)
+    gene_meta = pd.DataFrame(
+        {
+            "NegProbe": [False] * (N_GENES - 2) + [True, True],
+        },
+        index=gene_names,
+    )
 
     spatial = {
-        'x_global': x,
-        'y_global': y,
-        'x_local':  sp_basic.spatial.x_local,
-        'y_local':  sp_basic.spatial.y_local,
+        "x_global": x,
+        "y_global": y,
+        "x_local": sp_basic.spatial.x_local,
+        "y_local": sp_basic.spatial.y_local,
     }
 
-    fov_positions = pd.DataFrame({
-        'x_offset': [0,   500],
-        'y_offset': [0,   500],
-    }, index=pd.Index(['1', '2'], name='fov'))
+    fov_positions = pd.DataFrame(
+        {
+            "x_offset": [0, 500],
+            "y_offset": [0, 500],
+        },
+        index=pd.Index(["1", "2"], name="fov"),
+    )
 
     return spatioloji(
-        expression    = expression,
-        cell_ids      = cell_ids_list,
-        gene_names    = gene_names,
-        cell_metadata = cell_meta,
-        gene_metadata = gene_meta,
-        spatial_coords= spatial,
-        polygons      = polygons,
-        fov_positions = fov_positions,
+        expression=expression,
+        cell_ids=cell_ids_list,
+        gene_names=gene_names,
+        cell_metadata=cell_meta,
+        gene_metadata=gene_meta,
+        spatial_coords=spatial,
+        polygons=polygons,
+        fov_positions=fov_positions,
     )
 
 
 # ===========================================================================
 # Fixture 3: sparse-specific object (highly sparse expression matrix)
 # ===========================================================================
+
 
 @pytest.fixture
 def sp_sparse():
@@ -194,28 +218,31 @@ def sp_sparse():
 
     # Only ~15% of entries are non-zero → triggers auto-sparse conversion
     expression = np.random.choice(
-        [0, 0, 0, 0, 0, 1, 2, 3],        # mostly zeros
-        size=(N_CELLS, N_GENES)
+        [0, 0, 0, 0, 0, 1, 2, 3],  # mostly zeros
+        size=(N_CELLS, N_GENES),
     ).astype(float)
 
-    cell_ids   = [f"cell_{i}" for i in range(N_CELLS)]
+    cell_ids = [f"cell_{i}" for i in range(N_CELLS)]
     gene_names = [f"gene_{i}" for i in range(N_GENES)]
 
-    cell_meta = pd.DataFrame({
-        'fov': ['1'] * 30 + ['2'] * 30,
-    }, index=cell_ids)
+    cell_meta = pd.DataFrame(
+        {
+            "fov": ["1"] * 30 + ["2"] * 30,
+        },
+        index=cell_ids,
+    )
 
     spatial = {
-        'x_global': np.random.uniform(0, 1000, N_CELLS),
-        'y_global': np.random.uniform(0, 1000, N_CELLS),
-        'x_local':  np.random.uniform(0, 500,  N_CELLS),
-        'y_local':  np.random.uniform(0, 500,  N_CELLS),
+        "x_global": np.random.uniform(0, 1000, N_CELLS),
+        "y_global": np.random.uniform(0, 1000, N_CELLS),
+        "x_local": np.random.uniform(0, 500, N_CELLS),
+        "y_local": np.random.uniform(0, 500, N_CELLS),
     }
 
     return spatioloji(
-        expression    = expression,
-        cell_ids      = cell_ids,
-        gene_names    = gene_names,
-        cell_metadata = cell_meta,
-        spatial_coords= spatial,
+        expression=expression,
+        cell_ids=cell_ids,
+        gene_names=gene_names,
+        cell_metadata=cell_meta,
+        spatial_coords=spatial,
     )

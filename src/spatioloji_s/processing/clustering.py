@@ -18,15 +18,15 @@ from sklearn.neighbors import NearestNeighbors
 
 def leiden_clustering(
     spatioloji_obj,
-    layer: str | None = 'normalized',
+    layer: str | None = "normalized",
     use_highly_variable: bool = True,  # NEW PARAMETER
     resolution: float = 1.0,
     n_neighbors: int = 15,
     n_pcs: int = 50,
     use_pca: bool = True,
     random_state: int = 42,
-    output_column: str = 'leiden',
-    inplace: bool = True
+    output_column: str = "leiden",
+    inplace: bool = True,
 ):
     """
     Leiden clustering for single-cell data.
@@ -65,14 +65,15 @@ def leiden_clustering(
 
     # SUBSET TO HVGs if requested
     if use_highly_variable:
-        if 'highly_variable' not in spatioloji_obj.gene_meta.columns:
+        if "highly_variable" not in spatioloji_obj.gene_meta.columns:
             warnings.warn(
                 "No 'highly_variable' column in gene_meta. "
                 "Run highly_variable_genes() first or set use_highly_variable=False. "
-                "Using all genes.", stacklevel=2
+                "Using all genes.",
+                stacklevel=2,
             )
         else:
-            hvg_mask = spatioloji_obj.gene_meta['highly_variable'].values
+            hvg_mask = spatioloji_obj.gene_meta["highly_variable"].values
             n_hvg = hvg_mask.sum()
 
             if n_hvg == 0:
@@ -86,8 +87,7 @@ def leiden_clustering(
         import leidenalg
     except ImportError as err:
         raise ImportError(
-            "Leiden clustering requires igraph and leidenalg. "
-            "Install with: pip install igraph leidenalg"
+            "Leiden clustering requires igraph and leidenalg. " "Install with: pip install igraph leidenalg"
         ) from err
 
     print(f"\nLeiden clustering (resolution={resolution}, n_neighbors={n_neighbors})")
@@ -111,7 +111,7 @@ def leiden_clustering(
 
     # Build k-NN graph
     print("  Building k-NN graph...")
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors, metric='euclidean').fit(X_reduced)
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, metric="euclidean").fit(X_reduced)
     knn_distances, knn_indices = nbrs.kneighbors(X_reduced)
 
     # Create igraph
@@ -125,16 +125,16 @@ def leiden_clustering(
             weights.append(1.0 / (1.0 + dist))  # Convert distance to weight
 
     g = ig.Graph(n=n_cells, edges=edges, directed=False)
-    g.es['weight'] = weights
+    g.es["weight"] = weights
 
     # Run Leiden
     print("  Running Leiden algorithm...")
     partition = leidenalg.find_partition(
         g,
         leidenalg.RBConfigurationVertexPartition,
-        weights='weight',
+        weights="weight",
         resolution_parameter=resolution,
-        seed=random_state
+        seed=random_state,
     )
 
     clusters = np.array(partition.membership)
@@ -144,8 +144,7 @@ def leiden_clustering(
 
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
-    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, "
-          f"mean: {counts.mean():.1f}")
+    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)
@@ -156,15 +155,15 @@ def leiden_clustering(
 
 def kmeans_clustering(
     spatioloji_obj,
-    layer: str | None = 'normalized',
+    layer: str | None = "normalized",
     n_clusters: int = 10,
     n_pcs: int = 50,
     use_pca: bool = True,
     n_init: int = 10,
     max_iter: int = 300,
     random_state: int = 42,
-    output_column: str = 'kmeans',
-    inplace: bool = True
+    output_column: str = "kmeans",
+    inplace: bool = True,
 ):
     """
     K-means clustering.
@@ -228,19 +227,13 @@ def kmeans_clustering(
 
     # Run k-means
     print("  Running k-means...")
-    kmeans = KMeans(
-        n_clusters=n_clusters,
-        n_init=n_init,
-        max_iter=max_iter,
-        random_state=random_state
-    )
+    kmeans = KMeans(n_clusters=n_clusters, n_init=n_init, max_iter=max_iter, random_state=random_state)
     clusters = kmeans.fit_predict(X_reduced)
 
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
     print(f"  ✓ Clustered into {n_clusters} groups")
-    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, "
-          f"mean: {counts.mean():.1f}")
+    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
     print(f"    Inertia: {kmeans.inertia_:.2f}")
 
     if inplace:
@@ -252,14 +245,14 @@ def kmeans_clustering(
 
 def hierarchical_clustering(
     spatioloji_obj,
-    layer: str | None = 'normalized',
+    layer: str | None = "normalized",
     n_clusters: int = 10,
     n_pcs: int = 50,
     use_pca: bool = True,
-    linkage: Literal['ward', 'complete', 'average', 'single'] = 'ward',
+    linkage: Literal["ward", "complete", "average", "single"] = "ward",
     distance_threshold: float | None = None,
-    output_column: str = 'hierarchical',
-    inplace: bool = True
+    output_column: str = "hierarchical",
+    inplace: bool = True,
 ):
     """
     Hierarchical/Agglomerative clustering.
@@ -325,16 +318,9 @@ def hierarchical_clustering(
     print("  Running hierarchical clustering...")
 
     if distance_threshold is not None:
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            linkage=linkage,
-            distance_threshold=distance_threshold
-        )
+        clustering = AgglomerativeClustering(n_clusters=None, linkage=linkage, distance_threshold=distance_threshold)
     else:
-        clustering = AgglomerativeClustering(
-            n_clusters=n_clusters,
-            linkage=linkage
-        )
+        clustering = AgglomerativeClustering(n_clusters=n_clusters, linkage=linkage)
 
     clusters = clustering.fit_predict(X_reduced)
 
@@ -343,8 +329,7 @@ def hierarchical_clustering(
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
     print(f"  ✓ Found {n_clusters_found} clusters")
-    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, "
-          f"mean: {counts.mean():.1f}")
+    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)
@@ -355,13 +340,13 @@ def hierarchical_clustering(
 
 def spatial_clustering(
     spatioloji_obj,
-    coord_type: Literal['local', 'global'] = 'global',
-    method: Literal['dbscan', 'kmeans'] = 'dbscan',
+    coord_type: Literal["local", "global"] = "global",
+    method: Literal["dbscan", "kmeans"] = "dbscan",
     eps: float = 100.0,
     min_samples: int = 5,
     n_clusters: int | None = None,
-    output_column: str = 'spatial_cluster',
-    inplace: bool = True
+    output_column: str = "spatial_cluster",
+    inplace: bool = True,
 ):
     """
     Spatial clustering based on cell coordinates.
@@ -407,7 +392,7 @@ def spatial_clustering(
     coords = spatioloji_obj.get_spatial_coords(coord_type=coord_type)
 
     # Run clustering
-    if method == 'dbscan':
+    if method == "dbscan":
         print(f"  Running DBSCAN (eps={eps}, min_samples={min_samples})...")
         clustering = DBSCAN(eps=eps, min_samples=min_samples)
         clusters = clustering.fit_predict(coords)
@@ -418,7 +403,7 @@ def spatial_clustering(
         print(f"  ✓ Found {n_clusters} spatial clusters")
         print(f"    Noise points: {n_noise} ({n_noise/len(clusters)*100:.1f}%)")
 
-    elif method == 'kmeans':
+    elif method == "kmeans":
         if n_clusters is None:
             raise ValueError("n_clusters must be specified for k-means")
 
@@ -434,8 +419,7 @@ def spatial_clustering(
     # Calculate cluster sizes
     unique, counts = np.unique(clusters[clusters != -1], return_counts=True)
     if len(unique) > 0:
-        print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, "
-              f"mean: {counts.mean():.1f}")
+        print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)
@@ -446,15 +430,15 @@ def spatial_clustering(
 
 def spatially_constrained_clustering(
     spatioloji_obj,
-    layer: str | None = 'normalized',
-    coord_type: Literal['local', 'global'] = 'global',
+    layer: str | None = "normalized",
+    coord_type: Literal["local", "global"] = "global",
     n_clusters: int = 10,
     spatial_weight: float = 0.5,
     n_pcs: int = 50,
     use_pca: bool = True,
     random_state: int = 42,
-    output_column: str = 'spatial_constrained',
-    inplace: bool = True
+    output_column: str = "spatial_constrained",
+    inplace: bool = True,
 ):
     """
     Clustering that considers both expression and spatial information.
@@ -511,8 +495,7 @@ def spatially_constrained_clustering(
     # Apply PCA if requested
     if use_pca:
         print(f"  Computing PCA (n_pcs={n_pcs})...")
-        pca = PCA(n_components=min(n_pcs, X_expr.shape[0], X_expr.shape[1]),
-                  random_state=random_state)
+        pca = PCA(n_components=min(n_pcs, X_expr.shape[0], X_expr.shape[1]), random_state=random_state)
         X_expr_reduced = pca.fit_transform(X_expr)
     else:
         X_expr_reduced = X_expr
@@ -530,10 +513,7 @@ def spatially_constrained_clustering(
     X_spatial_norm = scaler_spatial.fit_transform(X_spatial)
 
     # Combine expression and spatial data
-    X_combined = np.hstack([
-        X_expr_norm * (1 - spatial_weight),
-        X_spatial_norm * spatial_weight
-    ])
+    X_combined = np.hstack([X_expr_norm * (1 - spatial_weight), X_spatial_norm * spatial_weight])
 
     print(f"  Combined feature space: {X_combined.shape[1]} dimensions")
     print(f"    Expression: {X_expr_norm.shape[1]} dims × {1-spatial_weight:.2f} weight")
@@ -547,8 +527,7 @@ def spatially_constrained_clustering(
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
     print(f"  ✓ Found {n_clusters} clusters")
-    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, "
-          f"mean: {counts.mean():.1f}")
+    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)
@@ -559,12 +538,12 @@ def spatially_constrained_clustering(
 
 def find_optimal_clusters(
     spatioloji_obj,
-    layer: str | None = 'normalized',
-    method: Literal['elbow', 'silhouette', 'gap'] = 'silhouette',
+    layer: str | None = "normalized",
+    method: Literal["elbow", "silhouette", "gap"] = "silhouette",
     k_range: tuple[int, int] = (2, 20),
     n_pcs: int = 50,
     use_pca: bool = True,
-    random_state: int = 42
+    random_state: int = 42,
 ) -> dict[str, int | list[float]]:
     """
     Find optimal number of clusters.
@@ -623,7 +602,7 @@ def find_optimal_clusters(
     k_values = range(k_range[0], k_range[1] + 1)
     scores = []
 
-    if method == 'elbow':
+    if method == "elbow":
         # Elbow method (inertia)
         for k in k_values:
             kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
@@ -637,7 +616,7 @@ def find_optimal_clusters(
         distances = np.abs(np.array(scores) - line)
         optimal_k = k_values[np.argmax(distances)]
 
-    elif method == 'silhouette':
+    elif method == "silhouette":
         # Silhouette score
         from sklearn.metrics import silhouette_score
 
@@ -650,7 +629,7 @@ def find_optimal_clusters(
 
         optimal_k = k_values[np.argmax(scores)]
 
-    elif method == 'gap':
+    elif method == "gap":
         # Gap statistic
         print("  Computing gap statistic (this may take a while)...")
 
@@ -670,11 +649,7 @@ def find_optimal_clusters(
             # Reference inertias
             for _ in range(n_refs):
                 # Generate random reference data
-                X_ref = np.random.uniform(
-                    X_reduced.min(axis=0),
-                    X_reduced.max(axis=0),
-                    size=X_reduced.shape
-                )
+                X_ref = np.random.uniform(X_reduced.min(axis=0), X_reduced.max(axis=0), size=X_reduced.shape)
                 ref_inertias.append(compute_inertia(X_ref, k))
 
             gap = np.log(np.mean(ref_inertias)) - np.log(obs_inertia)
@@ -689,9 +664,4 @@ def find_optimal_clusters(
 
     print(f"\n  ✓ Optimal k: {optimal_k}")
 
-    return {
-        'optimal_k': optimal_k,
-        'k_values': list(k_values),
-        'scores': scores,
-        'method': method
-    }
+    return {"optimal_k": optimal_k, "k_values": list(k_values), "scores": scores, "method": method}

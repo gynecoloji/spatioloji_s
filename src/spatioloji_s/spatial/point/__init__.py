@@ -80,34 +80,30 @@ from .statistics import (
 
 __all__ = [
     # Graph
-    'PointSpatialGraph',
-    'build_knn_graph',
-    'build_radius_graph',
-    'build_delaunay_graph',
-
+    "PointSpatialGraph",
+    "build_knn_graph",
+    "build_radius_graph",
+    "build_delaunay_graph",
     # Neighborhoods
-    'neighborhood_composition',
-    'neighborhood_enrichment',
-    'identify_niches',
-    'neighborhood_diversity',
-
+    "neighborhood_composition",
+    "neighborhood_enrichment",
+    "identify_niches",
+    "neighborhood_diversity",
     # Patterns
-    'morans_i',
-    'getis_ord_gi',
-    'co_occurrence',
-    'spatially_variable_genes',
-
+    "morans_i",
+    "getis_ord_gi",
+    "co_occurrence",
+    "spatially_variable_genes",
     # Ripley
-    'RipleyResult',
-    'ripleys_k',
-    'ripleys_l',
-    'cross_k',
-    'cross_l',
-    'simulation_envelope',
-
+    "RipleyResult",
+    "ripleys_k",
+    "ripleys_l",
+    "cross_k",
+    "cross_l",
+    "simulation_envelope",
     # Statistics
-    'nearest_neighbor_distances',
-    'cross_type_distances',
-    'proximity_score',
-    'permutation_test',
+    "nearest_neighbor_distances",
+    "cross_type_distances",
+    "proximity_score",
+    "permutation_test",
 ]

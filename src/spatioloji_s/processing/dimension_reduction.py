@@ -13,13 +13,13 @@ from scipy import sparse
 
 def pca(
     spatioloji_obj,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = True,
     n_comps: int = 50,
     zero_center: bool = True,
     random_state: int = 42,
-    output_key: str = 'X_pca',
-    inplace: bool = True
+    output_key: str = "X_pca",
+    inplace: bool = True,
 ):
     """
     Principal Component Analysis (PCA).
@@ -83,15 +83,16 @@ def pca(
 
     # Subset to HVGs if requested
     if use_highly_variable:
-        if 'highly_variable' not in spatioloji_obj.gene_meta.columns:
+        if "highly_variable" not in spatioloji_obj.gene_meta.columns:
             warnings.warn(
                 "No 'highly_variable' column in gene_meta. "
                 "Run highly_variable_genes() first or set use_highly_variable=False. "
-                "Using all genes.", stacklevel=2
+                "Using all genes.",
+                stacklevel=2,
             )
             gene_mask = np.ones(X.shape[1], dtype=bool)
         else:
-            gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
             n_hvg = gene_mask.sum()
 
             if n_hvg == 0:
@@ -110,10 +111,7 @@ def pca(
 
     # Run PCA
     print("  Running PCA...")
-    pca_model = PCA(
-        n_components=n_comps_actual,
-        random_state=random_state
-    )
+    pca_model = PCA(n_components=n_comps_actual, random_state=random_state)
 
     if zero_center:
         X_pca = pca_model.fit_transform(X)
@@ -131,26 +129,21 @@ def pca(
     print(f"    Variance explained by all {n_comps_actual} PCs: {variance_ratio.sum()*100:.1f}%")
 
     # Prepare results
-    results = {
-        'X_pca': X_pca,
-        'variance': variance,
-        'variance_ratio': variance_ratio,
-        'components': components
-    }
+    results = {"X_pca": X_pca, "variance": variance, "variance_ratio": variance_ratio, "components": components}
 
     if inplace:
         # Store embeddings
-        if not hasattr(spatioloji_obj, '_embeddings'):
+        if not hasattr(spatioloji_obj, "_embeddings"):
             spatioloji_obj._embeddings = {}
 
         spatioloji_obj._embeddings[output_key] = X_pca
-        spatioloji_obj._embeddings[f'{output_key}_variance'] = variance
-        spatioloji_obj._embeddings[f'{output_key}_variance_ratio'] = variance_ratio
+        spatioloji_obj._embeddings[f"{output_key}_variance"] = variance
+        spatioloji_obj._embeddings[f"{output_key}_variance_ratio"] = variance_ratio
 
         # Also add first few PCs to cell_meta for easy access
         n_pcs_to_add = min(50, n_comps_actual)
         for i in range(n_pcs_to_add):
-            spatioloji_obj._cell_meta[f'PC{i+1}'] = X_pca[:, i]
+            spatioloji_obj._cell_meta[f"PC{i+1}"] = X_pca[:, i]
 
         return None
     else:
@@ -161,16 +154,16 @@ def tsne(
     spatioloji_obj,
     use_pca: bool = True,
     n_pcs: int = 50,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = True,
     n_components: int = 2,
     perplexity: float = 30.0,
     early_exaggeration: float = 12.0,
-    learning_rate: float | str = 'auto',
+    learning_rate: float | str = "auto",
     n_iter: int = 1000,
     random_state: int = 42,
-    output_key: str = 'X_tsne',
-    inplace: bool = True
+    output_key: str = "X_tsne",
+    inplace: bool = True,
 ):
     """
     t-SNE (t-distributed Stochastic Neighbor Embedding).
@@ -233,14 +226,13 @@ def tsne(
     # Get input data
     if use_pca:
         # Use PCA coordinates
-        if hasattr(spatioloji_obj, '_embeddings') and 'X_pca' in spatioloji_obj._embeddings:
-            X = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
             print(f"  Using first {n_pcs} PCs as input")
         else:
             print("  No PCA found, computing PCA first...")
-            pca(spatioloji_obj, n_comps=n_pcs, layer=layer,
-                use_highly_variable=use_highly_variable, inplace=True)
-            X = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+            pca(spatioloji_obj, n_comps=n_pcs, layer=layer, use_highly_variable=use_highly_variable, inplace=True)
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
     else:
         # Use expression data
         if layer is None:
@@ -251,8 +243,8 @@ def tsne(
                 X = X.toarray()
 
         # Subset to HVGs if requested
-        if use_highly_variable and 'highly_variable' in spatioloji_obj.gene_meta.columns:
-            gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+        if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
             if gene_mask.sum() > 0:
                 X = X[:, gene_mask]
                 print(f"  Using {gene_mask.sum()} highly variable genes")
@@ -266,7 +258,7 @@ def tsne(
         learning_rate=learning_rate,
         n_iter=n_iter,
         random_state=random_state,
-        verbose=0
+        verbose=0,
     )
 
     X_tsne = tsne_model.fit_transform(X)
@@ -276,14 +268,14 @@ def tsne(
 
     if inplace:
         # Store embeddings
-        if not hasattr(spatioloji_obj, '_embeddings'):
+        if not hasattr(spatioloji_obj, "_embeddings"):
             spatioloji_obj._embeddings = {}
 
         spatioloji_obj._embeddings[output_key] = X_tsne
 
         # Add to cell_meta for easy access
         for i in range(n_components):
-            spatioloji_obj._cell_meta[f'tSNE{i+1}'] = X_tsne[:, i]
+            spatioloji_obj._cell_meta[f"tSNE{i+1}"] = X_tsne[:, i]
 
         return None
     else:
@@ -294,15 +286,15 @@ def umap(
     spatioloji_obj,
     use_pca: bool = True,
     n_pcs: int = 50,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = True,
     n_components: int = 2,
     n_neighbors: int = 15,
     min_dist: float = 0.1,
-    metric: str = 'euclidean',
+    metric: str = "euclidean",
     random_state: int = 42,
-    output_key: str = 'X_umap',
-    inplace: bool = True
+    output_key: str = "X_umap",
+    inplace: bool = True,
 ):
     """
     UMAP (Uniform Manifold Approximation and Projection).
@@ -363,24 +355,20 @@ def umap(
     try:
         import umap as umap_package
     except ImportError as err:
-        raise ImportError(
-            "UMAP requires umap-learn package. "
-            "Install with: pip install umap-learn"
-        ) from err
+        raise ImportError("UMAP requires umap-learn package. " "Install with: pip install umap-learn") from err
 
     print(f"\nUMAP (n_components={n_components}, n_neighbors={n_neighbors}, min_dist={min_dist})")
 
     # Get input data
     if use_pca:
         # Use PCA coordinates
-        if hasattr(spatioloji_obj, '_embeddings') and 'X_pca' in spatioloji_obj._embeddings:
-            X = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
             print(f"  Using first {n_pcs} PCs as input")
         else:
             print("  No PCA found, computing PCA first...")
-            pca(spatioloji_obj, n_comps=n_pcs, layer=layer,
-                use_highly_variable=use_highly_variable, inplace=True)
-            X = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+            pca(spatioloji_obj, n_comps=n_pcs, layer=layer, use_highly_variable=use_highly_variable, inplace=True)
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
     else:
         # Use expression data
         if layer is None:
@@ -391,8 +379,8 @@ def umap(
                 X = X.toarray()
 
         # Subset to HVGs if requested
-        if use_highly_variable and 'highly_variable' in spatioloji_obj.gene_meta.columns:
-            gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+        if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
             if gene_mask.sum() > 0:
                 X = X[:, gene_mask]
                 print(f"  Using {gene_mask.sum()} highly variable genes")
@@ -405,7 +393,7 @@ def umap(
         min_dist=min_dist,
         metric=metric,
         random_state=random_state,
-        verbose=False
+        verbose=False,
     )
 
     X_umap = umap_model.fit_transform(X)
@@ -414,14 +402,14 @@ def umap(
 
     if inplace:
         # Store embeddings
-        if not hasattr(spatioloji_obj, '_embeddings'):
+        if not hasattr(spatioloji_obj, "_embeddings"):
             spatioloji_obj._embeddings = {}
 
         spatioloji_obj._embeddings[output_key] = X_umap
 
         # Add to cell_meta for easy access
         for i in range(n_components):
-            spatioloji_obj._cell_meta[f'UMAP{i+1}'] = X_umap[:, i]
+            spatioloji_obj._cell_meta[f"UMAP{i+1}"] = X_umap[:, i]
 
         return None
     else:
@@ -432,13 +420,13 @@ def diffusion_map(
     spatioloji_obj,
     use_pca: bool = True,
     n_pcs: int = 50,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = True,
     n_components: int = 10,
     n_neighbors: int = 30,
     random_state: int = 42,
-    output_key: str = 'X_diffmap',
-    inplace: bool = True
+    output_key: str = "X_diffmap",
+    inplace: bool = True,
 ):
     """
     Diffusion map for capturing continuous trajectories.
@@ -491,14 +479,13 @@ def diffusion_map(
 
     # Get input data
     if use_pca:
-        if hasattr(spatioloji_obj, '_embeddings') and 'X_pca' in spatioloji_obj._embeddings:
-            X = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
             print(f"  Using first {n_pcs} PCs as input")
         else:
             print("  No PCA found, computing PCA first...")
-            pca(spatioloji_obj, n_comps=n_pcs, layer=layer,
-                use_highly_variable=use_highly_variable, inplace=True)
-            X = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+            pca(spatioloji_obj, n_comps=n_pcs, layer=layer, use_highly_variable=use_highly_variable, inplace=True)
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
     else:
         if layer is None:
             X = spatioloji_obj.expression.get_dense()
@@ -507,8 +494,8 @@ def diffusion_map(
             if sparse.issparse(X):
                 X = X.toarray()
 
-        if use_highly_variable and 'highly_variable' in spatioloji_obj.gene_meta.columns:
-            gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+        if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
             if gene_mask.sum() > 0:
                 X = X[:, gene_mask]
                 print(f"  Using {gene_mask.sum()} highly variable genes")
@@ -517,7 +504,7 @@ def diffusion_map(
 
     # Build k-NN graph
     print("  Building k-NN graph...")
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors, metric='euclidean').fit(X)
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, metric="euclidean").fit(X)
     distances, indices = nbrs.kneighbors(X)
 
     # Construct affinity matrix (Gaussian kernel)
@@ -526,7 +513,7 @@ def diffusion_map(
 
     rows = np.repeat(np.arange(n_cells), n_neighbors)
     cols = indices.flatten()
-    weights = np.exp(-distances.flatten()**2 / (2 * sigma**2))
+    weights = np.exp(-(distances.flatten() ** 2) / (2 * sigma**2))
 
     W = csr_matrix((weights, (rows, cols)), shape=(n_cells, n_cells))
     W = (W + W.T) / 2  # Symmetrize
@@ -539,7 +526,7 @@ def diffusion_map(
     # Compute eigenvectors
     print("  Computing eigenvectors...")
     n_components_actual = min(n_components + 1, n_cells - 2)
-    eigenvalues, eigenvectors = eigsh(L, k=n_components_actual, which='LM')
+    eigenvalues, eigenvectors = eigsh(L, k=n_components_actual, which="LM")
 
     # Sort by eigenvalue (descending)
     idx = np.argsort(-eigenvalues)
@@ -547,33 +534,28 @@ def diffusion_map(
     eigenvectors = eigenvectors[:, idx]
 
     # Skip first eigenvector (trivial)
-    X_diffmap = eigenvectors[:, 1:n_components+1]
+    X_diffmap = eigenvectors[:, 1 : n_components + 1]
 
     print("  ✓ Diffusion map complete")
     print(f"    Top 5 eigenvalues: {eigenvalues[1:6]}")
 
     if inplace:
-        if not hasattr(spatioloji_obj, '_embeddings'):
+        if not hasattr(spatioloji_obj, "_embeddings"):
             spatioloji_obj._embeddings = {}
 
         spatioloji_obj._embeddings[output_key] = X_diffmap
-        spatioloji_obj._embeddings[f'{output_key}_eigenvalues'] = eigenvalues
+        spatioloji_obj._embeddings[f"{output_key}_eigenvalues"] = eigenvalues
 
         # Add to cell_meta
         for i in range(min(n_components, X_diffmap.shape[1])):
-            spatioloji_obj._cell_meta[f'DC{i+1}'] = X_diffmap[:, i]
+            spatioloji_obj._cell_meta[f"DC{i+1}"] = X_diffmap[:, i]
 
         return None
     else:
         return X_diffmap
 
 
-def plot_pca_variance(
-    spatioloji_obj,
-    n_pcs: int = 50,
-    save_path: str | None = None,
-    show_plot: bool = True
-):
+def plot_pca_variance(spatioloji_obj, n_pcs: int = 50, save_path: str | None = None, show_plot: bool = True):
     """
     Plot variance explained by principal components.
 
@@ -597,36 +579,36 @@ def plot_pca_variance(
     """
     import matplotlib.pyplot as plt
 
-    if not hasattr(spatioloji_obj, '_embeddings') or 'X_pca_variance_ratio' not in spatioloji_obj._embeddings:
+    if not hasattr(spatioloji_obj, "_embeddings") or "X_pca_variance_ratio" not in spatioloji_obj._embeddings:
         raise ValueError("No PCA results found. Run pca() first.")
 
-    variance_ratio = spatioloji_obj._embeddings['X_pca_variance_ratio']
+    variance_ratio = spatioloji_obj._embeddings["X_pca_variance_ratio"]
     n_pcs = min(n_pcs, len(variance_ratio))
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     # Plot variance explained per PC
     ax1.bar(range(1, n_pcs + 1), variance_ratio[:n_pcs] * 100)
-    ax1.set_xlabel('Principal Component')
-    ax1.set_ylabel('Variance Explained (%)')
-    ax1.set_title('Variance Explained per PC')
+    ax1.set_xlabel("Principal Component")
+    ax1.set_ylabel("Variance Explained (%)")
+    ax1.set_title("Variance Explained per PC")
     ax1.grid(True, alpha=0.3)
 
     # Plot cumulative variance
     cumsum = np.cumsum(variance_ratio[:n_pcs]) * 100
-    ax2.plot(range(1, n_pcs + 1), cumsum, 'b-', linewidth=2)
-    ax2.axhline(y=80, color='r', linestyle='--', label='80% variance')
-    ax2.axhline(y=90, color='orange', linestyle='--', label='90% variance')
-    ax2.set_xlabel('Number of Principal Components')
-    ax2.set_ylabel('Cumulative Variance Explained (%)')
-    ax2.set_title('Cumulative Variance Explained')
+    ax2.plot(range(1, n_pcs + 1), cumsum, "b-", linewidth=2)
+    ax2.axhline(y=80, color="r", linestyle="--", label="80% variance")
+    ax2.axhline(y=90, color="orange", linestyle="--", label="90% variance")
+    ax2.set_xlabel("Number of Principal Components")
+    ax2.set_ylabel("Cumulative Variance Explained (%)")
+    ax2.set_title("Cumulative Variance Explained")
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
         print(f"Saved to {save_path}")
 
     if show_plot:

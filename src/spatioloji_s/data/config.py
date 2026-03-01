@@ -18,16 +18,16 @@ class SpatiolojiConfig:
     """Configuration for spatioloji column names and settings."""
 
     # Column names
-    cell_id_col: str = 'cell'
-    fov_id_col: str = 'fov'
-    x_local_col: str = 'x_local_px'
-    y_local_col: str = 'y_local_px'
-    x_global_col: str = 'x_global_px'
-    y_global_col: str = 'y_global_px'
+    cell_id_col: str = "cell"
+    fov_id_col: str = "fov"
+    x_local_col: str = "x_local_px"
+    y_local_col: str = "y_local_px"
+    x_global_col: str = "x_global_px"
+    y_global_col: str = "y_global_px"
 
     # Image settings
-    img_format: str = 'jpg'
-    img_prefix: str = 'CellComposite_F'
+    img_format: str = "jpg"
+    img_prefix: str = "CellComposite_F"
 
     # Processing settings
     auto_sparse_threshold: float = 0.5  # Convert to sparse if >50% zeros
@@ -46,9 +46,9 @@ class SpatiolojiConfig:
         Tuple[str, str]
             (x_column, y_column)
         """
-        if coord_type == 'local':
+        if coord_type == "local":
             return self.x_local_col, self.y_local_col
-        elif coord_type == 'global':
+        elif coord_type == "global":
             return self.x_global_col, self.y_global_col
         else:
             raise ValueError(f"Invalid coordinate type: {coord_type}")
@@ -61,6 +61,7 @@ class SpatialData:
 
     Uses numpy arrays for fast computation.
     """
+
     x_local: np.ndarray
     y_local: np.ndarray
     x_global: np.ndarray
@@ -71,12 +72,11 @@ class SpatialData:
 
     def __post_init__(self):
         """Validate all arrays have same length."""
-        lengths = [len(self.x_local), len(self.y_local),
-                  len(self.x_global), len(self.y_global)]
+        lengths = [len(self.x_local), len(self.y_local), len(self.x_global), len(self.y_global)]
         if len(set(lengths)) != 1:
             raise ValueError(f"Coordinate arrays have different lengths: {lengths}")
 
-    def subset(self, indices: np.ndarray) -> 'SpatialData':
+    def subset(self, indices: np.ndarray) -> "SpatialData":
         """
         Efficiently subset by integer indices.
 
@@ -94,20 +94,15 @@ class SpatialData:
             x_local=self.x_local[indices],
             y_local=self.y_local[indices],
             x_global=self.x_global[indices],
-            y_global=self.y_global[indices]
+            y_global=self.y_global[indices],
         )
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
-        return {
-            'x_local': self.x_local,
-            'y_local': self.y_local,
-            'x_global': self.x_global,
-            'y_global': self.y_global
-        }
+        return {"x_local": self.x_local, "y_local": self.y_local, "x_global": self.x_global, "y_global": self.y_global}
 
     @classmethod
-    def from_dataframe(cls, df, config: SpatiolojiConfig) -> 'SpatialData':
+    def from_dataframe(cls, df, config: SpatiolojiConfig) -> "SpatialData":
         """
         Create from DataFrame.
 
@@ -122,20 +117,21 @@ class SpatialData:
         -------
         SpatialData
         """
-        x_local_col, y_local_col = config.get_coordinate_columns('local')
-        x_global_col, y_global_col = config.get_coordinate_columns('global')
+        x_local_col, y_local_col = config.get_coordinate_columns("local")
+        x_global_col, y_global_col = config.get_coordinate_columns("global")
 
         return cls(
             x_local=df[x_local_col].values,
             y_local=df[y_local_col].values,
             x_global=df[x_global_col].values,
-            y_global=df[y_global_col].values
+            y_global=df[y_global_col].values,
         )
 
 
 @dataclass
 class ImageMetadata:
     """Metadata for a single FOV image."""
+
     fov_id: str
     shape: tuple[int, ...]
     dtype: np.dtype
@@ -163,14 +159,17 @@ class ImageMetadata:
 
 class SpatiolojiError(Exception):
     """Base exception for spatioloji errors."""
+
     pass
 
 
 class ConsistencyError(SpatiolojiError):
     """Raised when data consistency checks fail."""
+
     pass
 
 
 class ValidationError(SpatiolojiError):
     """Raised when data validation fails."""
+
     pass

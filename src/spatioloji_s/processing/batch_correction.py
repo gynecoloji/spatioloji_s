@@ -16,11 +16,11 @@ from scipy import sparse
 def combat(
     spatioloji_obj,
     batch_key: str,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = False,
     covariates: list[str] | None = None,
-    output_layer: str = 'combat_corrected',
-    inplace: bool = True
+    output_layer: str = "combat_corrected",
+    inplace: bool = True,
 ):
     """
     ComBat batch correction.
@@ -78,10 +78,7 @@ def combat(
     try:
         from combat.pycombat import pycombat
     except ImportError as err:
-        raise ImportError(
-            "ComBat requires pycombat package. "
-            "Install with: pip install pycombat"
-        ) from err
+        raise ImportError("ComBat requires pycombat package. " "Install with: pip install pycombat") from err
 
     print(f"\nComBat batch correction (batch_key='{batch_key}')")
 
@@ -105,8 +102,8 @@ def combat(
     # Subset to HVGs if requested
     gene_mask = None
     if use_highly_variable:
-        if 'highly_variable' in spatioloji_obj.gene_meta.columns:
-            gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+        if "highly_variable" in spatioloji_obj.gene_meta.columns:
+            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
             if gene_mask.sum() > 0:
                 X = X[:, gene_mask]
                 print(f"  Correcting {gene_mask.sum()} highly variable genes")
@@ -119,11 +116,7 @@ def combat(
     X_t = X.T
 
     # Create DataFrame for pycombat
-    df = pd.DataFrame(
-        X_t,
-        index=[f"gene_{i}" for i in range(X_t.shape[0])],
-        columns=spatioloji_obj.cell_index
-    )
+    df = pd.DataFrame(X_t, index=[f"gene_{i}" for i in range(X_t.shape[0])], columns=spatioloji_obj.cell_index)
 
     # Prepare covariate DataFrame if provided
     covar_df = None
@@ -182,14 +175,14 @@ def harmony(
     batch_key: str,
     use_pca: bool = True,
     n_pcs: int = 50,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = True,
     max_iter_harmony: int = 10,
     theta: float = 2.0,
     sigma: float = 0.1,
     random_state: int = 42,
-    output_key: str = 'X_pca_harmony',
-    inplace: bool = True
+    output_key: str = "X_pca_harmony",
+    inplace: bool = True,
 ):
     """
     Harmony batch correction in PCA space.
@@ -250,10 +243,7 @@ def harmony(
     try:
         import harmonypy as hm
     except ImportError as err:
-        raise ImportError(
-            "Harmony requires harmonypy package. "
-            "Install with: pip install harmonypy"
-        ) from err
+        raise ImportError("Harmony requires harmonypy package. " "Install with: pip install harmonypy") from err
 
     print(f"\nHarmony integration (batch_key='{batch_key}', theta={theta})")
 
@@ -269,20 +259,15 @@ def harmony(
     # Get input data
     if use_pca:
         # Use or compute PCA
-        if hasattr(spatioloji_obj, '_embeddings') and 'X_pca' in spatioloji_obj._embeddings:
-            X = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
             print(f"  Using first {n_pcs} PCs")
         else:
             print("  Computing PCA first...")
             from .dimension_reduction import pca as run_pca
-            run_pca(
-                spatioloji_obj,
-                layer=layer,
-                use_highly_variable=use_highly_variable,
-                n_comps=n_pcs,
-                inplace=True
-            )
-            X = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+
+            run_pca(spatioloji_obj, layer=layer, use_highly_variable=use_highly_variable, n_comps=n_pcs, inplace=True)
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
     else:
         # Use expression data
         if layer is None:
@@ -292,8 +277,8 @@ def harmony(
             if sparse.issparse(X):
                 X = X.toarray()
 
-        if use_highly_variable and 'highly_variable' in spatioloji_obj.gene_meta.columns:
-            gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+        if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
             if gene_mask.sum() > 0:
                 X = X[:, gene_mask]
                 print(f"  Using {gene_mask.sum()} highly variable genes")
@@ -311,7 +296,7 @@ def harmony(
         sigma=sigma,
         max_iter_harmony=max_iter_harmony,
         random_state=random_state,
-        verbose=False
+        verbose=False,
     )
 
     X_corrected = ho.Z_corr.T  # Transpose to get (cells × components)
@@ -320,14 +305,14 @@ def harmony(
     print(f"    Converged after {ho.n_iter} iterations")
 
     if inplace:
-        if not hasattr(spatioloji_obj, '_embeddings'):
+        if not hasattr(spatioloji_obj, "_embeddings"):
             spatioloji_obj._embeddings = {}
 
         spatioloji_obj._embeddings[output_key] = X_corrected
 
         # Add to cell_meta
         for i in range(X_corrected.shape[1]):
-            spatioloji_obj._cell_meta[f'PC_harmony{i+1}'] = X_corrected[:, i]
+            spatioloji_obj._cell_meta[f"PC_harmony{i+1}"] = X_corrected[:, i]
 
         return None
     else:
@@ -337,10 +322,10 @@ def harmony(
 def regress_out(
     spatioloji_obj,
     keys: str | list[str],
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = False,
-    output_layer: str = 'regressed',
-    inplace: bool = True
+    output_layer: str = "regressed",
+    inplace: bool = True,
 ):
     """
     Regress out unwanted sources of variation.
@@ -408,8 +393,8 @@ def regress_out(
     # Subset to HVGs if requested
     gene_mask = None
     if use_highly_variable:
-        if 'highly_variable' in spatioloji_obj.gene_meta.columns:
-            gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+        if "highly_variable" in spatioloji_obj.gene_meta.columns:
+            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
             if gene_mask.sum() > 0:
                 X_regress = X[:, gene_mask]
                 print(f"  Regressing {gene_mask.sum()} highly variable genes")
@@ -425,6 +410,7 @@ def regress_out(
 
     # Handle categorical variables
     from sklearn.preprocessing import LabelEncoder
+
     covariates_processed = []
     for _i, key in enumerate(keys):
         col = spatioloji_obj.cell_meta[key].values
@@ -466,10 +452,10 @@ def regress_out(
 def scale_by_batch(
     spatioloji_obj,
     batch_key: str,
-    layer: str | None = 'log_normalized',
-    method: Literal['standard', 'robust'] = 'standard',
-    output_layer: str = 'batch_scaled',
-    inplace: bool = True
+    layer: str | None = "log_normalized",
+    method: Literal["standard", "robust"] = "standard",
+    output_layer: str = "batch_scaled",
+    inplace: bool = True,
 ):
     """
     Scale expression within each batch separately.
@@ -540,9 +526,9 @@ def scale_by_batch(
         batch_mask = batch == batch_id
         n_cells_batch = batch_mask.sum()
 
-        if method == 'standard':
+        if method == "standard":
             scaler = StandardScaler()
-        elif method == 'robust':
+        elif method == "robust":
             scaler = RobustScaler()
         else:
             raise ValueError(f"Unknown method: {method}")
@@ -563,14 +549,14 @@ def scale_by_batch(
 def mnn_correct(
     spatioloji_obj,
     batch_key: str,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     use_highly_variable: bool = True,
     k: int = 20,
     sigma: float = 1.0,
     n_pcs: int = 50,
     conda_env: str | None = None,
-    output_layer: str = 'mnn_corrected',
-    inplace: bool = True
+    output_layer: str = "mnn_corrected",
+    inplace: bool = True,
 ):
     """
     Mutual Nearest Neighbors (MNN) batch correction.
@@ -660,8 +646,8 @@ def mnn_correct(
             X = X.toarray()
 
     # Subset to HVGs if requested
-    if use_highly_variable and 'highly_variable' in spatioloji_obj.gene_meta.columns:
-        gene_mask = spatioloji_obj.gene_meta['highly_variable'].values
+    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+        gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
         if gene_mask.sum() > 0:
             X = X[:, gene_mask]
             print(f"  Using {gene_mask.sum()} highly variable genes")
@@ -669,9 +655,7 @@ def mnn_correct(
     # If conda_env is specified, run in separate environment
     if conda_env is not None:
         print(f"  Running MNN in conda environment: '{conda_env}'")
-        X_corrected = _run_mnn_in_conda_env(
-            X, batch, batches, k, sigma, n_pcs, conda_env
-        )
+        X_corrected = _run_mnn_in_conda_env(X, batch, batches, k, sigma, n_pcs, conda_env)
     else:
         # Try to import mnnpy from current environment
         try:
@@ -693,13 +677,7 @@ def mnn_correct(
 
         # Run MNN
         print("  Running MNN correction...")
-        corrected, _, _ = mnnpy.mnn_correct(
-            *batch_data,
-            k=k,
-            sigma=sigma,
-            svd_dim=n_pcs,
-            var_adj=True
-        )
+        corrected, _, _ = mnnpy.mnn_correct(*batch_data, k=k, sigma=sigma, svd_dim=n_pcs, var_adj=True)
 
         X_corrected = corrected[0]
 
@@ -726,21 +704,13 @@ def _run_mnn_in_conda_env(X, batch, batches, k, sigma, n_pcs, conda_env):
     # Create temporary directory
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save input data
-        input_file = os.path.join(tmpdir, 'mnn_input.npz')
-        np.savez_compressed(
-            input_file,
-            X=X,
-            batch=batch,
-            batches=batches,
-            k=k,
-            sigma=sigma,
-            n_pcs=n_pcs
-        )
+        input_file = os.path.join(tmpdir, "mnn_input.npz")
+        np.savez_compressed(input_file, X=X, batch=batch, batches=batches, k=k, sigma=sigma, n_pcs=n_pcs)
 
-        output_file = os.path.join(tmpdir, 'mnn_output.npy')
+        output_file = os.path.join(tmpdir, "mnn_output.npy")
 
         # Create Python script for MNN
-        script_file = os.path.join(tmpdir, 'run_mnn.py')
+        script_file = os.path.join(tmpdir, "run_mnn.py")
         script_content = f"""
 import numpy as np
 import mnnpy
@@ -776,7 +746,7 @@ np.save('{output_file}', corrected[0])
 print("MNN correction complete!")
 """
 
-        with open(script_file, 'w') as f:
+        with open(script_file, "w") as f:
             f.write(script_content)
 
         # Run script in conda environment
@@ -785,32 +755,22 @@ print("MNN correction complete!")
         # Try different conda activation methods
         try:
             # Method 1: Using conda run (newer conda versions)
-            cmd = ['conda', 'run', '-n', conda_env, 'python', script_file]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            cmd = ["conda", "run", "-n", conda_env, "python", script_file]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             print(result.stdout)
 
         except (subprocess.CalledProcessError, FileNotFoundError) as e1:
             try:
                 # Method 2: Using shell script with source activate
-                shell_script = os.path.join(tmpdir, 'run_mnn.sh')
-                with open(shell_script, 'w') as f:
+                shell_script = os.path.join(tmpdir, "run_mnn.sh")
+                with open(shell_script, "w") as f:
                     f.write(f"""#!/bin/bash
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate {conda_env}
 python {script_file}
 """)
 
-                result = subprocess.run(
-                    ['bash', shell_script],
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
+                result = subprocess.run(["bash", shell_script], capture_output=True, text=True, check=True)
                 print(result.stdout)
 
             except Exception as e2:
@@ -837,10 +797,7 @@ python {script_file}
 
 
 def evaluate_batch_correction(
-    spatioloji_obj,
-    batch_key: str,
-    embedding_key: str = 'X_pca',
-    n_neighbors: int = 30
+    spatioloji_obj, batch_key: str, embedding_key: str = "X_pca", n_neighbors: int = 30
 ) -> dict[str, float]:
     """
     Evaluate batch correction quality.
@@ -894,7 +851,7 @@ def evaluate_batch_correction(
     print("\nEvaluating batch correction...")
 
     # Get embedding
-    if not hasattr(spatioloji_obj, '_embeddings') or embedding_key not in spatioloji_obj._embeddings:
+    if not hasattr(spatioloji_obj, "_embeddings") or embedding_key not in spatioloji_obj._embeddings:
         raise ValueError(f"Embedding '{embedding_key}' not found")
 
     X = spatioloji_obj._embeddings[embedding_key]
@@ -914,6 +871,7 @@ def evaluate_batch_correction(
 
     # Silhouette score for batches (lower is better)
     from sklearn.preprocessing import LabelEncoder
+
     le = LabelEncoder()
     batch_encoded = le.fit_transform(batch.astype(str))
 
@@ -922,7 +880,4 @@ def evaluate_batch_correction(
     print(f"  Batch mixing score: {batch_mixing:.3f} (higher = better mixing)")
     print(f"  Silhouette (batch): {sil_batch:.3f} (lower = better)")
 
-    return {
-        'batch_mixing': batch_mixing,
-        'silhouette_batch': sil_batch
-    }
+    return {"batch_mixing": batch_mixing, "silhouette_batch": sil_batch}
