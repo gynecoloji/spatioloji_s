@@ -9,36 +9,95 @@ authors = [
 maintainers = [
   {name = "Ji Wang", email = "gynecoloji@gmail.com"}
 ]
+keywords = ["spatial transcriptomics", "single cell", "CosMx", "MERFISH", "Xenium"]
 classifiers = [
-    # TODO
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
 ]
 license = {text = "MIT"}
-dependencies = [
-  "typer"
-]
 requires-python = ">= 3.12"
 
-[project.optional-dependencies]
-test = [
-    "coverage",  # testing
-    "pytest",  # testing
-    "ruff",  # linting
-    "ty", # checking types
-    "ipdb", # debugging
+# ── Core dependencies (always installed) ──────────────────────────────────────
+dependencies = [
+    "typer",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
+    "opencv-python",
+    "networkx",
+    "natsort",
+    "tqdm",
 ]
 
+# ── Optional dependencies (installed on demand) ───────────────────────────────
+[project.optional-dependencies]
+
+spatial = [
+    "geopandas",
+    "shapely",
+]
+
+clustering = [
+    "leidenalg",
+    "igraph",
+]
+
+reduction = [
+    "umap-learn",
+]
+
+batch = [
+    "harmonypy",
+    "combat",
+    "statsmodels",
+]
+
+anndata = [
+    "anndata",
+    "scanpy",
+]
+
+imputation = [
+    "DCA",
+    # magic-impute: install separately in conda env
+    # conda create -n magic_env && pip install magic-impute
+]
+
+test = [
+    "coverage",
+    "pytest",
+    "ruff",
+    "ty",
+    "ipdb",
+]
+
+# Install everything at once: pip install spatioloji-s[all]
+all = [
+    "geopandas", "shapely",
+    "leidenalg", "igraph",
+    "umap-learn",
+    "harmonypy", "combat", "statsmodels",
+    "anndata", "scanpy",
+    "DCA",
+    "natsort", "tqdm", "networkx",
+]
+
+# ── Project URLs ───────────────────────────────────────────────────────────────
 [project.urls]
 bugs = "https://github.com/gynecoloji/spatioloji_s/issues"
 changelog = "https://github.com/gynecoloji/spatioloji_s/blob/master/changelog.md"
 homepage = "https://github.com/gynecoloji/spatioloji_s"
 
+# ── CLI entry point ────────────────────────────────────────────────────────────
 [project.scripts]
 spatioloji_s = "spatioloji_s.cli:app"
 
+# ── Tool configs (unchanged) ───────────────────────────────────────────────────
 [tool.ty]
-# All rules are enabled as "error" by default; no need to specify unless overriding.
-# Example override: relax a rule for the entire project (uncomment if needed).
-# rules.TY015 = "warn"  # For invalid-argument-type, warn instead of error.
 
 [tool.ruff]
 line-length = 120
