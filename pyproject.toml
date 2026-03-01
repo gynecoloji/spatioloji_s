@@ -1,6 +1,6 @@
 [project]
 name = "spatioloji_s"
-version = "0.1.0"
+version = "0.3.0"
 description = "image_based spatial RNA sequencing"
 readme = "README.md"
 authors = [
@@ -31,6 +31,8 @@ dependencies = [
     "networkx",
     "natsort",
     "tqdm",
+    "geopandas",
+    "shapely"
 ]
 
 # ── Optional dependencies (installed on demand) ───────────────────────────────
