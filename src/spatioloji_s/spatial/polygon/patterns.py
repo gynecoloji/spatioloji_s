@@ -11,6 +11,7 @@ and polygon adjacency graphs:
 All spatial weights are derived from polygon adjacency, ensuring
 analyses reflect true tissue topology.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -25,10 +26,10 @@ from .graph import PolygonSpatialGraph, _get_gdf
 
 # ========== Density ==========
 
-def cell_density_map(sp: spatioloji,
-                     graph: PolygonSpatialGraph,
-                     coord_type: str = 'global',
-                     store: bool = True) -> pd.DataFrame:
+
+def cell_density_map(
+    sp: spatioloji, graph: PolygonSpatialGraph, coord_type: str = "global", store: bool = True
+) -> pd.DataFrame:
     """
     Compute local cell packing density from polygon geometry.
 
@@ -89,32 +90,28 @@ def cell_density_map(sp: spatioloji,
     areas = areas.reindex(graph.cell_index, fill_value=np.nan)
 
     # Build result
-    result = pd.DataFrame({
-        'area': areas.values,
-        'cell_density': cell_density.values,
-        'local_density': local_density
-    }, index=graph.cell_index)
+    result = pd.DataFrame(
+        {"area": areas.values, "cell_density": cell_density.values, "local_density": local_density},
+        index=graph.cell_index,
+    )
 
     # Reindex to full cell_index
     result = result.reindex(sp.cell_index)
 
     if store:
-        sp.cell_meta['cell_density'] = result['cell_density'].values
-        sp.cell_meta['local_density'] = result['local_density'].values
+        sp.cell_meta["cell_density"] = result["cell_density"].values
+        sp.cell_meta["local_density"] = result["local_density"].values
         print("  ✓ Stored 'cell_density' and 'local_density' in cell_meta")
 
-    print(f"  ✓ Density: mean={result['local_density'].mean():.4f}, "
-          f"max={result['local_density'].max():.4f}")
+    print(f"  ✓ Density: mean={result['local_density'].mean():.4f}, " f"max={result['local_density'].max():.4f}")
 
     return result
 
 
 # ========== Hotspot Detection ==========
 
-def hotspot_detection(sp: spatioloji,
-                      graph: PolygonSpatialGraph,
-                      metric: str,
-                      store: bool = True) -> pd.DataFrame:
+
+def hotspot_detection(sp: spatioloji, graph: PolygonSpatialGraph, metric: str, store: bool = True) -> pd.DataFrame:
     """
     Detect spatial hotspots using Getis-Ord Gi* statistic.
 
@@ -172,11 +169,9 @@ def hotspot_detection(sp: spatioloji,
 
     if x_var == 0:
         print("  ⚠ Zero variance in metric, cannot compute Gi*")
-        result = pd.DataFrame({
-            'gi_star': np.zeros(n),
-            'z_score': np.zeros(n),
-            'p_value': np.ones(n)
-        }, index=graph.cell_index)
+        result = pd.DataFrame(
+            {"gi_star": np.zeros(n), "z_score": np.zeros(n), "p_value": np.ones(n)}, index=graph.cell_index
+        )
         return result.reindex(sp.cell_index)
 
     S = np.sqrt(x_var)
@@ -196,9 +191,7 @@ def hotspot_detection(sp: spatioloji,
         expected = w_count * x_mean
 
         # Denominator
-        denom = S * np.sqrt(
-            (n * w_count - w_count ** 2) / (n - 1)
-        )
+        denom = S * np.sqrt((n * w_count - w_count**2) / (n - 1))
 
         if denom > 0:
             gi_star[i] = (local_sum - expected) / denom
@@ -206,22 +199,25 @@ def hotspot_detection(sp: spatioloji,
     # P-values from standard normal
     p_values = 2.0 * (1.0 - scipy_stats.norm.cdf(np.abs(gi_star)))
 
-    result = pd.DataFrame({
-        'gi_star': gi_star,
-        'z_score': gi_star,  # Gi* is already a z-score
-        'p_value': p_values
-    }, index=graph.cell_index)
+    result = pd.DataFrame(
+        {
+            "gi_star": gi_star,
+            "z_score": gi_star,  # Gi* is already a z-score
+            "p_value": p_values,
+        },
+        index=graph.cell_index,
+    )
 
     # Reindex to full cell_index
     result = result.reindex(sp.cell_index)
 
     if store:
-        sp.cell_meta[f'gi_star_{metric}'] = result['gi_star'].values
-        sp.cell_meta[f'gi_star_{metric}_pval'] = result['p_value'].values
+        sp.cell_meta[f"gi_star_{metric}"] = result["gi_star"].values
+        sp.cell_meta[f"gi_star_{metric}_pval"] = result["p_value"].values
         print(f"  ✓ Stored 'gi_star_{metric}' and p-values in cell_meta")
 
-    n_hot = ((result['p_value'] < 0.05) & (result['z_score'] > 0)).sum()
-    n_cold = ((result['p_value'] < 0.05) & (result['z_score'] < 0)).sum()
+    n_hot = ((result["p_value"] < 0.05) & (result["z_score"] > 0)).sum()
+    n_cold = ((result["p_value"] < 0.05) & (result["z_score"] < 0)).sum()
     print(f"  ✓ Hot spots (p<0.05): {n_hot}")
     print(f"    Cold spots (p<0.05): {n_cold}")
 
@@ -230,11 +226,10 @@ def hotspot_detection(sp: spatioloji,
 
 # ========== Spatial Autocorrelation ==========
 
-def spatial_autocorrelation(sp: spatioloji,
-                            graph: PolygonSpatialGraph,
-                            metric: str,
-                            method: str = 'moran',
-                            store: bool = True) -> dict[str, float]:
+
+def spatial_autocorrelation(
+    sp: spatioloji, graph: PolygonSpatialGraph, metric: str, method: str = "moran", store: bool = True
+) -> dict[str, float]:
     """
     Compute global spatial autocorrelation on polygon adjacency graph.
 
@@ -273,7 +268,7 @@ def spatial_autocorrelation(sp: spatioloji,
     if metric not in sp.cell_meta.columns:
         raise ValueError(f"'{metric}' not found in cell_meta")
 
-    if method not in ('moran', 'geary'):
+    if method not in ("moran", "geary"):
         raise ValueError(f"method must be 'moran' or 'geary', got '{method}'")
 
     # Get values aligned to graph
@@ -298,12 +293,15 @@ def spatial_autocorrelation(sp: spatioloji,
     if S0 == 0:
         print("  ⚠ No edges in graph, cannot compute autocorrelation")
         return {
-            'statistic': np.nan, 'expected': np.nan,
-            'variance': np.nan, 'z_score': np.nan,
-            'p_value': np.nan, 'method': method
+            "statistic": np.nan,
+            "expected": np.nan,
+            "variance": np.nan,
+            "z_score": np.nan,
+            "p_value": np.nan,
+            "method": method,
         }
 
-    if method == 'moran':
+    if method == "moran":
         # Moran's I = (n / S0) * (x_dev' W x_dev) / (x_dev' x_dev)
         numerator = x_dev @ adj @ x_dev
         denominator = x_dev @ x_dev
@@ -321,16 +319,13 @@ def spatial_autocorrelation(sp: spatioloji,
         S1 = 0.5 * ((adj + adj.T) ** 2).sum()
         S2 = ((adj.sum(axis=0) + adj.sum(axis=1)) ** 2).sum()
 
-        k = (np.sum(x_dev ** 4) / n) / ((np.sum(x_dev ** 2) / n) ** 2)
+        k = (np.sum(x_dev**4) / n) / ((np.sum(x_dev**2) / n) ** 2)
 
-        var_I_num = (
-            n * ((n ** 2 - 3 * n + 3) * S1 - n * S2 + 3 * S0 ** 2)
-            - k * (n * (n - 1) * S1 - 2 * n * S2 + 6 * S0 ** 2)
-        )
-        var_I_denom = (n - 1) * (n - 2) * (n - 3) * S0 ** 2
+        var_I_num = n * ((n**2 - 3 * n + 3) * S1 - n * S2 + 3 * S0**2) - k * (n * (n - 1) * S1 - 2 * n * S2 + 6 * S0**2)
+        var_I_denom = (n - 1) * (n - 2) * (n - 3) * S0**2
 
         if var_I_denom > 0:
-            V_I = (var_I_num / var_I_denom) - E_I ** 2
+            V_I = (var_I_num / var_I_denom) - E_I**2
         else:
             V_I = 0.0
 
@@ -359,10 +354,8 @@ def spatial_autocorrelation(sp: spatioloji,
         S1 = 0.5 * ((adj + adj.T) ** 2).sum()
         S2 = ((adj.sum(axis=0) + adj.sum(axis=1)) ** 2).sum()
 
-        var_C_num = (
-            (2 * S1 + S2) * (n - 1) - 4 * S0 ** 2
-        )
-        var_C_denom = 2 * (n + 1) * S0 ** 2
+        var_C_num = (2 * S1 + S2) * (n - 1) - 4 * S0**2
+        var_C_denom = 2 * (n + 1) * S0**2
 
         if var_C_denom > 0:
             V_C = var_C_num / var_C_denom
@@ -378,21 +371,21 @@ def spatial_autocorrelation(sp: spatioloji,
     p_value = 2.0 * (1.0 - scipy_stats.norm.cdf(np.abs(z_score)))
 
     result = {
-        'statistic': float(statistic),
-        'expected': float(expected),
-        'variance': float(variance),
-        'z_score': float(z_score),
-        'p_value': float(p_value),
-        'method': method
+        "statistic": float(statistic),
+        "expected": float(expected),
+        "variance": float(variance),
+        "z_score": float(z_score),
+        "p_value": float(p_value),
+        "method": method,
     }
 
     # Report
-    stat_name = "Moran's I" if method == 'moran' else "Geary's C"
+    stat_name = "Moran's I" if method == "moran" else "Geary's C"
     print(f"  ✓ {stat_name} = {statistic:.4f}")
     print(f"    Expected = {expected:.4f}")
     print(f"    Z-score = {z_score:.2f}, p = {p_value:.2e}")
 
-    if method == 'moran':
+    if method == "moran":
         if z_score > 1.96:
             print("    → Significant positive autocorrelation (clustered)")
         elif z_score < -1.96:
@@ -412,13 +405,16 @@ def spatial_autocorrelation(sp: spatioloji,
 
 # ========== Colocalization ==========
 
-def colocalization(sp: spatioloji,
-                   graph: PolygonSpatialGraph,
-                   type_a: str,
-                   type_b: str,
-                   group_col: str,
-                   n_permutations: int = 1000,
-                   seed: int = 42) -> dict[str, float]:
+
+def colocalization(
+    sp: spatioloji,
+    graph: PolygonSpatialGraph,
+    type_a: str,
+    type_b: str,
+    group_col: str,
+    n_permutations: int = 1000,
+    seed: int = 42,
+) -> dict[str, float]:
     """
     Test if two cell types are spatially colocalized using contact frequency.
 
@@ -514,9 +510,7 @@ def colocalization(sp: spatioloji,
         z_score = 0.0
 
     # Two-sided p-value
-    n_extreme = np.sum(
-        np.abs(perm_counts - expected) >= np.abs(observed - expected)
-    )
+    n_extreme = np.sum(np.abs(perm_counts - expected) >= np.abs(observed - expected))
     p_value = (n_extreme + 1) / (n_permutations + 1)
 
     # Fold change
@@ -525,19 +519,19 @@ def colocalization(sp: spatioloji,
     # Interpretation
     if p_value < 0.05:
         if z_score > 0:
-            interpretation = 'colocalized'
+            interpretation = "colocalized"
         else:
-            interpretation = 'segregated'
+            interpretation = "segregated"
     else:
-        interpretation = 'random'
+        interpretation = "random"
 
     result = {
-        'observed': int(observed),
-        'expected': float(expected),
-        'z_score': float(z_score),
-        'p_value': float(p_value),
-        'fold_change': float(fold_change),
-        'interpretation': interpretation
+        "observed": int(observed),
+        "expected": float(expected),
+        "z_score": float(z_score),
+        "p_value": float(p_value),
+        "fold_change": float(fold_change),
+        "interpretation": interpretation,
     }
 
     print(f"  ✓ Observed: {observed}, Expected: {expected:.1f}")

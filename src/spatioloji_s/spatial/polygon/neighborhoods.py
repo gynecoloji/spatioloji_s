@@ -8,6 +8,7 @@ polygon adjacency from graph.py:
 - Identify spatial niches by clustering neighborhood profiles
 - Detect cells at boundaries between tissue regions
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -21,11 +22,9 @@ import pandas as pd
 from .graph import PolygonSpatialGraph
 
 
-def neighborhood_composition(sp: spatioloji,
-                             graph: PolygonSpatialGraph,
-                             group_col: str,
-                             mode: str = 'fraction',
-                             store: bool = True) -> pd.DataFrame:
+def neighborhood_composition(
+    sp: spatioloji, graph: PolygonSpatialGraph, group_col: str, mode: str = "fraction", store: bool = True
+) -> pd.DataFrame:
     """
     Compute cell type composition of each cell's polygon neighborhood.
 
@@ -64,7 +63,7 @@ def neighborhood_composition(sp: spatioloji,
     if group_col not in sp.cell_meta.columns:
         raise ValueError(f"'{group_col}' not found in cell_meta")
 
-    if mode not in ('count', 'fraction'):
+    if mode not in ("count", "fraction"):
         raise ValueError(f"mode must be 'count' or 'fraction', got '{mode}'")
 
     # Get cell type labels
@@ -94,36 +93,31 @@ def neighborhood_composition(sp: spatioloji,
                     comp_matrix[i, type_to_idx[ntype]] += 1
 
     # Normalize to fractions
-    if mode == 'fraction':
+    if mode == "fraction":
         row_sums = comp_matrix.sum(axis=1, keepdims=True)
         row_sums[row_sums == 0] = 1.0  # avoid division by zero
         comp_matrix = comp_matrix / row_sums
 
     # Build DataFrame
-    comp_df = pd.DataFrame(
-        comp_matrix,
-        index=cell_index,
-        columns=unique_types
-    )
+    comp_df = pd.DataFrame(comp_matrix, index=cell_index, columns=unique_types)
 
     # Reindex to full cell_index
     comp_df = comp_df.reindex(sp.cell_index, fill_value=0.0)
 
     if store:
-        prefix = f'nhood_{group_col}_'
+        prefix = f"nhood_{group_col}_"
         for col in comp_df.columns:
-            sp.cell_meta[f'{prefix}{col}'] = comp_df[col].values
+            sp.cell_meta[f"{prefix}{col}"] = comp_df[col].values
         print(f"  ✓ Stored {n_types} columns with prefix '{prefix}'")
 
     print(f"  ✓ Composition: {n_cells} cells, {n_types} types, mode='{mode}'")
 
     return comp_df
 
-def neighborhood_enrichment(sp: spatioloji,
-                            graph: PolygonSpatialGraph,
-                            group_col: str,
-                            n_permutations: int = 1000,
-                            seed: int = 42) -> dict[str, pd.DataFrame]:
+
+def neighborhood_enrichment(
+    sp: spatioloji, graph: PolygonSpatialGraph, group_col: str, n_permutations: int = 1000, seed: int = 42
+) -> dict[str, pd.DataFrame]:
     """
     Test enrichment/depletion of cell type contacts via permutation.
 
@@ -227,9 +221,7 @@ def neighborhood_enrichment(sp: spatioloji,
     # Z-score: (observed - expected) / std
     z_scores = np.zeros((n_types, n_types), dtype=np.float64)
     nonzero_std = perm_std > 0
-    z_scores[nonzero_std] = (
-        (observed[nonzero_std] - perm_mean[nonzero_std]) / perm_std[nonzero_std]
-    )
+    z_scores[nonzero_std] = (observed[nonzero_std] - perm_mean[nonzero_std]) / perm_std[nonzero_std]
 
     # Two-sided p-value: fraction of permutations as extreme as observed
     p_values = np.ones((n_types, n_types), dtype=np.float64)
@@ -237,8 +229,7 @@ def neighborhood_enrichment(sp: spatioloji,
         for j in range(n_types):
             if perm_std[i, j] > 0:
                 n_extreme = np.sum(
-                    np.abs(perm_counts[:, i, j] - perm_mean[i, j]) >=
-                    np.abs(observed[i, j] - perm_mean[i, j])
+                    np.abs(perm_counts[:, i, j] - perm_mean[i, j]) >= np.abs(observed[i, j] - perm_mean[i, j])
                 )
                 p_values[i, j] = (n_extreme + 1) / (n_permutations + 1)
 
@@ -255,22 +246,22 @@ def neighborhood_enrichment(sp: spatioloji,
         for j in range(i, n_types):
             if p_values[i, j] < 0.05:
                 direction = "enriched" if z_scores[i, j] > 0 else "depleted"
-                print(f"    {unique_types[i]} – {unique_types[j]}: "
-                      f"z={z_scores[i, j]:+.2f}, p={p_values[i, j]:.3f} ({direction})")
+                print(
+                    f"    {unique_types[i]} – {unique_types[j]}: "
+                    f"z={z_scores[i, j]:+.2f}, p={p_values[i, j]:.3f} ({direction})"
+                )
 
-    return {
-        'z_scores': z_score_df,
-        'p_values': p_value_df,
-        'observed': observed_df,
-        'expected': expected_df
-    }
+    return {"z_scores": z_score_df, "p_values": p_value_df, "observed": observed_df, "expected": expected_df}
 
-def niche_identification(sp: spatioloji,
-                         graph: PolygonSpatialGraph,
-                         group_col: str,
-                         n_niches: int = 5,
-                         method: str = 'kmeans',
-                         store: bool = True) -> pd.Series:
+
+def niche_identification(
+    sp: spatioloji,
+    graph: PolygonSpatialGraph,
+    group_col: str,
+    n_niches: int = 5,
+    method: str = "kmeans",
+    store: bool = True,
+) -> pd.Series:
     """
     Identify spatial niches by clustering neighborhood composition profiles.
 
@@ -307,9 +298,7 @@ def niche_identification(sp: spatioloji,
     print(f"\n[Neighborhoods] Identifying {n_niches} niches (method='{method}')...")
 
     # Get neighborhood composition (fraction mode)
-    comp_df = neighborhood_composition(
-        sp, graph, group_col, mode='fraction', store=False
-    )
+    comp_df = neighborhood_composition(sp, graph, group_col, mode="fraction", store=False)
 
     # Only cluster cells that have neighbors
     has_neighbors = comp_df.sum(axis=1) > 0
@@ -317,13 +306,12 @@ def niche_identification(sp: spatioloji,
 
     if len(valid_comp) < n_niches:
         raise ValueError(
-            f"Only {len(valid_comp)} cells with neighbors, "
-            f"need at least {n_niches} for {n_niches} niches."
+            f"Only {len(valid_comp)} cells with neighbors, " f"need at least {n_niches} for {n_niches} niches."
         )
 
     labels = pd.Series(np.nan, index=sp.cell_index, dtype=object)
 
-    if method == 'kmeans':
+    if method == "kmeans":
         from sklearn.cluster import KMeans
         from sklearn.preprocessing import StandardScaler
 
@@ -334,55 +322,48 @@ def niche_identification(sp: spatioloji,
         cluster_labels = km.fit_predict(scaled)
 
         # Name niches as niche_0, niche_1, ...
-        named_labels = [f'niche_{c}' for c in cluster_labels]
+        named_labels = [f"niche_{c}" for c in cluster_labels]
         labels[has_neighbors] = named_labels
 
         print(f"  → KMeans inertia: {km.inertia_:.1f}")
 
-    elif method == 'leiden':
+    elif method == "leiden":
         try:
             import anndata
             import scanpy as sc
         except ImportError as err:
-            raise ImportError(
-                "Leiden clustering requires scanpy. "
-                "Install with: pip install scanpy"
-            ) from err
+            raise ImportError("Leiden clustering requires scanpy. " "Install with: pip install scanpy") from err
 
         # Build AnnData from composition, run neighbors + leiden
         adata = anndata.AnnData(X=valid_comp.values)
         adata.obs_names = valid_comp.index.astype(str)
 
-        sc.pp.neighbors(adata, n_neighbors=15, use_rep='X')
+        sc.pp.neighbors(adata, n_neighbors=15, use_rep="X")
         sc.tl.leiden(adata, resolution=n_niches / 5.0)
 
-        cluster_labels = [f'niche_{c}' for c in adata.obs['leiden']]
+        cluster_labels = [f"niche_{c}" for c in adata.obs["leiden"]]
         labels[has_neighbors] = cluster_labels
 
     else:
-        raise ValueError(
-            f"Unknown method: '{method}'. Use 'kmeans' or 'leiden'."
-        )
+        raise ValueError(f"Unknown method: '{method}'. Use 'kmeans' or 'leiden'.")
 
     if store:
-        sp.cell_meta['niche'] = labels.values
+        sp.cell_meta["niche"] = labels.values
         print("  ✓ Stored in cell_meta['niche']")
 
     # Report
     counts = labels.value_counts(dropna=False)
     print("  ✓ Niche identification results:")
     for niche, n in counts.items():
-        label = niche if pd.notna(niche) else 'unassigned'
+        label = niche if pd.notna(niche) else "unassigned"
         print(f"    {label}: {n:,} cells")
 
     return labels
 
 
-def boundary_cells(sp: spatioloji,
-                   graph: PolygonSpatialGraph,
-                   group_col: str,
-                   min_different_fraction: float = 0.3,
-                   store: bool = True) -> pd.Series:
+def boundary_cells(
+    sp: spatioloji, graph: PolygonSpatialGraph, group_col: str, min_different_fraction: float = 0.3, store: bool = True
+) -> pd.Series:
     """
     Identify cells at boundaries between different cell type regions.
 
@@ -420,8 +401,7 @@ def boundary_cells(sp: spatioloji,
     >>> boundary_ids = sp.cell_index[boundaries].tolist()
     >>> sp_boundary = sp.subset_by_cells(boundary_ids)
     """
-    print(f"\n[Neighborhoods] Detecting boundary cells "
-          f"(threshold={min_different_fraction})...")
+    print(f"\n[Neighborhoods] Detecting boundary cells " f"(threshold={min_different_fraction})...")
 
     if group_col not in sp.cell_meta.columns:
         raise ValueError(f"'{group_col}' not found in cell_meta")
@@ -461,15 +441,14 @@ def boundary_cells(sp: spatioloji,
     is_boundary = boundary_score >= min_different_fraction
 
     if store:
-        sp.cell_meta['boundary_score'] = boundary_score.values
-        sp.cell_meta['is_boundary'] = is_boundary.values
+        sp.cell_meta["boundary_score"] = boundary_score.values
+        sp.cell_meta["is_boundary"] = is_boundary.values
         print("  ✓ Stored 'boundary_score' and 'is_boundary' in cell_meta")
 
     n_boundary = is_boundary.sum()
 
     print(f"  ✓ {n_boundary:,} boundary cells detected")
-    print(f"    Score distribution: mean={boundary_score.mean():.3f}, "
-          f"median={boundary_score.median():.3f}")
+    print(f"    Score distribution: mean={boundary_score.mean():.3f}, " f"median={boundary_score.median():.3f}")
 
     # Report boundary cells per type
     if n_boundary > 0:
@@ -482,12 +461,8 @@ def boundary_cells(sp: spatioloji,
 
     return is_boundary
 
-def harmonize_niches(
-    comp_dict: dict,
-    n_niches: int = 5,
-    method: str = 'kmeans',
-    seed: int = 42
-) -> pd.Series:
+
+def harmonize_niches(comp_dict: dict, n_niches: int = 5, method: str = "kmeans", seed: int = 42) -> pd.Series:
     """
     Assign globally consistent niche labels across FOVs.
 
@@ -550,15 +525,12 @@ def harmonize_niches(
     print(f"  → {all_comp.shape[1]} cell types in composition space")
 
     if len(valid_comp) < n_niches:
-        raise ValueError(
-            f"Only {len(valid_comp)} cells with neighbors across all FOVs, "
-            f"need at least {n_niches}."
-        )
+        raise ValueError(f"Only {len(valid_comp)} cells with neighbors across all FOVs, " f"need at least {n_niches}.")
 
     # ── Step 2: Global clustering ─────────────────────────────────────────────
     labels = pd.Series(np.nan, index=all_comp.index, dtype=object)
 
-    if method == 'kmeans':
+    if method == "kmeans":
         from sklearn.cluster import KMeans
         from sklearn.preprocessing import StandardScaler
 
@@ -567,11 +539,11 @@ def harmonize_niches(
 
         km = KMeans(n_clusters=n_niches, random_state=seed, n_init=10)
         cluster_labels = km.fit_predict(scaled)
-        labels[has_neighbors] = [f'niche_{c}' for c in cluster_labels]
+        labels[has_neighbors] = [f"niche_{c}" for c in cluster_labels]
 
         print(f"  → KMeans inertia: {km.inertia_:.1f}")
 
-    elif method == 'leiden':
+    elif method == "leiden":
         try:
             import anndata
             import scanpy as sc
@@ -580,9 +552,9 @@ def harmonize_niches(
 
         adata = anndata.AnnData(X=valid_comp.values)
         adata.obs_names = valid_comp.index.astype(str)
-        sc.pp.neighbors(adata, n_neighbors=15, use_rep='X')
+        sc.pp.neighbors(adata, n_neighbors=15, use_rep="X")
         sc.tl.leiden(adata, resolution=n_niches / 5.0)
-        labels[has_neighbors] = [f'niche_{c}' for c in adata.obs['leiden']]
+        labels[has_neighbors] = [f"niche_{c}" for c in adata.obs["leiden"]]
 
     else:
         raise ValueError(f"Unknown method: '{method}'. Use 'kmeans' or 'leiden'.")
@@ -596,9 +568,7 @@ def harmonize_niches(
         niche_cells = valid_labels[valid_labels == niche].index
         centroid = valid_comp.loc[niche_cells].mean()
         top_types = centroid.nlargest(3)
-        top_str = ', '.join(
-            f"{t}={v:.2f}" for t, v in top_types.items() if v > 0
-        )
+        top_str = ", ".join(f"{t}={v:.2f}" for t, v in top_types.items() if v > 0)
         # FOV distribution
         fov_counts = {}
         for fov_id, comp in comp_dict.items():

@@ -16,19 +16,18 @@ from .data.config import SpatialData, SpatiolojiConfig
 from .data.core import spatioloji
 from .data.qc import QCConfig, spatioloji_qc
 
-__version__ = '0.1.0'
+__version__ = "0.1.0"
 
 __all__ = [
     # Core classes
-    'spatioloji',
-    'SpatiolojiConfig',
-    'SpatialData',
-    'spatioloji_qc',
-    'QCConfig',
-
+    "spatioloji",
+    "SpatiolojiConfig",
+    "SpatialData",
+    "spatioloji_qc",
+    "QCConfig",
     # Submodules
-    'data',
-    'processing',
-    'visualization',
-    'spatial',  # <-- ADD THIS LINE
+    "data",
+    "processing",
+    "visualization",
+    "spatial",  # <-- ADD THIS LINE
 ]

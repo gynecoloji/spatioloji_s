@@ -31,6 +31,6 @@ Usage
 from . import point, polygon
 
 __all__ = [
-    'point',
-    'polygon',
+    "point",
+    "polygon",
 ]

@@ -4,6 +4,7 @@ neighborhoods.py - Cell type neighborhood analysis
 Analyzes the cellular composition of spatial neighborhoods,
 identifying co-localization patterns and recurring microenvironments.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -52,7 +53,7 @@ def neighborhood_composition(
     labels = sj.cell_meta[cell_type_col].values
     categories = pd.Categorical(labels)
     types = categories.categories  # unique sorted types
-    codes = categories.codes       # integer encoding
+    codes = categories.codes  # integer encoding
 
     # One-hot encode: (n_cells x n_types)
     n_cells = len(codes)
@@ -72,10 +73,13 @@ def neighborhood_composition(
         # Avoid division by zero for isolated cells (degree=0)
         result = result.div(row_sums.replace(0, np.nan), axis=0).fillna(0)
 
-    print(f"  ✓ Neighborhood composition: {n_cells} cells × {n_types} types"
-          f" ({'proportions' if normalize else 'counts'})")
+    print(
+        f"  ✓ Neighborhood composition: {n_cells} cells × {n_types} types"
+        f" ({'proportions' if normalize else 'counts'})"
+    )
 
     return result
+
 
 def neighborhood_enrichment(
     sj: spatioloji,
@@ -150,7 +154,7 @@ def neighborhood_enrichment(
     perm_std = perm_results.std(axis=0)
 
     # Z-score: (observed - expected) / std
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         zscore = (observed - perm_mean) / perm_std
         zscore = np.nan_to_num(zscore, nan=0.0)
 
@@ -160,44 +164,40 @@ def neighborhood_enrichment(
     for i in range(n_types):
         for j in range(n_types):
             extreme = np.sum(
-                np.abs(perm_results[:, i, j] - perm_mean[i, j])
-                >= np.abs(observed[i, j] - perm_mean[i, j])
+                np.abs(perm_results[:, i, j] - perm_mean[i, j]) >= np.abs(observed[i, j] - perm_mean[i, j])
             )
             pvalue[i, j] = (extreme + 1) / (n_permutations + 1)
 
     # Wrap in DataFrames
     result = {
-        'zscore': pd.DataFrame(zscore, index=types, columns=types),
-        'observed': pd.DataFrame(observed, index=types, columns=types),
-        'expected': pd.DataFrame(perm_mean, index=types, columns=types),
-        'pvalue': pd.DataFrame(pvalue, index=types, columns=types),
+        "zscore": pd.DataFrame(zscore, index=types, columns=types),
+        "observed": pd.DataFrame(observed, index=types, columns=types),
+        "expected": pd.DataFrame(perm_mean, index=types, columns=types),
+        "pvalue": pd.DataFrame(pvalue, index=types, columns=types),
     }
 
     # Report top enriched/depleted pairs
-    z_flat = result['zscore'].values[np.triu_indices(n_types, k=1)]
-    type_pairs = [
-        (types[i], types[j])
-        for i in range(n_types) for j in range(i + 1, n_types)
-    ]
+    z_flat = result["zscore"].values[np.triu_indices(n_types, k=1)]
+    type_pairs = [(types[i], types[j]) for i in range(n_types) for j in range(i + 1, n_types)]
     top_enriched = sorted(zip(type_pairs, z_flat, strict=False), key=lambda x: -x[1])[:3]
     top_depleted = sorted(zip(type_pairs, z_flat, strict=False), key=lambda x: x[1])[:3]
 
-    print(f"  ✓ Neighborhood enrichment: {n_types} types, "
-          f"{n_permutations} permutations")
+    print(f"  ✓ Neighborhood enrichment: {n_types} types, " f"{n_permutations} permutations")
     print(f"    Top enriched:  {top_enriched[0][0]} (z={top_enriched[0][1]:.2f})")
     print(f"    Top depleted:  {top_depleted[0][0]} (z={top_depleted[0][1]:.2f})")
 
     return result
 
+
 def identify_niches(
     sj: spatioloji,
     graph: PointSpatialGraph,
     cell_type_col: str,
-    method: str = 'kmeans',
+    method: str = "kmeans",
     n_niches: int = 5,
     resolution: float = 1.0,
     normalize: bool = True,
-    label_col: str = 'spatial_niche',
+    label_col: str = "spatial_niche",
     seed: int | None = 42,
 ) -> dict:
     """
@@ -235,12 +235,10 @@ def identify_niches(
         'composition': pd.DataFrame, the full composition matrix used
     """
     # Step 1: Get neighborhood composition
-    comp = neighborhood_composition(
-        sj, graph, cell_type_col, normalize=normalize
-    )
+    comp = neighborhood_composition(sj, graph, cell_type_col, normalize=normalize)
 
     # Step 2: Cluster
-    if method == 'kmeans':
+    if method == "kmeans":
         from sklearn.cluster import KMeans
 
         km = KMeans(n_clusters=n_niches, random_state=seed, n_init=10)
@@ -251,20 +249,19 @@ def identify_niches(
             name=label_col,
         )
 
-    elif method == 'leiden':
+    elif method == "leiden":
         try:
             import igraph as ig
             import leidenalg
         except ImportError as err:
             raise ImportError(
-                "Leiden requires leidenalg and igraph. "
-                "Install with: pip install leidenalg igraph"
+                "Leiden requires leidenalg and igraph. " "Install with: pip install leidenalg igraph"
             ) from err
         from sklearn.neighbors import NearestNeighbors
 
         # Build KNN graph in composition space (not spatial)
         k_comp = min(15, comp.shape[0] - 1)
-        nn = NearestNeighbors(n_neighbors=k_comp + 1, metric='cosine')
+        nn = NearestNeighbors(n_neighbors=k_comp + 1, metric="cosine")
         nn.fit(comp.values)
         dist_matrix, idx_matrix = nn.kneighbors(comp.values)
 
@@ -308,14 +305,14 @@ def identify_niches(
     for niche, count in niche_counts.items():
         top_type = signatures.loc[niche].idxmax()
         top_pct = signatures.loc[niche].max() * 100
-        print(f"    {niche}: {count:,} cells "
-              f"(dominant: {top_type} {top_pct:.0f}%)")
+        print(f"    {niche}: {count:,} cells " f"(dominant: {top_type} {top_pct:.0f}%)")
 
     return {
-        'labels': labels,
-        'signatures': signatures,
-        'composition': comp,
+        "labels": labels,
+        "signatures": signatures,
+        "composition": comp,
     }
+
 
 def neighborhood_diversity(
     sj: spatioloji,
@@ -350,42 +347,38 @@ def neighborhood_diversity(
         (n_cells x n_metrics). One diversity value per cell per metric.
     """
     if metrics is None:
-        metrics = ['shannon', 'simpson', 'richness']
+        metrics = ["shannon", "simpson", "richness"]
 
-    valid = {'shannon', 'simpson', 'richness'}
+    valid = {"shannon", "simpson", "richness"}
     invalid = set(metrics) - valid
     if invalid:
         raise ValueError(f"Unknown metrics: {invalid}. Use {valid}")
 
     # Get proportions (normalized composition)
-    comp = neighborhood_composition(
-        sj, graph, cell_type_col, normalize=True
-    )
+    comp = neighborhood_composition(sj, graph, cell_type_col, normalize=True)
 
     props = comp.values  # (n_cells, n_types)
     result = pd.DataFrame(index=graph.cell_ids)
 
-    if 'shannon' in metrics:
+    if "shannon" in metrics:
         # H = -sum(p * log(p)), treating 0*log(0) = 0
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(divide="ignore", invalid="ignore"):
             log_props = np.log(props)
             log_props[~np.isfinite(log_props)] = 0
         shannon = -np.sum(props * log_props, axis=1)
-        result['shannon_entropy'] = shannon
+        result["shannon_entropy"] = shannon
 
-    if 'simpson' in metrics:
+    if "simpson" in metrics:
         # D = 1 - sum(p^2)
-        simpson = 1.0 - np.sum(props ** 2, axis=1)
-        result['simpson_index'] = simpson
+        simpson = 1.0 - np.sum(props**2, axis=1)
+        result["simpson_index"] = simpson
 
-    if 'richness' in metrics:
+    if "richness" in metrics:
         # Count of types with proportion > 0
         # Use raw counts to avoid floating point issues
-        comp_counts = neighborhood_composition(
-            sj, graph, cell_type_col, normalize=False
-        )
+        comp_counts = neighborhood_composition(sj, graph, cell_type_col, normalize=False)
         richness = (comp_counts.values > 0).sum(axis=1)
-        result['richness'] = richness
+        result["richness"] = richness
 
     # Store in cell_meta
     if store:
@@ -396,7 +389,6 @@ def neighborhood_diversity(
     print(f"  ✓ Neighborhood diversity ({len(metrics)} metrics):")
     for col in result.columns:
         vals = result[col]
-        print(f"    {col}: mean={vals.mean():.3f}, "
-              f"range=[{vals.min():.3f}, {vals.max():.3f}]")
+        print(f"    {col}: mean={vals.mean():.3f}, " f"range=[{vals.min():.3f}, {vals.max():.3f}]")
 
     return result

@@ -1,6 +1,7 @@
 """
 images.py - Efficient image loading and management
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -27,9 +28,7 @@ class ImageHandler:
     - Flexible formats: Support multiple image formats
     """
 
-    def __init__(self,
-                 lazy_load: bool = True,
-                 cache_size: int | None = None):
+    def __init__(self, lazy_load: bool = True, cache_size: int | None = None):
         """
         Initialize ImageHandler.
 
@@ -48,12 +47,14 @@ class ImageHandler:
         self._metadata: dict[str, ImageMetadata] = {}
         self._access_order: list[str] = []
 
-    def load_from_folder(self,
-                        folder_path: str | Path,
-                        fov_ids: list[str] | None = None,
-                        pattern: str = "CellComposite_F{fov_id}.{ext}",
-                        extensions: list[str] | None = None,
-                        load_now: bool = None) -> dict[str, ImageMetadata]:
+    def load_from_folder(
+        self,
+        folder_path: str | Path,
+        fov_ids: list[str] | None = None,
+        pattern: str = "CellComposite_F{fov_id}.{ext}",
+        extensions: list[str] | None = None,
+        load_now: bool = None,
+    ) -> dict[str, ImageMetadata]:
         """
         Load images from folder.
 
@@ -77,7 +78,7 @@ class ImageHandler:
         """
         folder = Path(folder_path)
         if extensions is None:
-          extensions = ['jpg', 'png', 'tif', 'tiff']
+            extensions = ["jpg", "png", "tif", "tiff"]
 
         if not folder.exists():
             raise FileNotFoundError(f"Image folder not found: {folder_path}")
@@ -90,9 +91,7 @@ class ImageHandler:
 
         loaded_count = 0
         for fov_id in fov_ids:
-            metadata = self._load_single_image(
-                folder, fov_id, pattern, extensions, load_immediately
-            )
+            metadata = self._load_single_image(folder, fov_id, pattern, extensions, load_immediately)
             if metadata is not None:
                 self._metadata[fov_id] = metadata
                 loaded_count += 1
@@ -109,18 +108,15 @@ class ImageHandler:
 
         return self._metadata
 
-    def _detect_fovs_from_folder(self,
-                                 folder: Path,
-                                 pattern: str,
-                                 extensions: list[str]) -> list[str]:
+    def _detect_fovs_from_folder(self, folder: Path, pattern: str, extensions: list[str]) -> list[str]:
         """Auto-detect FOV IDs from image files."""
         # Convert pattern to regex
-        pattern_parts = pattern.split('{fov_id}')
+        pattern_parts = pattern.split("{fov_id}")
         if len(pattern_parts) != 2:
             raise ValueError(f"Pattern must contain {{fov_id}}: {pattern}")
 
         prefix = re.escape(pattern_parts[0])
-        suffix = pattern_parts[1].replace('{ext}', f"({'|'.join(extensions)})")
+        suffix = pattern_parts[1].replace("{ext}", f"({'|'.join(extensions)})")
         regex_str = f"{prefix}(.+?){re.escape(suffix.split('.')[0])}\\.({'|'.join(extensions)})"
         regex = re.compile(regex_str)
 
@@ -133,12 +129,9 @@ class ImageHandler:
 
         return sorted(fov_ids)
 
-    def _load_single_image(self,
-                          folder: Path,
-                          fov_id: str,
-                          pattern: str,
-                          extensions: list[str],
-                          load_now: bool) -> ImageMetadata | None:
+    def _load_single_image(
+        self, folder: Path, fov_id: str, pattern: str, extensions: list[str], load_now: bool
+    ) -> ImageMetadata | None:
         """Load or register a single image."""
         # Try variants of FOV ID
         fov_variants = [fov_id, fov_id.zfill(3), fov_id.zfill(4)]
@@ -154,22 +147,14 @@ class ImageHandler:
                         if img is not None:
                             self._images[fov_id] = img
                             return ImageMetadata(
-                                fov_id=fov_id,
-                                shape=img.shape,
-                                dtype=img.dtype,
-                                path=filepath,
-                                is_loaded=True
+                                fov_id=fov_id, shape=img.shape, dtype=img.dtype, path=filepath, is_loaded=True
                             )
                     else:
                         # Just read shape (faster)
                         img = cv2.imread(str(filepath), cv2.IMREAD_UNCHANGED)
                         if img is not None:
                             return ImageMetadata(
-                                fov_id=fov_id,
-                                shape=img.shape,
-                                dtype=img.dtype,
-                                path=filepath,
-                                is_loaded=False
+                                fov_id=fov_id, shape=img.shape, dtype=img.dtype, path=filepath, is_loaded=False
                             )
 
         return None
@@ -241,22 +226,13 @@ class ImageHandler:
 
     def subset(self, fov_ids: list[str]) -> ImageHandler:
         """Create new ImageHandler with subset of FOVs."""
-        new_handler = ImageHandler(
-            lazy_load=self.lazy_load,
-            cache_size=self.cache_size
-        )
+        new_handler = ImageHandler(lazy_load=self.lazy_load, cache_size=self.cache_size)
 
         fov_ids_set = set(str(f) for f in fov_ids)
 
-        new_handler._metadata = {
-            fid: meta for fid, meta in self._metadata.items()
-            if fid in fov_ids_set
-        }
+        new_handler._metadata = {fid: meta for fid, meta in self._metadata.items() if fid in fov_ids_set}
 
-        new_handler._images = {
-            fid: img for fid, img in self._images.items()
-            if fid in fov_ids_set
-        }
+        new_handler._images = {fid: img for fid, img in self._images.items() if fid in fov_ids_set}
 
         return new_handler
 
@@ -282,17 +258,15 @@ class ImageHandler:
     def summary(self) -> dict[str, any]:
         """Get summary of image handler state."""
         total_size = sum(m.memory_size_mb() for m in self._metadata.values())
-        loaded_size = sum(
-            m.memory_size_mb() for m in self._metadata.values() if m.is_loaded
-        )
+        loaded_size = sum(m.memory_size_mb() for m in self._metadata.values() if m.is_loaded)
 
         return {
-            'n_total': self.n_total,
-            'n_loaded': self.n_loaded,
-            'total_size_mb': total_size,
-            'loaded_size_mb': loaded_size,
-            'lazy_load': self.lazy_load,
-            'cache_size': self.cache_size
+            "n_total": self.n_total,
+            "n_loaded": self.n_loaded,
+            "total_size_mb": total_size,
+            "loaded_size_mb": loaded_size,
+            "lazy_load": self.lazy_load,
+            "cache_size": self.cache_size,
         }
 
 
@@ -305,8 +279,7 @@ def load_fov_positions_from_images(image_handler: ImageHandler) -> pd.DataFrame:
     import pandas as pd
 
     fov_data = []
-    fov_ids = sorted(image_handler.fov_ids,
-                    key=lambda x: int(x) if x.isdigit() else x)
+    fov_ids = sorted(image_handler.fov_ids, key=lambda x: int(x) if x.isdigit() else x)
 
     n_fovs = len(fov_ids)
     n_cols = int(np.ceil(np.sqrt(n_fovs)))
@@ -321,13 +294,15 @@ def load_fov_positions_from_images(image_handler: ImageHandler) -> pd.DataFrame:
             x_pos = col * metadata.width
             y_pos = row * metadata.height
 
-            fov_data.append({
-                'fov': fov_id,
-                'x_global_px': x_pos,
-                'y_global_px': y_pos,
-                'width': metadata.width,
-                'height': metadata.height
-            })
+            fov_data.append(
+                {
+                    "fov": fov_id,
+                    "x_global_px": x_pos,
+                    "y_global_px": y_pos,
+                    "width": metadata.width,
+                    "height": metadata.height,
+                }
+            )
 
     df = pd.DataFrame(fov_data)
-    return df.set_index('fov')
+    return df.set_index("fov")

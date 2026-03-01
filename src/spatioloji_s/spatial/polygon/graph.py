@@ -5,6 +5,7 @@ Builds cell adjacency graphs from actual polygon geometry.
 All distances are polygon-to-polygon (boundary-to-boundary),
 never centroid-to-centroid.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from scipy import sparse
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
+
 
 @dataclass
 class PolygonSpatialGraph:
@@ -36,6 +38,7 @@ class PolygonSpatialGraph:
     params : dict
         Parameters used to build the graph
     """
+
     adjacency: sparse.csr_matrix
     distances: sparse.csr_matrix
     cell_index: pd.Index
@@ -84,33 +87,27 @@ class PolygonSpatialGraph:
         mask = rows < cols
         rows, cols = rows[mask], cols[mask]
 
-        dist_values = np.array([
-            self.distances[r, c] for r, c in zip(rows, cols, strict=True)
-        ])
+        dist_values = np.array([self.distances[r, c] for r, c in zip(rows, cols, strict=True)])
 
-        return pd.DataFrame({
-            'cell_a': self.cell_index[rows],
-            'cell_b': self.cell_index[cols],
-            'distance': dist_values
-        })
+        return pd.DataFrame({"cell_a": self.cell_index[rows], "cell_b": self.cell_index[cols], "distance": dist_values})
 
     def summary(self) -> dict:
         """Get graph summary statistics."""
         degrees = self.get_degree()
         return {
-            'n_cells': self.n_cells,
-            'n_edges': self.n_edges,
-            'method': self.method,
-            'mean_degree': self.mean_degree,
-            'median_degree': float(np.median(degrees)),
-            'max_degree': int(degrees.max()),
-            'min_degree': int(degrees.min()),
-            'isolated_cells': int((degrees == 0).sum()),
-            'params': self.params
+            "n_cells": self.n_cells,
+            "n_edges": self.n_edges,
+            "method": self.method,
+            "mean_degree": self.mean_degree,
+            "median_degree": float(np.median(degrees)),
+            "max_degree": int(degrees.max()),
+            "min_degree": int(degrees.min()),
+            "isolated_cells": int((degrees == 0).sum()),
+            "params": self.params,
         }
 
 
-def _get_gdf(sp: spatioloji, coord_type: str = 'global') -> gpd.GeoDataFrame:
+def _get_gdf(sp: spatioloji, coord_type: str = "global") -> gpd.GeoDataFrame:
     """
     Get GeoDataFrame from spatioloji, with validation.
 
@@ -128,14 +125,14 @@ def _get_gdf(sp: spatioloji, coord_type: str = 'global') -> gpd.GeoDataFrame:
     """
     if sp.polygons is None:
         raise ValueError(
-            "spatioloji has no polygon data. "
-            "Polygon-based spatial analysis requires cell boundary polygons."
+            "spatioloji has no polygon data. " "Polygon-based spatial analysis requires cell boundary polygons."
         )
     return sp.to_geopandas(coord_type=coord_type, include_metadata=False)
 
-def build_contact_graph(sp: spatioloji,
-                        coord_type: str = 'global',
-                        predicate: str = 'intersects') -> PolygonSpatialGraph:
+
+def build_contact_graph(
+    sp: spatioloji, coord_type: str = "global", predicate: str = "intersects"
+) -> PolygonSpatialGraph:
     """
     Build adjacency graph from polygon contacts.
 
@@ -182,21 +179,16 @@ def build_contact_graph(sp: spatioloji,
     invalid_mask = ~gdf.geometry.is_valid
     if invalid_mask.any():
         print(f"  → Repairing {invalid_mask.sum()} invalid geometries...")
-        gdf.loc[invalid_mask, 'geometry'] = gdf.loc[invalid_mask, 'geometry'].apply(make_valid)
+        gdf.loc[invalid_mask, "geometry"] = gdf.loc[invalid_mask, "geometry"].apply(make_valid)
 
     cell_index = gdf.index
     n_cells = len(gdf)
 
     # Use spatial join for efficient pairwise detection
     # sjoin finds all pairs satisfying the predicate
-    joined = gpd.sjoin(
-        gdf[['geometry']],
-        gdf[['geometry']],
-        how='inner',
-        predicate=predicate
-    )
+    joined = gpd.sjoin(gdf[["geometry"]], gdf[["geometry"]], how="inner", predicate=predicate)
 
-    right_col = [c for c in joined.columns if c.endswith('_right')][0]
+    right_col = [c for c in joined.columns if c.endswith("_right")][0]
     joined = joined[joined.index != joined[right_col]]
 
     # Map cell IDs to integer positions
@@ -207,9 +199,7 @@ def build_contact_graph(sp: spatioloji,
 
     # Build sparse adjacency (symmetric)
     data = np.ones(len(rows), dtype=np.float32)
-    adjacency = sparse.csr_matrix(
-        (data, (rows, cols)), shape=(n_cells, n_cells)
-    )
+    adjacency = sparse.csr_matrix((data, (rows, cols)), shape=(n_cells, n_cells))
 
     # Distance matrix: contacting cells have distance = 0
     distances = sparse.csr_matrix((n_cells, n_cells), dtype=np.float32)
@@ -219,8 +209,8 @@ def build_contact_graph(sp: spatioloji,
         adjacency=adjacency,
         distances=distances,
         cell_index=cell_index,
-        method='contact',
-        params={'coord_type': coord_type, 'predicate': predicate}
+        method="contact",
+        params={"coord_type": coord_type, "predicate": predicate},
     )
 
     print(f"  ✓ Contact graph: {graph.n_cells} cells, {graph.n_edges} edges")
@@ -228,9 +218,8 @@ def build_contact_graph(sp: spatioloji,
 
     return graph
 
-def build_buffer_graph(sp: spatioloji,
-                       buffer_distance: float,
-                       coord_type: str = 'global') -> PolygonSpatialGraph:
+
+def build_buffer_graph(sp: spatioloji, buffer_distance: float, coord_type: str = "global") -> PolygonSpatialGraph:
     """
     Build adjacency graph by buffering polygons.
 
@@ -279,47 +268,38 @@ def build_buffer_graph(sp: spatioloji,
     invalid_mask = ~gdf.geometry.is_valid
     if invalid_mask.any():
         print(f"  → Repairing {invalid_mask.sum()} invalid geometries...")
-        gdf.loc[invalid_mask, 'geometry'] = gdf.loc[invalid_mask, 'geometry'].apply(make_valid)
+        gdf.loc[invalid_mask, "geometry"] = gdf.loc[invalid_mask, "geometry"].apply(make_valid)
 
     cell_index = gdf.index
     n_cells = len(gdf)
 
     # Create buffered version for neighbor detection
     gdf_buffered = gdf.copy()
-    gdf_buffered['geometry'] = gdf.geometry.buffer(buffer_distance)
+    gdf_buffered["geometry"] = gdf.geometry.buffer(buffer_distance)
 
     # Spatial join: find pairs where buffered polygons overlap
-    joined = gpd.sjoin(
-        gdf_buffered[['geometry']],
-        gdf[['geometry']],
-        how='inner',
-        predicate='intersects'
-    )
+    joined = gpd.sjoin(gdf_buffered[["geometry"]], gdf[["geometry"]], how="inner", predicate="intersects")
 
-    right_col = [c for c in joined.columns if c.endswith('_right')][0]
+    right_col = [c for c in joined.columns if c.endswith("_right")][0]
     joined = joined[joined.index != joined[right_col]]
 
     # Remove duplicate pairs (keep only one direction for distance calc)
-    pairs = pd.DataFrame({
-        'cell_a': joined.index,
-        'cell_b': joined[right_col]
-    })
-    pairs = pairs[pairs['cell_a'] < pairs['cell_b']].drop_duplicates()
+    pairs = pd.DataFrame({"cell_a": joined.index, "cell_b": joined[right_col]})
+    pairs = pairs[pairs["cell_a"] < pairs["cell_b"]].drop_duplicates()
 
     # Compute actual polygon-to-polygon distances for each pair
     print(f"  → Computing polygon distances for {len(pairs)} pairs...")
 
     geom = gdf.geometry
-    dist_values = np.array([
-        geom.loc[row.cell_a].distance(geom.loc[row.cell_b])
-        for row in pairs.itertuples()
-    ], dtype=np.float32)
+    dist_values = np.array(
+        [geom.loc[row.cell_a].distance(geom.loc[row.cell_b]) for row in pairs.itertuples()], dtype=np.float32
+    )
 
     # Map cell IDs to integer positions
     id_to_pos = {cid: i for i, cid in enumerate(cell_index)}
 
-    rows_a = np.array([id_to_pos[cid] for cid in pairs['cell_a']])
-    cols_b = np.array([id_to_pos[cid] for cid in pairs['cell_b']])
+    rows_a = np.array([id_to_pos[cid] for cid in pairs["cell_a"]])
+    cols_b = np.array([id_to_pos[cid] for cid in pairs["cell_b"]])
 
     # Build symmetric sparse matrices
     all_rows = np.concatenate([rows_a, cols_b])
@@ -327,23 +307,16 @@ def build_buffer_graph(sp: spatioloji,
     all_dists = np.concatenate([dist_values, dist_values])
     all_ones = np.ones(len(all_rows), dtype=np.float32)
 
-    adjacency = sparse.csr_matrix(
-        (all_ones, (all_rows, all_cols)), shape=(n_cells, n_cells)
-    )
+    adjacency = sparse.csr_matrix((all_ones, (all_rows, all_cols)), shape=(n_cells, n_cells))
 
-    distances = sparse.csr_matrix(
-        (all_dists, (all_rows, all_cols)), shape=(n_cells, n_cells)
-    )
+    distances = sparse.csr_matrix((all_dists, (all_rows, all_cols)), shape=(n_cells, n_cells))
 
     graph = PolygonSpatialGraph(
         adjacency=adjacency,
         distances=distances,
         cell_index=cell_index,
-        method='buffer',
-        params={
-            'coord_type': coord_type,
-            'buffer_distance': buffer_distance
-        }
+        method="buffer",
+        params={"coord_type": coord_type, "buffer_distance": buffer_distance},
     )
 
     print(f"  ✓ Buffer graph: {graph.n_cells} cells, {graph.n_edges} edges")
@@ -352,10 +325,10 @@ def build_buffer_graph(sp: spatioloji,
 
     return graph
 
-def build_knn_graph(sp: spatioloji,
-                    k: int = 6,
-                    coord_type: str = 'global',
-                    candidate_multiplier: int = 3) -> PolygonSpatialGraph:
+
+def build_knn_graph(
+    sp: spatioloji, k: int = 6, coord_type: str = "global", candidate_multiplier: int = 3
+) -> PolygonSpatialGraph:
     """
     Build k-nearest neighbor graph using polygon-to-polygon distances.
 
@@ -408,7 +381,7 @@ def build_knn_graph(sp: spatioloji,
     invalid_mask = ~gdf.geometry.is_valid
     if invalid_mask.any():
         print(f"  → Repairing {invalid_mask.sum()} invalid geometries...")
-        gdf.loc[invalid_mask, 'geometry'] = gdf.loc[invalid_mask, 'geometry'].apply(make_valid)
+        gdf.loc[invalid_mask, "geometry"] = gdf.loc[invalid_mask, "geometry"].apply(make_valid)
 
     cell_index = gdf.index
     n_cells = len(gdf)
@@ -419,10 +392,7 @@ def build_knn_graph(sp: spatioloji,
     # Step 1: Centroid-based candidate search (fast)
     n_candidates = min(k * candidate_multiplier, n_cells - 1)
 
-    centroids = np.column_stack([
-        gdf.geometry.centroid.x,
-        gdf.geometry.centroid.y
-    ])
+    centroids = np.column_stack([gdf.geometry.centroid.x, gdf.geometry.centroid.y])
 
     print(f"  → Finding {n_candidates} candidates per cell via centroid KDTree...")
     tree = cKDTree(centroids)
@@ -444,9 +414,7 @@ def build_knn_graph(sp: spatioloji,
 
         # Compute polygon-to-polygon distances
         poly_i = geom[i]
-        cand_dists = np.array([
-            poly_i.distance(geom[j]) for j in candidates
-        ])
+        cand_dists = np.array([poly_i.distance(geom[j]) for j in candidates])
 
         # Keep k nearest by true polygon distance
         nearest_order = np.argsort(cand_dists)[:k]
@@ -465,12 +433,8 @@ def build_knn_graph(sp: spatioloji,
     ones = np.ones(len(rows), dtype=np.float32)
 
     # Directed adjacency
-    adj_directed = sparse.csr_matrix(
-        (ones, (rows, cols)), shape=(n_cells, n_cells)
-    )
-    dist_directed = sparse.csr_matrix(
-        (dists, (rows, cols)), shape=(n_cells, n_cells)
-    )
+    adj_directed = sparse.csr_matrix((ones, (rows, cols)), shape=(n_cells, n_cells))
+    dist_directed = sparse.csr_matrix((dists, (rows, cols)), shape=(n_cells, n_cells))
 
     # Symmetrize: if A→B or B→A, both are neighbors
     # For distances, keep the minimum when both directions exist
@@ -489,16 +453,11 @@ def build_knn_graph(sp: spatioloji,
         adjacency=adjacency,
         distances=distances,
         cell_index=cell_index,
-        method='knn',
-        params={
-            'coord_type': coord_type,
-            'k': k,
-            'candidate_multiplier': candidate_multiplier
-        }
+        method="knn",
+        params={"coord_type": coord_type, "k": k, "candidate_multiplier": candidate_multiplier},
     )
 
     print(f"  ✓ KNN graph: {graph.n_cells} cells, {graph.n_edges} edges")
     print(f"    Mean degree: {graph.mean_degree:.1f} (≥{k} due to symmetrization)")
 
     return graph
-

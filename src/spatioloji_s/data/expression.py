@@ -2,7 +2,6 @@
 expression.py - Efficient expression matrix with automatic sparse handling
 """
 
-
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -19,12 +18,14 @@ class ExpressionMatrix:
     - Handles DataFrame, ndarray, or sparse matrix input
     """
 
-    def __init__(self,
-                 data: np.ndarray | sparse.spmatrix | pd.DataFrame,
-                 cell_ids: pd.Index,
-                 gene_names: pd.Index,
-                 auto_sparse: bool = True,
-                 sparse_threshold: float = 0.5):
+    def __init__(
+        self,
+        data: np.ndarray | sparse.spmatrix | pd.DataFrame,
+        cell_ids: pd.Index,
+        gene_names: pd.Index,
+        auto_sparse: bool = True,
+        sparse_threshold: float = 0.5,
+    ):
         """
         Initialize expression matrix.
 
@@ -48,13 +49,9 @@ class ExpressionMatrix:
 
         # Validate dimensions
         if data.shape[0] != len(cell_ids):
-            raise ValueError(
-                f"Data rows ({data.shape[0]}) != cell_ids ({len(cell_ids)})"
-            )
+            raise ValueError(f"Data rows ({data.shape[0]}) != cell_ids ({len(cell_ids)})")
         if data.shape[1] != len(gene_names):
-            raise ValueError(
-                f"Data cols ({data.shape[1]}) != gene_names ({len(gene_names)})"
-            )
+            raise ValueError(f"Data cols ({data.shape[1]}) != gene_names ({len(gene_names)})")
 
         # Auto-convert to sparse if beneficial
         if auto_sparse and isinstance(data, np.ndarray):
@@ -100,7 +97,7 @@ class ExpressionMatrix:
             return sparse.csr_matrix(self._data)
         return self._data
 
-    def subset_cells(self, indices: np.ndarray) -> 'ExpressionMatrix':
+    def subset_cells(self, indices: np.ndarray) -> "ExpressionMatrix":
         """
         Efficiently subset cells by integer indices.
 
@@ -123,10 +120,10 @@ class ExpressionMatrix:
             data=subset_data,
             cell_ids=self._cell_ids[indices],
             gene_names=self._gene_names,
-            auto_sparse=False  # Already in correct format
+            auto_sparse=False,  # Already in correct format
         )
 
-    def subset_genes(self, indices: np.ndarray) -> 'ExpressionMatrix':
+    def subset_genes(self, indices: np.ndarray) -> "ExpressionMatrix":
         """
         Efficiently subset genes by integer indices.
 
@@ -146,10 +143,7 @@ class ExpressionMatrix:
             subset_data = self._data[:, indices]
 
         return ExpressionMatrix(
-            data=subset_data,
-            cell_ids=self._cell_ids,
-            gene_names=self._gene_names[indices],
-            auto_sparse=False
+            data=subset_data, cell_ids=self._cell_ids, gene_names=self._gene_names[indices], auto_sparse=False
         )
 
     def __getitem__(self, key):
@@ -162,11 +156,7 @@ class ExpressionMatrix:
 
         Warning: This creates a dense representation in memory.
         """
-        return pd.DataFrame(
-            self.get_dense(),
-            index=self._cell_ids,
-            columns=self._gene_names
-        )
+        return pd.DataFrame(self.get_dense(), index=self._cell_ids, columns=self._gene_names)
 
     def memory_usage_mb(self) -> float:
         """
@@ -176,9 +166,7 @@ class ExpressionMatrix:
         """
         if self._is_sparse:
             # Sparse matrix
-            total_bytes = (self._data.data.nbytes +
-                          self._data.indices.nbytes +
-                          self._data.indptr.nbytes)
+            total_bytes = self._data.data.nbytes + self._data.indices.nbytes + self._data.indptr.nbytes
         else:
             # Dense numpy array
             total_bytes = self._data.nbytes

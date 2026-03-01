@@ -5,6 +5,7 @@ Direct distance calculations and tests between cells and cell types.
 Works from coordinates without requiring a pre-built graph (though
 some functions can optionally use one for efficiency).
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -19,7 +20,7 @@ from scipy.spatial import KDTree
 
 def nearest_neighbor_distances(
     sj: spatioloji,
-    coord_type: str = 'global',
+    coord_type: str = "global",
     cell_type_col: str | None = None,
     k: int = 1,
     store: bool = True,
@@ -53,23 +54,25 @@ def nearest_neighbor_distances(
     # k+1 because query includes self
     dists, indices = tree.query(coords, k=k + 1)
 
-    nnd = dists[:, k]           # k-th nearest neighbor distance
-    nn_idx = indices[:, k]      # index of k-th nearest neighbor
+    nnd = dists[:, k]  # k-th nearest neighbor distance
+    nn_idx = indices[:, k]  # index of k-th nearest neighbor
     nn_ids = sj.cell_index[nn_idx]
 
-    result = pd.DataFrame({
-        'nnd': nnd,
-        'nn_cell_id': nn_ids,
-    }, index=sj.cell_index)
+    result = pd.DataFrame(
+        {
+            "nnd": nnd,
+            "nn_cell_id": nn_ids,
+        },
+        index=sj.cell_index,
+    )
 
     if store:
-        col_name = 'nnd' if k == 1 else f'nnd_k{k}'
+        col_name = "nnd" if k == 1 else f"nnd_k{k}"
         sj.cell_meta[col_name] = nnd
 
     # Report
     print(f"  ✓ Nearest neighbor distances (k={k}):")
-    print(f"    mean={nnd.mean():.2f}, median={np.median(nnd):.2f}, "
-          f"std={nnd.std():.2f}")
+    print(f"    mean={nnd.mean():.2f}, median={np.median(nnd):.2f}, " f"std={nnd.std():.2f}")
 
     # Per-type summary
     if cell_type_col is not None:
@@ -82,17 +85,17 @@ def nearest_neighbor_distances(
         for ct in np.unique(labels):
             mask = labels == ct
             ct_nnd = nnd[mask]
-            print(f"      {str(ct):>20s}: mean={ct_nnd.mean():.2f}, "
-                  f"median={np.median(ct_nnd):.2f}, n={mask.sum()}")
+            print(f"      {str(ct):>20s}: mean={ct_nnd.mean():.2f}, " f"median={np.median(ct_nnd):.2f}, n={mask.sum()}")
 
     return result
+
 
 def cross_type_distances(
     sj: spatioloji,
     cell_type_col: str,
     source_type: str,
     target_type: str,
-    coord_type: str = 'global',
+    coord_type: str = "global",
     k: int = 1,
     store: bool = True,
 ) -> pd.DataFrame:
@@ -143,9 +146,7 @@ def cross_type_distances(
     if n_target == 0:
         raise ValueError(f"No cells of target type '{target_type}'")
     if k > n_target:
-        raise ValueError(
-            f"k={k} but only {n_target} target cells exist"
-        )
+        raise ValueError(f"k={k} but only {n_target} target cells exist")
 
     source_coords = coords[source_mask]
     target_coords = coords[target_mask]
@@ -164,29 +165,31 @@ def cross_type_distances(
         nn_dists = dists[:, k - 1]
         nn_target_ids = target_ids[indices[:, k - 1]]
 
-    result = pd.DataFrame({
-        'distance': nn_dists,
-        'target_cell_id': nn_target_ids,
-    }, index=source_ids)
+    result = pd.DataFrame(
+        {
+            "distance": nn_dists,
+            "target_cell_id": nn_target_ids,
+        },
+        index=source_ids,
+    )
 
     # Store in cell_meta (NaN for non-source cells)
     if store:
-        col_name = f'dist_{source_type}_to_{target_type}'
+        col_name = f"dist_{source_type}_to_{target_type}"
         sj.cell_meta[col_name] = np.nan
         sj.cell_meta.loc[source_ids, col_name] = nn_dists
 
     print(f"  ✓ Cross-type distance ({source_type}→{target_type}):")
     print(f"    n_source={n_source}, n_target={n_target}")
-    print(f"    mean={nn_dists.mean():.2f}, "
-          f"median={np.median(nn_dists):.2f}, "
-          f"std={nn_dists.std():.2f}")
+    print(f"    mean={nn_dists.mean():.2f}, " f"median={np.median(nn_dists):.2f}, " f"std={nn_dists.std():.2f}")
 
     return result
+
 
 def proximity_score(
     sj: spatioloji,
     cell_type_col: str,
-    coord_type: str = 'global',
+    coord_type: str = "global",
     normalize: bool = True,
     types: list[str] | None = None,
 ) -> dict:
@@ -268,7 +271,7 @@ def proximity_score(
     normalized_df = None
     if normalize:
         self_dists = np.diag(median_dist)
-        with np.errstate(divide='ignore', invalid='ignore'):
+        with np.errstate(divide="ignore", invalid="ignore"):
             norm_matrix = median_dist / self_dists[:, np.newaxis]
             norm_matrix = np.nan_to_num(norm_matrix, nan=1.0)
         normalized_df = pd.DataFrame(norm_matrix, index=types, columns=types)
@@ -281,13 +284,14 @@ def proximity_score(
         np.fill_diagonal(norm_vals, np.inf)
         min_idx = np.unravel_index(norm_vals.argmin(), norm_vals.shape)
         closest = (types[min_idx[0]], types[min_idx[1]])
-        print(f"    Closest pair: {closest[0]}→{closest[1]} "
-              f"(norm={normalized_df.iloc[min_idx[0], min_idx[1]]:.2f})")
+        print(
+            f"    Closest pair: {closest[0]}→{closest[1]} " f"(norm={normalized_df.iloc[min_idx[0], min_idx[1]]:.2f})"
+        )
 
     return {
-        'median_distance': median_df,
-        'mean_distance': mean_df,
-        'normalized': normalized_df,
+        "median_distance": median_df,
+        "mean_distance": mean_df,
+        "normalized": normalized_df,
     }
 
 
@@ -297,7 +301,7 @@ def permutation_test(
     metric_fn,
     n_permutations: int = 999,
     seed: int | None = None,
-    alternative: str = 'two-sided',
+    alternative: str = "two-sided",
     **metric_kwargs,
 ) -> dict:
     """
@@ -376,19 +380,14 @@ def permutation_test(
     zscore = (observed - null_mean) / null_std if null_std > 0 else 0.0
 
     # P-value
-    if alternative == 'two-sided':
-        extreme = np.sum(
-            np.abs(null_dist - null_mean) >= np.abs(observed - null_mean)
-        )
-    elif alternative == 'greater':
+    if alternative == "two-sided":
+        extreme = np.sum(np.abs(null_dist - null_mean) >= np.abs(observed - null_mean))
+    elif alternative == "greater":
         extreme = np.sum(null_dist >= observed)
-    elif alternative == 'less':
+    elif alternative == "less":
         extreme = np.sum(null_dist <= observed)
     else:
-        raise ValueError(
-            f"Unknown alternative: {alternative}. "
-            "Use 'two-sided', 'greater', or 'less'."
-        )
+        raise ValueError(f"Unknown alternative: {alternative}. " "Use 'two-sided', 'greater', or 'less'.")
 
     pvalue = (extreme + 1) / (n_permutations + 1)
 
@@ -399,10 +398,10 @@ def permutation_test(
     print(f"    z={zscore:.2f}, p={pvalue:.4f} ({sig})")
 
     return {
-        'observed': observed,
-        'null_dist': null_dist,
-        'expected': null_mean,
-        'zscore': zscore,
-        'pvalue': pvalue,
-        'alternative': alternative,
+        "observed": observed,
+        "null_dist": null_dist,
+        "expected": null_mean,
+        "zscore": zscore,
+        "pvalue": pvalue,
+        "alternative": alternative,
     }

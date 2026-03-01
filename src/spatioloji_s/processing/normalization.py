@@ -15,11 +15,11 @@ def normalize_total(
     spatioloji_obj,
     target_sum: float = 1e4,
     layer: str | None = None,
-    output_layer: str = 'normalized_counts',
+    output_layer: str = "normalized_counts",
     exclude_highly_expressed: bool = False,
     max_fraction: float = 0.05,
     inplace: bool = False,
-    copy: bool = False
+    copy: bool = False,
 ):
     """
     Normalize counts per cell (library size normalization).
@@ -83,8 +83,7 @@ def normalize_total(
     else:
         counts_per_cell = X.sum(axis=1)
 
-    print(f"  Counts per cell - mean: {counts_per_cell.mean():.0f}, "
-          f"median: {np.median(counts_per_cell):.0f}")
+    print(f"  Counts per cell - mean: {counts_per_cell.mean():.0f}, " f"median: {np.median(counts_per_cell):.0f}")
 
     # Exclude highly expressed genes if requested
     if exclude_highly_expressed:
@@ -125,6 +124,7 @@ def normalize_total(
     # Return based on mode
     if copy:
         import copy as copy_module
+
         sp_new = copy_module.deepcopy(spatioloji_obj)
         sp_new.add_layer(output_layer, X_norm, overwrite=True)
         return sp_new
@@ -138,11 +138,11 @@ def normalize_total(
 def log_transform(
     spatioloji_obj,
     layer: str | None = None,
-    output_layer: str = 'log_normalized',
+    output_layer: str = "log_normalized",
     base: float | None = None,
     offset: float = 1.0,
     inplace: bool = False,
-    copy: bool = False
+    copy: bool = False,
 ):
     """
     Apply log transformation to expression data.
@@ -204,6 +204,7 @@ def log_transform(
     # Return based on mode
     if copy:
         import copy as copy_module
+
         sp_new = copy_module.deepcopy(spatioloji_obj)
         sp_new.add_layer(output_layer, X_log, overwrite=True)
         return sp_new
@@ -217,12 +218,12 @@ def log_transform(
 def scale(
     spatioloji_obj,
     layer: str | None = None,
-    output_layer: str = 'scaled',
+    output_layer: str = "scaled",
     max_value: float | None = 10.0,
-    method: Literal['standard', 'robust'] = 'standard',
+    method: Literal["standard", "robust"] = "standard",
     zero_center: bool = True,
     inplace: bool = False,
-    copy: bool = False
+    copy: bool = False,
 ):
     """
     Scale expression data (z-score normalization per gene).
@@ -276,9 +277,9 @@ def scale(
     print(f"\nScaling expression data (method: {method})")
 
     # Apply scaling
-    if method == 'standard':
+    if method == "standard":
         scaler = StandardScaler(with_mean=zero_center, with_std=True)
-    elif method == 'robust':
+    elif method == "robust":
         scaler = RobustScaler(with_centering=zero_center, with_scaling=True)
     else:
         raise ValueError(f"Unknown scaling method: {method}")
@@ -295,6 +296,7 @@ def scale(
     # Return based on mode
     if copy:
         import copy as copy_module
+
         sp_new = copy_module.deepcopy(spatioloji_obj)
         sp_new.add_layer(output_layer, X_scaled, overwrite=True)
         return sp_new
@@ -308,11 +310,11 @@ def scale(
 def normalize_pearson_residuals(
     spatioloji_obj,
     layer: str | None = None,
-    output_layer: str = 'pearson_residuals',
+    output_layer: str = "pearson_residuals",
     theta: float = 100.0,
     clip: float | None = None,
     inplace: bool = False,
-    copy: bool = False
+    copy: bool = False,
 ):
     """
     Normalize using Pearson residuals (analytic method).
@@ -386,6 +388,7 @@ def normalize_pearson_residuals(
     # Return based on mode
     if copy:
         import copy as copy_module
+
         sp_new = copy_module.deepcopy(spatioloji_obj)
         sp_new.add_layer(output_layer, residuals, overwrite=True)
         return sp_new
@@ -402,8 +405,8 @@ def normalize_standard_workflow(
     target_sum: float = 1e4,
     log_transform: bool = True,
     scale: bool = False,
-    output_layer: str = 'normalized',
-    inplace: bool = True
+    output_layer: str = "normalized",
+    inplace: bool = True,
 ):
     """
     Apply standard normalization workflow.
@@ -440,43 +443,31 @@ def normalize_standard_workflow(
     >>> # With scaling (for PCA/clustering)
     >>> sp.processing.normalize_standard_workflow(sp, scale=True)
     """
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("Standard Normalization Workflow")
-    print("="*70)
+    print("=" * 70)
 
     # Step 1: Library size normalization
     print("\nStep 1: Library size normalization")
-    X_norm = normalize_total(
-        spatioloji_obj,
-        target_sum=target_sum,
-        output_layer='temp_counts'
-    )
+    X_norm = normalize_total(spatioloji_obj, target_sum=target_sum, output_layer="temp_counts")
 
     # Step 2: Log transformation
     if log_transform:
         print("\nStep 2: Log transformation")
-        spatioloji_obj.add_layer('temp_counts', X_norm, overwrite=True)
-        X_norm = log_transform(
-            spatioloji_obj,
-            layer='temp_counts',
-            output_layer='temp_log'
-        )
-        spatioloji_obj.remove_layer('temp_counts')
+        spatioloji_obj.add_layer("temp_counts", X_norm, overwrite=True)
+        X_norm = log_transform(spatioloji_obj, layer="temp_counts", output_layer="temp_log")
+        spatioloji_obj.remove_layer("temp_counts")
 
     # Step 3: Scaling (optional)
     if scale:
         print("\nStep 3: Scaling")
-        spatioloji_obj.add_layer('temp_log', X_norm, overwrite=True)
-        X_norm = scale(
-            spatioloji_obj,
-            layer='temp_log',
-            output_layer='temp_scaled'
-        )
-        spatioloji_obj.remove_layer('temp_log')
+        spatioloji_obj.add_layer("temp_log", X_norm, overwrite=True)
+        X_norm = scale(spatioloji_obj, layer="temp_log", output_layer="temp_scaled")
+        spatioloji_obj.remove_layer("temp_log")
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("✓ Normalization complete")
-    print("="*70)
+    print("=" * 70)
 
     if inplace:
         spatioloji_obj.add_layer(output_layer, X_norm, overwrite=True)

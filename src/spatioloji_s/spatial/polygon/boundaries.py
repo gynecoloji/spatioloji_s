@@ -14,6 +14,7 @@ Key design decisions:
 
 Requires polygon data and a contact/buffer graph from graph.py.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -28,6 +29,7 @@ from shapely.ops import unary_union
 from .graph import PolygonSpatialGraph, _get_gdf
 
 # ========== Helper ==========
+
 
 def _boundary_intersection_length(geom_src, geom_nbr):
     """
@@ -63,9 +65,8 @@ def _boundary_intersection_length(geom_src, geom_nbr):
 
 # ========== contact_length ==========
 
-def contact_length(sp: spatioloji,
-                   graph: PolygonSpatialGraph,
-                   coord_type: str = 'global') -> pd.DataFrame:
+
+def contact_length(sp: spatioloji, graph: PolygonSpatialGraph, coord_type: str = "global") -> pd.DataFrame:
     """
     Compute contact boundary length between neighboring cells.
 
@@ -94,9 +95,7 @@ def contact_length(sp: spatioloji,
 
     if len(edges) == 0:
         print("  ⚠ No edges in graph")
-        return pd.DataFrame(
-            columns=['cell_a', 'cell_b', 'contact_length_a', 'contact_length_b']
-        )
+        return pd.DataFrame(columns=["cell_a", "cell_b", "contact_length_a", "contact_length_b"])
 
     len_a = np.zeros(len(edges), dtype=np.float64)
     len_b = np.zeros(len(edges), dtype=np.float64)
@@ -120,8 +119,8 @@ def contact_length(sp: spatioloji,
         len_b[i], _ = _boundary_intersection_length(poly_b, poly_a)
 
     edges = edges.copy()
-    edges['contact_length_a'] = len_a
-    edges['contact_length_b'] = len_b
+    edges["contact_length_a"] = len_a
+    edges["contact_length_b"] = len_b
 
     n_contact = ((len_a > 0) | (len_b > 0)).sum()
     print(f"  ✓ {n_contact}/{len(edges)} pairs have contact")
@@ -134,6 +133,7 @@ def contact_length(sp: spatioloji,
 
 
 # ========== _collect_contact_segments (shared internal helper) ==========
+
 
 def _collect_contact_segments(sp, graph, gdf):
     """
@@ -176,10 +176,10 @@ def _collect_contact_segments(sp, graph, gdf):
 
 # ========== contact_fraction ==========
 
-def contact_fraction(sp: spatioloji,
-                     graph: PolygonSpatialGraph,
-                     coord_type: str = 'global',
-                     store: bool = True) -> pd.DataFrame:
+
+def contact_fraction(
+    sp: spatioloji, graph: PolygonSpatialGraph, coord_type: str = "global", store: bool = True
+) -> pd.DataFrame:
     """
     Compute fraction of each cell's perimeter in contact with each neighbor.
 
@@ -230,8 +230,8 @@ def contact_fraction(sp: spatioloji,
             frac_b[i] = row.contact_length_b / peri_b
 
     edges = edges.copy()
-    edges['fraction_a'] = frac_a
-    edges['fraction_b'] = frac_b
+    edges["fraction_a"] = frac_a
+    edges["fraction_b"] = frac_b
 
     # Total contact fraction: union segments first to avoid double-counting
     if store:
@@ -242,12 +242,10 @@ def contact_fraction(sp: spatioloji,
             if geom_list:
                 peri = perimeters.get(cell_id, 0.0)
                 if peri > 0:
-                    total_frac[cell_id] = (
-                        unary_union(geom_list).length / peri
-                    ).clip(0.0, 1.0)
+                    total_frac[cell_id] = (unary_union(geom_list).length / peri).clip(0.0, 1.0)
 
         total_frac = total_frac.reindex(sp.cell_index, fill_value=0.0)
-        sp.cell_meta['total_contact_fraction'] = total_frac.values
+        sp.cell_meta["total_contact_fraction"] = total_frac.values
         print("  ✓ Stored 'total_contact_fraction' in cell_meta")
 
     print(f"  ✓ Contact fractions computed for {len(edges)} pairs")
@@ -257,10 +255,10 @@ def contact_fraction(sp: spatioloji,
 
 # ========== free_boundary_fraction ==========
 
-def free_boundary_fraction(sp: spatioloji,
-                           graph: PolygonSpatialGraph,
-                           coord_type: str = 'global',
-                           store: bool = True) -> pd.Series:
+
+def free_boundary_fraction(
+    sp: spatioloji, graph: PolygonSpatialGraph, coord_type: str = "global", store: bool = True
+) -> pd.Series:
     """
     Compute fraction of each cell's perimeter NOT touching any neighbor.
 
@@ -304,20 +302,19 @@ def free_boundary_fraction(sp: spatioloji,
     # free_fraction = 1 - (unioned contact length / perimeter)
     free_frac = pd.Series(1.0, index=gdf.index, dtype=np.float64)
     nonzero_peri = perimeters > 0
-    free_frac[nonzero_peri] = (
-        1.0 - total_contact_len[nonzero_peri] / perimeters[nonzero_peri]
-    ).clip(0.0, 1.0)  # safety only for float precision
+    free_frac[nonzero_peri] = (1.0 - total_contact_len[nonzero_peri] / perimeters[nonzero_peri]).clip(
+        0.0, 1.0
+    )  # safety only for float precision
 
     free_frac = free_frac.reindex(sp.cell_index, fill_value=1.0)
 
     if store:
-        sp.cell_meta['free_boundary_fraction'] = free_frac.values
+        sp.cell_meta["free_boundary_fraction"] = free_frac.values
         # Exact complement — always consistent with free_boundary_fraction
-        sp.cell_meta['total_contact_fraction'] = (1.0 - free_frac).values
+        sp.cell_meta["total_contact_fraction"] = (1.0 - free_frac).values
         print("  ✓ Stored 'free_boundary_fraction' and 'total_contact_fraction'")
 
-    print(f"  ✓ Free boundary: mean={free_frac.mean():.3f}, "
-          f"median={free_frac.median():.3f}")
+    print(f"  ✓ Free boundary: mean={free_frac.mean():.3f}, " f"median={free_frac.median():.3f}")
     print(f"    Fully enclosed (< 0.05): {(free_frac < 0.05).sum()} cells")
     print(f"    Mostly exposed (> 0.80): {(free_frac > 0.80).sum()} cells")
 
@@ -326,10 +323,10 @@ def free_boundary_fraction(sp: spatioloji,
 
 # ========== contact_summary ==========
 
-def contact_summary(sp: spatioloji,
-                    graph: PolygonSpatialGraph,
-                    group_col: str,
-                    coord_type: str = 'global') -> pd.DataFrame:
+
+def contact_summary(
+    sp: spatioloji, graph: PolygonSpatialGraph, group_col: str, coord_type: str = "global"
+) -> pd.DataFrame:
     """
     Summarize contact lengths between cell type pairs.
 
@@ -359,44 +356,45 @@ def contact_summary(sp: spatioloji,
 
     if len(edges) == 0:
         print("  ⚠ No contacts found")
-        return pd.DataFrame(
-            columns=['type_a', 'type_b', 'n_contacts',
-                     'total_length', 'mean_length', 'median_length']
-        )
+        return pd.DataFrame(columns=["type_a", "type_b", "n_contacts", "total_length", "mean_length", "median_length"])
 
     cell_to_group = sp.cell_meta[group_col].to_dict()
 
     edges = edges.copy()
-    edges['type_a'] = edges['cell_a'].map(cell_to_group)
-    edges['type_b'] = edges['cell_b'].map(cell_to_group)
-    edges = edges.dropna(subset=['type_a', 'type_b'])
+    edges["type_a"] = edges["cell_a"].map(cell_to_group)
+    edges["type_b"] = edges["cell_b"].map(cell_to_group)
+    edges = edges.dropna(subset=["type_a", "type_b"])
 
     # Use mean of both directions as symmetric summary length
-    edges['mean_contact_length'] = (
-        edges['contact_length_a'] + edges['contact_length_b']
-    ) / 2.0
+    edges["mean_contact_length"] = (edges["contact_length_a"] + edges["contact_length_b"]) / 2.0
 
     # Normalize pair order (alphabetical) so A-B and B-A are the same
-    swapped = edges['type_a'] > edges['type_b']
-    edges.loc[swapped, ['type_a', 'type_b']] = (
-        edges.loc[swapped, ['type_b', 'type_a']].values
+    swapped = edges["type_a"] > edges["type_b"]
+    edges.loc[swapped, ["type_a", "type_b"]] = edges.loc[swapped, ["type_b", "type_a"]].values
+
+    grouped = edges.groupby(["type_a", "type_b"])["mean_contact_length"]
+
+    summary = (
+        pd.DataFrame(
+            {
+                "n_contacts": grouped.count(),
+                "total_length": grouped.sum(),
+                "mean_length": grouped.mean(),
+                "median_length": grouped.median(),
+            }
+        )
+        .reset_index()
+        .sort_values("total_length", ascending=False)
     )
-
-    grouped = edges.groupby(['type_a', 'type_b'])['mean_contact_length']
-
-    summary = pd.DataFrame({
-        'n_contacts': grouped.count(),
-        'total_length': grouped.sum(),
-        'mean_length': grouped.mean(),
-        'median_length': grouped.median()
-    }).reset_index().sort_values('total_length', ascending=False)
 
     print(f"  ✓ {len(summary)} cell type pair combinations")
     print("\n  Top contacts:")
     for _, row in summary.head(5).iterrows():
-        print(f"    {row.type_a} – {row.type_b}: "
-              f"{row.n_contacts} contacts, "
-              f"total={row.total_length:.1f}, "
-              f"mean={row.mean_length:.1f}")
+        print(
+            f"    {row.type_a} – {row.type_b}: "
+            f"{row.n_contacts} contacts, "
+            f"total={row.total_length:.1f}, "
+            f"mean={row.mean_length:.1f}"
+        )
 
     return summary

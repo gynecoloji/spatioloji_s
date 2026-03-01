@@ -25,8 +25,8 @@ from matplotlib.patches import Patch
 # SECTION 1 — PRIVATE HELPERS
 # =============================================================================
 
-def _get_feature_data(sj_obj, feature: str,
-                      feature_df=None, feature_column=None) -> pd.DataFrame:
+
+def _get_feature_data(sj_obj, feature: str, feature_df=None, feature_column=None) -> pd.DataFrame:
     """
     Return a two-column DataFrame: [cell_id_col, feature].
 
@@ -54,11 +54,14 @@ def _get_feature_data(sj_obj, feature: str,
     return meta[[cell_id, feature]].copy()
 
 
-def _build_color_mapping(series: pd.Series,
-                         kind: Literal['categorical', 'continuous'],
-                         colormap: str = 'viridis',
-                         color_map: dict | None = None,
-                         vmin=None, vmax=None):
+def _build_color_mapping(
+    series: pd.Series,
+    kind: Literal["categorical", "continuous"],
+    colormap: str = "viridis",
+    color_map: dict | None = None,
+    vmin=None,
+    vmax=None,
+):
     """
     Build everything needed to color-code a feature series.
 
@@ -75,13 +78,13 @@ def _build_color_mapping(series: pd.Series,
         norm : Normalize
         cmap : colormap object
     """
-    if kind == 'categorical':
+    if kind == "categorical":
         # Auto-convert if not already categorical
         if not pd.api.types.is_categorical_dtype(series):
             n = series.nunique()
             if n > 20:
                 raise ValueError(f"Too many categories ({n}) for categorical plot. Use continuous instead.")
-            series = series.astype('category')
+            series = series.astype("category")
 
         cats = series.cat.categories
         palette = plt.cm.tab10.colors
@@ -103,9 +106,7 @@ def _build_color_mapping(series: pd.Series,
         return None, None, norm, cmap
 
 
-def _setup_grid(n_plots: int,
-                grid_layout: tuple[int, int] | None,
-                fig_w: int, fig_h: int):
+def _setup_grid(n_plots: int, grid_layout: tuple[int, int] | None, fig_w: int, fig_h: int):
     """
     Create a figure + flattened axes array for multi-FOV grid plots.
 
@@ -128,7 +129,7 @@ def _finalize(fig, save_dir: str, filename: str, dpi: int, show: bool):
     """Save → show/close. Always called at the end of public plot functions."""
     os.makedirs(save_dir, exist_ok=True)
     path = os.path.join(save_dir, filename)
-    fig.savefig(path, dpi=dpi, bbox_inches='tight')
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
     print(f"Saved → {path}")
     if not show:
         plt.close(fig)
@@ -136,9 +137,11 @@ def _finalize(fig, save_dir: str, filename: str, dpi: int, show: bool):
     plt.close(fig)
     return fig
 
+
 # =============================================================================
 # SECTION 2 — FOV IMAGE STITCHING
 # =============================================================================
+
 
 def stitch_fov_images(
     sj_obj,
@@ -175,7 +178,7 @@ def stitch_fov_images(
     positions = sj_obj.fov_positions.copy()
     positions.index = positions.index.astype(str)
 
-    for col in ('x_global_px', 'y_global_px'):
+    for col in ("x_global_px", "y_global_px"):
         if col not in positions.columns:
             raise ValueError(f"Missing required column in fov_positions: '{col}'")
 
@@ -195,13 +198,13 @@ def stitch_fov_images(
         print(f"FOV image size: {img_w} × {img_h} px")
 
     # ── Build canvas ──────────────────────────────────────────────────────────
-    min_x = positions['x_global_px'].min()
-    min_y = positions['y_global_px'].min()
-    positions['x_off'] = (positions['x_global_px'] - min_x).astype(int)
-    positions['y_off'] = (positions['y_global_px'] - min_y).astype(int)
+    min_x = positions["x_global_px"].min()
+    min_y = positions["y_global_px"].min()
+    positions["x_off"] = (positions["x_global_px"] - min_x).astype(int)
+    positions["y_off"] = (positions["y_global_px"] - min_y).astype(int)
 
-    canvas_w = int(positions['x_off'].max() + img_w)
-    canvas_h = int(positions['y_off'].max() + img_h)
+    canvas_w = int(positions["x_off"].max() + img_w)
+    canvas_h = int(positions["y_off"].max() + img_h)
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
 
     if verbose:
@@ -219,8 +222,8 @@ def stitch_fov_images(
         if flip_vertical:
             img = cv2.flip(img, 0)
 
-        x0, y0 = int(row['x_off']), int(row['y_off'])
-        canvas[y0:y0 + img_h, x0:x0 + img_w] = img
+        x0, y0 = int(row["x_off"]), int(row["y_off"])
+        canvas[y0 : y0 + img_h, x0 : x0 + img_w] = img
         placed.append(fov)
         if verbose:
             print(f"  Placed FOV {fov} at ({x0}, {y0})")
@@ -239,15 +242,15 @@ def stitch_fov_images(
 
     if save_path:
         # Auto-add extension if missing
-        if not save_path.endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.pdf')):
-            save_path += '.png'
+        if not save_path.endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".pdf")):
+            save_path += ".png"
         os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
         fig, ax = plt.subplots(figsize=figsize)
         ax.imshow(rgb)
-        ax.axis('off')
+        ax.axis("off")
         ax.set_title(plot_title)
         plt.tight_layout()
-        fig.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
         if verbose:
             print(f"Saved → {save_path}")
@@ -255,20 +258,20 @@ def stitch_fov_images(
     if show_plot:
         fig, ax = plt.subplots(figsize=figsize)
         ax.imshow(rgb)
-        ax.axis('off')
+        ax.axis("off")
         ax.set_title(plot_title)
         plt.tight_layout()
         plt.show()
 
     return canvas, min_x, min_y
 
+
 # =============================================================================
 # SECTION 3 — POLYGON RENDERING ENGINE
 # =============================================================================
 
-def _render_polygons_on_ax(ax, gdf, feature,
-                            kind, color_lookup, norm, cmap,
-                            edge_color, edge_width, alpha):
+
+def _render_polygons_on_ax(ax, gdf, feature, kind, color_lookup, norm, cmap, edge_color, edge_width, alpha):
     """
     Draw all cell polygons onto a single Axes using PolyCollection (fast).
 
@@ -291,7 +294,7 @@ def _render_polygons_on_ax(ax, gdf, feature,
         coords = np.array(geom.exterior.coords)
         polys.append(coords)
 
-        if kind == 'categorical':
+        if kind == "categorical":
             face_colors.append(color_lookup.get(str(row[feature]), (0.5, 0.5, 0.5, 1.0)))
         else:
             face_colors.append(cmap(norm(row[feature])))
@@ -305,13 +308,14 @@ def _render_polygons_on_ax(ax, gdf, feature,
     )
     ax.add_collection(collection)
     ax.autoscale_view()
-    ax.set_aspect('equal')
-    ax.axis('off')
+    ax.set_aspect("equal")
+    ax.axis("off")
 
 
 # =============================================================================
 # SECTION 3 — PUBLIC POLYGON FUNCTIONS
 # =============================================================================
+
 
 def plot_global_polygon(
     sj_obj,
@@ -327,7 +331,7 @@ def plot_global_polygon(
     vmax: float | None = None,
     # categorical params
     color_map: dict | None = None,
-    legend_loc: str = 'center left',
+    legend_loc: str = "center left",
     legend_bbox: tuple[float, float] = (1.01, 0.5),
     # shared style
     edge_color: str = "none",
@@ -359,7 +363,7 @@ def plot_global_polygon(
         raise ValueError("No polygon data in spatioloji object")
 
     cell_id_col = sj_obj.config.cell_id_col
-    x_col, y_col = sj_obj.config.get_coordinate_columns('global')
+    x_col, y_col = sj_obj.config.get_coordinate_columns("global")
 
     # ── Resolve feature name & data ──────────────────────────────────────────
     feat_df = _get_feature_data(sj_obj, feature, feature_df, feature_column)
@@ -368,17 +372,20 @@ def plot_global_polygon(
     feat_name = fig_title or feat_col
 
     # ── Auto-detect kind ──────────────────────────────────────────────────────
-    kind = 'categorical' if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else 'continuous'
+    kind = "categorical" if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else "continuous"
 
     # ── Build color mapping ───────────────────────────────────────────────────
     color_lookup, legend_handles, norm, cmap = _build_color_mapping(
-        feat_df[feat_col], kind=kind,
-        colormap=colormap, color_map=color_map,
-        vmin=vmin, vmax=vmax,
+        feat_df[feat_col],
+        kind=kind,
+        colormap=colormap,
+        color_map=color_map,
+        vmin=vmin,
+        vmax=vmax,
     )
 
     # ── Apply global offsets ──────────────────────────────────────────────────
-    gdf = sj_obj.to_geopandas(coord_type='global', include_metadata=False)
+    gdf = sj_obj.to_geopandas(coord_type="global", include_metadata=False)
     # Apply global offset to geometry
     if min_x is None:
         min_x = sj_obj.polygons[x_col].min()
@@ -386,12 +393,11 @@ def plot_global_polygon(
         min_y = sj_obj.polygons[y_col].min()
 
     from shapely.affinity import translate
-    gdf['geometry'] = gdf['geometry'].apply(
-        lambda geom: translate(geom, xoff=-min_x, yoff=-min_y)
-    )
+
+    gdf["geometry"] = gdf["geometry"].apply(lambda geom: translate(geom, xoff=-min_x, yoff=-min_y))
 
     # Merge feature onto gdf (gdf is indexed by cell_id)
-    gdf = gdf.join(feat_df.set_index(cell_id_col)[[feat_col]], how='inner')
+    gdf = gdf.join(feat_df.set_index(cell_id_col)[[feat_col]], how="inner")
     if gdf.empty:
         raise ValueError("No overlapping cells between polygons and feature data")
 
@@ -399,13 +405,21 @@ def plot_global_polygon(
     fig, ax = plt.subplots(figsize=figsize)
     if background_img is not None:
         h, w = background_img.shape[:2]
-        ax.imshow(cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB), origin='upper')
+        ax.imshow(cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB), origin="upper")
         ax.set_xlim(0, w)
         ax.set_ylim(h, 0)
 
     _render_polygons_on_ax(
-        ax, gdf, feat_col,
-        kind, color_lookup, norm, cmap, edge_color, edge_width, alpha,
+        ax,
+        gdf,
+        feat_col,
+        kind,
+        color_lookup,
+        norm,
+        cmap,
+        edge_color,
+        edge_width,
+        alpha,
     )
 
     if background_img is not None:
@@ -413,9 +427,8 @@ def plot_global_polygon(
     ax.set_title(feat_name, fontsize=14)
 
     # ── Legend / colorbar ─────────────────────────────────────────────────────
-    if kind == 'categorical':
-        ax.legend(handles=legend_handles, loc=legend_loc,
-                  bbox_to_anchor=legend_bbox, title=feat_name)
+    if kind == "categorical":
+        ax.legend(handles=legend_handles, loc=legend_loc, bbox_to_anchor=legend_bbox, title=feat_name)
     else:
         sm = cm.ScalarMappable(norm=norm, cmap=cmap)
         sm.set_array([])
@@ -423,8 +436,8 @@ def plot_global_polygon(
 
     # ── Save / show ───────────────────────────────────────────────────────────
     if filename is None:
-        safe = feat_col.replace(' ', '_').lower()
-        bg = '_with_bg' if background_img is not None else ''
+        safe = feat_col.replace(" ", "_").lower()
+        bg = "_with_bg" if background_img is not None else ""
         filename = f"polygon_{safe}_global_{kind}{bg}.png"
 
     return _finalize(fig, save_dir, filename, dpi, show_plot)
@@ -440,9 +453,9 @@ def plot_local_polygon(
     colormap: str = "viridis",
     vmin: float | None = None,
     vmax: float | None = None,
-    colorbar_position: str = 'right',
+    colorbar_position: str = "right",
     color_map: dict | None = None,
-    edge_color: str = 'black',
+    edge_color: str = "black",
     edge_width: float = 0.5,
     alpha: float = 0.8,
     figure_width: int = 7,
@@ -455,29 +468,31 @@ def plot_local_polygon(
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
-
     if sj_obj.polygons is None:
         raise ValueError("No polygon data in spatioloji object")
 
     cell_id_col = sj_obj.config.cell_id_col
-    fov_id_col  = sj_obj.config.fov_id_col
+    fov_id_col = sj_obj.config.fov_id_col
 
     # ── Feature data ──────────────────────────────────────────────────────────
-    feat_df  = _get_feature_data(sj_obj, feature, feature_df, feature_column)
+    feat_df = _get_feature_data(sj_obj, feature, feature_df, feature_column)
     feat_col = feature_column if (feature == "metadata" and feature_column) else feature
 
     # ── Auto-detect kind & build color mapping ────────────────────────────────
-    kind = 'categorical' if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else 'continuous'
+    kind = "categorical" if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else "continuous"
     color_lookup, legend_handles, norm, cmap = _build_color_mapping(
-        feat_df[feat_col], kind=kind,
-        colormap=colormap, color_map=color_map,
-        vmin=vmin, vmax=vmax,
+        feat_df[feat_col],
+        kind=kind,
+        colormap=colormap,
+        color_map=color_map,
+        vmin=vmin,
+        vmax=vmax,
     )
 
     # ── Build GDF (local coords) — vertex order guaranteed by Shapely ─────────
-    gdf = sj_obj.to_geopandas(coord_type='local', include_metadata=False)
+    gdf = sj_obj.to_geopandas(coord_type="local", include_metadata=False)
     gdf[fov_id_col] = sj_obj.cell_meta[fov_id_col].astype(str)
-    gdf = gdf.join(feat_df.set_index(cell_id_col)[[feat_col]], how='inner')
+    gdf = gdf.join(feat_df.set_index(cell_id_col)[[feat_col]], how="inner")
     if gdf.empty:
         raise ValueError("No overlapping cells between polygons and feature data")
 
@@ -500,62 +515,71 @@ def plot_local_polygon(
         shared_h, shared_w = sample_img.shape[:2]
 
         if fov_gdf.empty:
-            ax.set_title(f'FOV {fov_id} (no data)', fontsize=title_fontsize)
-            ax.axis('off')
+            ax.set_title(f"FOV {fov_id} (no data)", fontsize=title_fontsize)
+            ax.axis("off")
             continue
 
         if background_img:
             img = sj_obj.get_image(fov_id)
             if img is not None:
-                ax.imshow(np.flipud(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)), origin='lower')
+                ax.imshow(np.flipud(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)), origin="lower")
 
         _render_polygons_on_ax(
-            ax, fov_gdf, feat_col,
-            kind, color_lookup, norm, cmap, edge_color, edge_width, alpha,
+            ax,
+            fov_gdf,
+            feat_col,
+            kind,
+            color_lookup,
+            norm,
+            cmap,
+            edge_color,
+            edge_width,
+            alpha,
         )
 
         ax.set_xlim(0, shared_w)
         ax.set_ylim(0, shared_h)
-        ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
+        ax.set_title(f"FOV {fov_id}", fontsize=title_fontsize)
 
     for j in range(len(fov_ids), len(axs)):
-        axs[j].axis('off')
+        axs[j].axis("off")
 
     # ── Shared legend / colorbar ──────────────────────────────────────────────
     feat_name = feat_col
-    if kind == 'categorical':
-        fig.legend(handles=legend_handles, loc='center right',
-                   bbox_to_anchor=(1.02, 0.5), title=feat_name, fontsize=14)
+    if kind == "categorical":
+        fig.legend(handles=legend_handles, loc="center right", bbox_to_anchor=(1.02, 0.5), title=feat_name, fontsize=14)
         plt.tight_layout(rect=[0, 0, 0.95, 0.98])
     else:
         sm = cm.ScalarMappable(norm=norm, cmap=cmap)
         sm.set_array([])
-        if colorbar_position == 'right':
+        if colorbar_position == "right":
             cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
             fig.colorbar(sm, cax=cbar_ax, label=feat_name)
             plt.tight_layout(rect=[0, 0, 0.9, 0.95])
         else:
             cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.02])
-            fig.colorbar(sm, cax=cbar_ax, orientation='horizontal', label=feat_name)
+            fig.colorbar(sm, cax=cbar_ax, orientation="horizontal", label=feat_name)
             plt.tight_layout(rect=[0, 0.1, 1, 0.95])
 
     plt.suptitle(feat_name, fontsize=suptitle_fontsize)
     plt.subplots_adjust(wspace=0.05, hspace=0.05)
 
     if filename is None:
-        safe = feat_col.replace(' ', '_').lower()
-        bg = '_with_bg' if background_img else ''
+        safe = feat_col.replace(" ", "_").lower()
+        bg = "_with_bg" if background_img else ""
         filename = f"polygon_{safe}_local_{kind}{bg}.png"
 
     return _finalize(fig, save_dir, filename, dpi, show_plot)
+
 
 # =============================================================================
 # SECTION 4 — DOT RENDERING ENGINE
 # =============================================================================
 
-def _render_dots_on_ax(ax, df, x_col, y_col, feature,
-                        kind, color_lookup, norm, cmap,
-                        dot_size, edge_color, edge_width, alpha):
+
+def _render_dots_on_ax(
+    ax, df, x_col, y_col, feature, kind, color_lookup, norm, cmap, dot_size, edge_color, edge_width, alpha
+):
     """
     Draw all cell dots onto a single Axes using ax.scatter.
 
@@ -571,12 +595,13 @@ def _render_dots_on_ax(ax, df, x_col, y_col, feature,
     -------
     scatter object (needed for colorbar when kind='continuous')
     """
-    if kind == 'categorical':
+    if kind == "categorical":
         # Draw each category separately so legend labels work naturally
         scatter = None
         for cat, grp in df.groupby(feature):
             ax.scatter(
-                grp[x_col], grp[y_col],
+                grp[x_col],
+                grp[y_col],
                 s=dot_size,
                 c=[color_lookup.get(str(cat), (0.5, 0.5, 0.5))],
                 edgecolors=edge_color,
@@ -586,7 +611,8 @@ def _render_dots_on_ax(ax, df, x_col, y_col, feature,
             )
     else:
         scatter = ax.scatter(
-            df[x_col], df[y_col],
+            df[x_col],
+            df[y_col],
             c=df[feature],
             cmap=cmap,
             norm=norm,
@@ -596,14 +622,15 @@ def _render_dots_on_ax(ax, df, x_col, y_col, feature,
             alpha=alpha,
         )
 
-    ax.set_aspect('equal')
-    ax.axis('off')
+    ax.set_aspect("equal")
+    ax.axis("off")
     return scatter
 
 
 # =============================================================================
 # SECTION 4 — PUBLIC DOT FUNCTIONS
 # =============================================================================
+
 
 def plot_global_dots(
     sj_obj,
@@ -619,7 +646,7 @@ def plot_global_dots(
     vmax: float | None = None,
     # categorical params
     color_map: dict | None = None,
-    legend_loc: str = 'center left',
+    legend_loc: str = "center left",
     legend_bbox: tuple[float, float] = (1.01, 0.5),
     # shared style
     dot_size: int = 20,
@@ -649,31 +676,34 @@ def plot_global_dots(
     meta = sj_obj.cell_meta.reset_index()
 
     # ── Check required coordinate columns ─────────────────────────────────────
-    for col in ('CenterX_global_px', 'CenterY_global_px'):
+    for col in ("CenterX_global_px", "CenterY_global_px"):
         if col not in meta.columns:
             raise ValueError(f"Missing required column in cell_meta: '{col}'")
 
     # ── Feature data ──────────────────────────────────────────────────────────
-    feat_df  = _get_feature_data(sj_obj, feature, feature_df, feature_column)
+    feat_df = _get_feature_data(sj_obj, feature, feature_df, feature_column)
     feat_col = feature_column if (feature == "metadata" and feature_column) else feature
     feat_name = fig_title or feat_col
 
     # ── Auto-detect kind & build color mapping ────────────────────────────────
-    kind = 'categorical' if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else 'continuous'
+    kind = "categorical" if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else "continuous"
     color_lookup, legend_handles, norm, cmap = _build_color_mapping(
-        feat_df[feat_col], kind=kind,
-        colormap=colormap, color_map=color_map,
-        vmin=vmin, vmax=vmax,
+        feat_df[feat_col],
+        kind=kind,
+        colormap=colormap,
+        color_map=color_map,
+        vmin=vmin,
+        vmax=vmax,
     )
 
     # ── Apply global offsets ──────────────────────────────────────────────────
-    coords = meta[[cell_id_col, 'CenterX_global_px', 'CenterY_global_px']].copy()
+    coords = meta[[cell_id_col, "CenterX_global_px", "CenterY_global_px"]].copy()
     if min_x is None:
-        min_x = coords['CenterX_global_px'].min()
+        min_x = coords["CenterX_global_px"].min()
     if min_y is None:
-        min_y = coords['CenterY_global_px'].min()
-    coords['x_plot'] = coords['CenterX_global_px'] - min_x
-    coords['y_plot'] = coords['CenterY_global_px'] - min_y
+        min_y = coords["CenterY_global_px"].min()
+    coords["x_plot"] = coords["CenterX_global_px"] - min_x
+    coords["y_plot"] = coords["CenterY_global_px"] - min_y
 
     merged = coords.merge(feat_df, on=cell_id_col)
     if merged.empty:
@@ -684,30 +714,39 @@ def plot_global_dots(
 
     if background_img is not None:
         h, w = background_img.shape[:2]
-        ax.imshow(cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB), origin='upper')
+        ax.imshow(cv2.cvtColor(background_img, cv2.COLOR_BGR2RGB), origin="upper")
         ax.set_xlim(0, w)
         ax.set_ylim(h, 0)
 
     scatter = _render_dots_on_ax(
-        ax, merged, 'x_plot', 'y_plot', feat_col,
-        kind, color_lookup, norm, cmap,
-        dot_size, edge_color, edge_width, alpha,
+        ax,
+        merged,
+        "x_plot",
+        "y_plot",
+        feat_col,
+        kind,
+        color_lookup,
+        norm,
+        cmap,
+        dot_size,
+        edge_color,
+        edge_width,
+        alpha,
     )
     if background_img is not None:
         ax.invert_yaxis()
     ax.set_title(feat_name, fontsize=14)
 
     # ── Legend / colorbar ─────────────────────────────────────────────────────
-    if kind == 'categorical':
-        ax.legend(handles=legend_handles, loc=legend_loc,
-                  bbox_to_anchor=legend_bbox, title=feat_name)
+    if kind == "categorical":
+        ax.legend(handles=legend_handles, loc=legend_loc, bbox_to_anchor=legend_bbox, title=feat_name)
     else:
         fig.colorbar(scatter, ax=ax, shrink=0.8, label=feat_name)
 
     # ── Save / show ───────────────────────────────────────────────────────────
     if filename is None:
-        safe = feat_col.replace(' ', '_').lower()
-        bg = '_with_bg' if background_img is not None else ''
+        safe = feat_col.replace(" ", "_").lower()
+        bg = "_with_bg" if background_img is not None else ""
         filename = f"dots_{safe}_global_{kind}{bg}.png"
 
     return _finalize(fig, save_dir, filename, dpi, show_plot)
@@ -724,12 +763,12 @@ def plot_local_dots(
     colormap: str = "viridis",
     vmin: float | None = None,
     vmax: float | None = None,
-    colorbar_position: str = 'right',
+    colorbar_position: str = "right",
     # categorical params
     color_map: dict | None = None,
     # shared style
     dot_size: float = 20,
-    edge_color: str = 'none',
+    edge_color: str = "none",
     edge_width: float = 0.0,
     alpha: float = 0.8,
     figure_width: int = 7,
@@ -754,11 +793,11 @@ def plot_local_dots(
     sj.plotting.plot_local_dots(sp, feature='cell_type', fov_ids=['1','2'])
     """
     cell_id_col = sj_obj.config.cell_id_col
-    fov_id_col  = sj_obj.config.fov_id_col
+    fov_id_col = sj_obj.config.fov_id_col
     meta = sj_obj.cell_meta.reset_index()
 
     # ── Check required coordinate columns ─────────────────────────────────────
-    for col in ('CenterX_local_px', 'CenterY_local_px'):
+    for col in ("CenterX_local_px", "CenterY_local_px"):
         if col not in meta.columns:
             raise ValueError(f"Missing required column in cell_meta: '{col}'")
 
@@ -768,19 +807,21 @@ def plot_local_dots(
     fov_ids = [str(f) for f in fov_ids]
 
     # ── Feature data ──────────────────────────────────────────────────────────
-    feat_df  = _get_feature_data(sj_obj, feature, feature_df, feature_column)
+    feat_df = _get_feature_data(sj_obj, feature, feature_df, feature_column)
     feat_col = feature_column if (feature == "metadata" and feature_column) else feature
 
     # ── Auto-detect kind & build color mapping ────────────────────────────────
-    kind = 'categorical' if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else 'continuous'
+    kind = "categorical" if not pd.api.types.is_numeric_dtype(feat_df[feat_col]) else "continuous"
     color_lookup, legend_handles, norm, cmap = _build_color_mapping(
-        feat_df[feat_col], kind=kind,
-        colormap=colormap, color_map=color_map,
-        vmin=vmin, vmax=vmax,
+        feat_df[feat_col],
+        kind=kind,
+        colormap=colormap,
+        color_map=color_map,
+        vmin=vmin,
+        vmax=vmax,
     )
 
-    coords = meta[[cell_id_col, fov_id_col,
-                   'CenterX_local_px', 'CenterY_local_px']].copy()
+    coords = meta[[cell_id_col, fov_id_col, "CenterX_local_px", "CenterY_local_px"]].copy()
     merged = coords.merge(feat_df, on=cell_id_col)
     if merged.empty:
         raise ValueError("No overlapping cells between cell_meta and feature data")
@@ -794,8 +835,8 @@ def plot_local_dots(
         fov_data = merged[merged[fov_id_col] == fov_id]
 
         if fov_data.empty:
-            ax.set_title(f'FOV {fov_id} (no data)', fontsize=title_fontsize)
-            ax.axis('off')
+            ax.set_title(f"FOV {fov_id} (no data)", fontsize=title_fontsize)
+            ax.axis("off")
             continue
         # ── Shared axis limits from image size ───────
         sample_img = sj_obj.get_image(fov_id)
@@ -811,37 +852,45 @@ def plot_local_dots(
             img = sj_obj.get_image(fov_id)
             if img is not None:
                 h, w = img.shape[:2]
-                ax.imshow(np.flipud(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)), origin='lower')
+                ax.imshow(np.flipud(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)), origin="lower")
 
         _render_dots_on_ax(
-            ax, fov_data, 'CenterX_local_px', 'CenterY_local_px', feat_col,
-            kind, color_lookup, norm, cmap,
-            dot_size, edge_color, edge_width, alpha,
+            ax,
+            fov_data,
+            "CenterX_local_px",
+            "CenterY_local_px",
+            feat_col,
+            kind,
+            color_lookup,
+            norm,
+            cmap,
+            dot_size,
+            edge_color,
+            edge_width,
+            alpha,
         )
 
-
-        ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
+        ax.set_title(f"FOV {fov_id}", fontsize=title_fontsize)
 
     # Hide unused axes
     for j in range(len(fov_ids), len(axs)):
-        axs[j].axis('off')
+        axs[j].axis("off")
 
     # ── Shared legend / colorbar ──────────────────────────────────────────────
     feat_name = feat_col
-    if kind == 'categorical':
-        fig.legend(handles=legend_handles, loc='center right',
-                   bbox_to_anchor=(1.02, 0.5), title=feat_name, fontsize=14)
+    if kind == "categorical":
+        fig.legend(handles=legend_handles, loc="center right", bbox_to_anchor=(1.02, 0.5), title=feat_name, fontsize=14)
         plt.tight_layout(rect=[0, 0, 0.95, 0.98])
     else:
         sm = cm.ScalarMappable(norm=norm, cmap=cmap)
         sm.set_array([])
-        if colorbar_position == 'right':
+        if colorbar_position == "right":
             cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
             fig.colorbar(sm, cax=cbar_ax, label=feat_name)
             plt.tight_layout(rect=[0, 0, 0.9, 0.95])
         else:
             cbar_ax = fig.add_axes([0.15, 0.08, 0.7, 0.02])
-            fig.colorbar(sm, cax=cbar_ax, orientation='horizontal', label=feat_name)
+            fig.colorbar(sm, cax=cbar_ax, orientation="horizontal", label=feat_name)
             plt.tight_layout(rect=[0, 0.1, 1, 0.95])
 
     plt.suptitle(feat_name, fontsize=suptitle_fontsize)
@@ -849,18 +898,19 @@ def plot_local_dots(
 
     # ── Save / show ───────────────────────────────────────────────────────────
     if filename is None:
-        safe = feat_col.replace(' ', '_').lower()
-        bg = '_with_bg' if background_img else ''
+        safe = feat_col.replace(" ", "_").lower()
+        bg = "_with_bg" if background_img else ""
         filename = f"dots_{safe}_local_{kind}{bg}.png"
 
     return _finalize(fig, save_dir, filename, dpi, show_plot)
+
 
 # =============================================================================
 # SECTION A — GENE EXPRESSION HELPER
 # =============================================================================
 
-def _get_gene_expression(sj_obj, gene: str,
-                         layer: str | None = 'log_normalized') -> pd.DataFrame:
+
+def _get_gene_expression(sj_obj, gene: str, layer: str | None = "log_normalized") -> pd.DataFrame:
     """
     Return a two-column DataFrame: [cell_id_col, gene].
     Same shape as _get_feature_data output — plugs into existing rendering pipeline.
@@ -877,43 +927,42 @@ def _get_gene_expression(sj_obj, gene: str,
 
     # Validate gene exists
     if gene not in sj_obj.gene_index:
-        raise ValueError(
-            f"Gene '{gene}' not found. "
-            f"Check sj_obj.gene_index for available genes."
-        )
+        raise ValueError(f"Gene '{gene}' not found. " f"Check sj_obj.gene_index for available genes.")
 
     # Extract expression vector (n_cells,)
     if layer is None:
         expr = sj_obj.get_expression(gene_names=gene).flatten()
     else:
         if layer not in sj_obj.layers:
-            raise ValueError(
-                f"Layer '{layer}' not found. "
-                f"Available layers: {list(sj_obj.layers.keys())}"
-            )
+            raise ValueError(f"Layer '{layer}' not found. " f"Available layers: {list(sj_obj.layers.keys())}")
         layer_data = sj_obj.get_layer(layer)
-        gene_idx   = sj_obj._get_gene_indices([gene])[0]
+        gene_idx = sj_obj._get_gene_indices([gene])[0]
 
         from scipy import sparse
+
         if sparse.issparse(layer_data):
             expr = layer_data[:, gene_idx].toarray().flatten()
         else:
             expr = layer_data[:, gene_idx].flatten()
 
     # Build DataFrame aligned to master cell index
-    return pd.DataFrame({
-        cell_id: sj_obj.cell_index.astype(str),
-        gene:    expr,
-    })
+    return pd.DataFrame(
+        {
+            cell_id: sj_obj.cell_index.astype(str),
+            gene: expr,
+        }
+    )
+
 
 # =============================================================================
 # SECTION B — GENE POLYGON FUNCTIONS
 # =============================================================================
 
+
 def plot_global_polygon_gene(
     sj_obj,
     gene: str,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     background_img: np.ndarray | None = None,
     min_x: float | None = None,
     min_y: float | None = None,
@@ -939,7 +988,7 @@ def plot_global_polygon_gene(
     sj.visualization.plot_global_polygon_gene(sp, gene='EPCAM', layer=None)  # raw
     """
     feat_df = _get_gene_expression(sj_obj, gene, layer)
-    layer_label = layer or 'raw'
+    layer_label = layer or "raw"
     fig_title = f"{gene} ({layer_label})"
 
     return plot_global_polygon(
@@ -947,9 +996,11 @@ def plot_global_polygon_gene(
         feature=gene,
         feature_df=feat_df,
         background_img=background_img,
-        min_x=min_x, min_y=min_y,
+        min_x=min_x,
+        min_y=min_y,
         colormap=colormap,
-        vmin=vmin, vmax=vmax,
+        vmin=vmin,
+        vmax=vmax,
         edge_color=edge_color,
         edge_width=edge_width,
         alpha=alpha,
@@ -965,14 +1016,14 @@ def plot_global_polygon_gene(
 def plot_local_polygon_gene(
     sj_obj,
     gene: str,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     fov_ids: list[str | int] | None = None,
     background_img: bool = True,
     colormap: str = "magma",
     vmin: float | None = None,
     vmax: float | None = None,
-    colorbar_position: str = 'right',
-    edge_color: str = 'none',
+    colorbar_position: str = "right",
+    edge_color: str = "none",
     edge_width: float = 0.01,
     alpha: float = 1.0,
     figure_width: int = 7,
@@ -994,7 +1045,7 @@ def plot_local_polygon_gene(
     sj.visualization.plot_local_polygon_gene(sp, gene='CD3D', layer='normalized')
     """
     feat_df = _get_gene_expression(sj_obj, gene, layer)
-    layer_label = layer or 'raw'
+    layer_label = layer or "raw"
 
     return plot_local_polygon(
         sj_obj,
@@ -1003,7 +1054,8 @@ def plot_local_polygon_gene(
         fov_ids=fov_ids,
         background_img=background_img,
         colormap=colormap,
-        vmin=vmin, vmax=vmax,
+        vmin=vmin,
+        vmax=vmax,
         colorbar_position=colorbar_position,
         edge_color=edge_color,
         edge_width=edge_width,
@@ -1019,14 +1071,16 @@ def plot_local_polygon_gene(
         show_plot=show_plot,
     )
 
+
 # =============================================================================
 # SECTION C — GENE DOT FUNCTIONS
 # =============================================================================
 
+
 def plot_global_dots_gene(
     sj_obj,
     gene: str,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     background_img: np.ndarray | None = None,
     min_x: float | None = None,
     min_y: float | None = None,
@@ -1053,7 +1107,7 @@ def plot_global_dots_gene(
     sj.visualization.plot_global_dots_gene(sp, gene='EPCAM', layer=None)  # raw
     """
     feat_df = _get_gene_expression(sj_obj, gene, layer)
-    layer_label = layer or 'raw'
+    layer_label = layer or "raw"
     fig_title = f"{gene} ({layer_label})"
 
     return plot_global_dots(
@@ -1061,9 +1115,11 @@ def plot_global_dots_gene(
         feature=gene,
         feature_df=feat_df,
         background_img=background_img,
-        min_x=min_x, min_y=min_y,
+        min_x=min_x,
+        min_y=min_y,
         colormap=colormap,
-        vmin=vmin, vmax=vmax,
+        vmin=vmin,
+        vmax=vmax,
         dot_size=dot_size,
         edge_color=edge_color,
         edge_width=edge_width,
@@ -1080,15 +1136,15 @@ def plot_global_dots_gene(
 def plot_local_dots_gene(
     sj_obj,
     gene: str,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
     fov_ids: list[str | int] | None = None,
     background_img: bool = True,
     colormap: str = "magma",
     vmin: float | None = None,
     vmax: float | None = None,
-    colorbar_position: str = 'right',
+    colorbar_position: str = "right",
     dot_size: float = 20,
-    edge_color: str = 'none',
+    edge_color: str = "none",
     edge_width: float = 0.0,
     alpha: float = 0.8,
     figure_width: int = 7,
@@ -1110,7 +1166,7 @@ def plot_local_dots_gene(
     sj.visualization.plot_local_dots_gene(sp, gene='CD3D', layer='normalized')
     """
     feat_df = _get_gene_expression(sj_obj, gene, layer)
-    layer_label = layer or 'raw'
+    layer_label = layer or "raw"
 
     return plot_local_dots(
         sj_obj,
@@ -1119,7 +1175,8 @@ def plot_local_dots_gene(
         fov_ids=fov_ids,
         background_img=background_img,
         colormap=colormap,
-        vmin=vmin, vmax=vmax,
+        vmin=vmin,
+        vmax=vmax,
         colorbar_position=colorbar_position,
         dot_size=dot_size,
         edge_color=edge_color,

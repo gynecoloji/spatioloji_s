@@ -4,6 +4,7 @@ core.py - Main spatioloji class for spatial transcriptomics data
 The spatioloji class is the core data structure for managing spatial
 transcriptomics data with guaranteed consistency across all components.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -62,22 +63,24 @@ class spatioloji:
         Low-dimensional embeddings
     """
 
-    def __init__(self,
-                 expression: np.ndarray | sparse.spmatrix | ExpressionMatrix,
-                 cell_ids: list[str] | pd.Index,
-                 gene_names: list[str] | pd.Index,
-                 cell_metadata: pd.DataFrame | None = None,
-                 gene_metadata: pd.DataFrame | None = None,
-                 spatial_coords: dict | SpatialData | pd.DataFrame | None = None,
-                 polygons: pd.DataFrame | None = None,
-                 fov_positions: pd.DataFrame | None = None,
-                 images: dict[str, np.ndarray] | ImageHandler | None = None,
-                 images_folder: str | None = None,
-                 image_pattern: str = "CellComposite_F{fov_id}.{ext}",
-                 image_extensions: list[str] | None = None,
-                 lazy_load_images: bool = True,
-                 image_cache_size: int | None = 10,
-                 config: SpatiolojiConfig | None = None):
+    def __init__(
+        self,
+        expression: np.ndarray | sparse.spmatrix | ExpressionMatrix,
+        cell_ids: list[str] | pd.Index,
+        gene_names: list[str] | pd.Index,
+        cell_metadata: pd.DataFrame | None = None,
+        gene_metadata: pd.DataFrame | None = None,
+        spatial_coords: dict | SpatialData | pd.DataFrame | None = None,
+        polygons: pd.DataFrame | None = None,
+        fov_positions: pd.DataFrame | None = None,
+        images: dict[str, np.ndarray] | ImageHandler | None = None,
+        images_folder: str | None = None,
+        image_pattern: str = "CellComposite_F{fov_id}.{ext}",
+        image_extensions: list[str] | None = None,
+        lazy_load_images: bool = True,
+        image_cache_size: int | None = 10,
+        config: SpatiolojiConfig | None = None,
+    ):
         """
         Initialize spatioloji object.
 
@@ -118,17 +121,17 @@ class spatioloji:
             Configuration object
         """
         if image_extensions is None:
-          image_extensions = ['jpg', 'png', 'tif', 'tiff']
+            image_extensions = ["jpg", "png", "tif", "tiff"]
 
         self.config = config or SpatiolojiConfig()
 
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("Initializing spatioloji")
-        print("="*70)
+        print("=" * 70)
 
         # STEP 1: Establish master indices
         self._cell_index = pd.Index(cell_ids, name=self.config.cell_id_col)
-        self._gene_index = pd.Index(gene_names, name='gene')
+        self._gene_index = pd.Index(gene_names, name="gene")
         self._n_cells = len(self._cell_index)
         self._n_genes = len(self._gene_index)
 
@@ -143,10 +146,12 @@ class spatioloji:
                 cell_ids=self._cell_index,
                 gene_names=self._gene_index,
                 auto_sparse=True,
-                sparse_threshold=self.config.auto_sparse_threshold
+                sparse_threshold=self.config.auto_sparse_threshold,
             )
-        print(f"[2/11] Expression matrix: {'sparse' if self._expression.is_sparse else 'dense'} "
-              f"({self._expression.memory_usage_mb():.1f} MB)")
+        print(
+            f"[2/11] Expression matrix: {'sparse' if self._expression.is_sparse else 'dense'} "
+            f"({self._expression.memory_usage_mb():.1f} MB)"
+        )
 
         # STEP 3: Store and align cell metadata
         self._cell_meta = self._prepare_cell_metadata(cell_metadata)
@@ -175,10 +180,9 @@ class spatioloji:
             pattern=image_pattern,
             extensions=image_extensions,
             lazy_load=lazy_load_images,
-            cache_size=image_cache_size
+            cache_size=image_cache_size,
         )
-        print(f"[7/11] Images: {self._image_handler.n_total} total, "
-              f"{self._image_handler.n_loaded} loaded")
+        print(f"[7/11] Images: {self._image_handler.n_total} total, " f"{self._image_handler.n_loaded} loaded")
 
         # STEP 8: Prepare FOV system
         self._fov_positions, self._fov_index = self._prepare_fov_system(fov_positions)
@@ -193,10 +197,10 @@ class spatioloji:
         self._gdf_global = None
 
         status = self.validate_consistency(raise_error=False)
-        if status['overall']:
+        if status["overall"]:
             print("[10/11] Validation: ✓ All consistent")
         else:
-            failed = [k for k, v in status.items() if not v and k != 'overall']
+            failed = [k for k, v in status.items() if not v and k != "overall"]
             print(f"[10/11] Validation: ⚠ Issues with: {', '.join(failed)}")
 
         # STEP 11: Initialize layers and embeddings dictionary for additional expression matrices
@@ -204,7 +208,7 @@ class spatioloji:
         self._embeddings = {}
         print("[11/11] Layers and Embeddings initialized (empty)")
 
-        print("="*70)
+        print("=" * 70)
         self._print_summary()
 
     # ========== Data Preparation Methods ==========
@@ -240,8 +244,8 @@ class spatioloji:
         if gene_metadata is None:
             return pd.DataFrame(index=self._gene_index)
 
-        if 'gene' in gene_metadata.columns:
-            gene_metadata = gene_metadata.set_index('gene')
+        if "gene" in gene_metadata.columns:
+            gene_metadata = gene_metadata.set_index("gene")
 
         aligned = gene_metadata.reindex(self._gene_index)
 
@@ -253,8 +257,7 @@ class spatioloji:
 
         return aligned
 
-    def _prepare_spatial_coords(self,
-                                spatial_coords: dict | SpatialData | pd.DataFrame | None) -> SpatialData:
+    def _prepare_spatial_coords(self, spatial_coords: dict | SpatialData | pd.DataFrame | None) -> SpatialData:
         """Prepare spatial coordinates aligned to master index."""
 
         # Case 1: None provided
@@ -263,15 +266,13 @@ class spatioloji:
                 x_local=np.full(self._n_cells, np.nan),
                 y_local=np.full(self._n_cells, np.nan),
                 x_global=np.full(self._n_cells, np.nan),
-                y_global=np.full(self._n_cells, np.nan)
+                y_global=np.full(self._n_cells, np.nan),
             )
 
         # Case 2: Already SpatialData
         if isinstance(spatial_coords, SpatialData):
             if len(spatial_coords) != self._n_cells:
-                raise ValueError(
-                    f"SpatialData length ({len(spatial_coords)}) != n_cells ({self._n_cells})"
-                )
+                raise ValueError(f"SpatialData length ({len(spatial_coords)}) != n_cells ({self._n_cells})")
             return spatial_coords
 
         # Case 3: DataFrame
@@ -285,7 +286,7 @@ class spatioloji:
 
         # Case 4: Dictionary
         if isinstance(spatial_coords, dict):
-            required_keys = ['x_local', 'y_local', 'x_global', 'y_global']
+            required_keys = ["x_local", "y_local", "x_global", "y_global"]
             missing = [k for k in required_keys if k not in spatial_coords]
             if missing:
                 raise ValueError(f"Missing spatial keys: {missing}")
@@ -294,15 +295,13 @@ class spatioloji:
             for key in required_keys:
                 arr = np.array(spatial_coords[key])
                 if len(arr) != self._n_cells:
-                    raise ValueError(
-                        f"Coordinate '{key}' length ({len(arr)}) != n_cells ({self._n_cells})"
-                    )
+                    raise ValueError(f"Coordinate '{key}' length ({len(arr)}) != n_cells ({self._n_cells})")
 
             return SpatialData(
-                x_local=np.array(spatial_coords['x_local']),
-                y_local=np.array(spatial_coords['y_local']),
-                x_global=np.array(spatial_coords['x_global']),
-                y_global=np.array(spatial_coords['y_global'])
+                x_local=np.array(spatial_coords["x_local"]),
+                y_local=np.array(spatial_coords["y_local"]),
+                x_global=np.array(spatial_coords["x_global"]),
+                y_global=np.array(spatial_coords["y_global"]),
             )
 
         raise TypeError(f"Unsupported spatial_coords type: {type(spatial_coords)}")
@@ -332,13 +331,15 @@ class spatioloji:
 
         return aligned
 
-    def _prepare_image_handler(self,
-                               images: dict | ImageHandler | None,
-                               images_folder: str | None,
-                               pattern: str,
-                               extensions: list[str],
-                               lazy_load: bool,
-                               cache_size: int | None) -> ImageHandler:
+    def _prepare_image_handler(
+        self,
+        images: dict | ImageHandler | None,
+        images_folder: str | None,
+        pattern: str,
+        extensions: list[str],
+        lazy_load: bool,
+        cache_size: int | None,
+    ) -> ImageHandler:
         """Initialize ImageHandler from various sources."""
 
         # Case 1: ImageHandler provided
@@ -352,13 +353,10 @@ class spatioloji:
         if isinstance(images, dict):
             for fov_id, img in images.items():
                 from .config import ImageMetadata
+
                 handler._images[str(fov_id)] = img
                 handler._metadata[str(fov_id)] = ImageMetadata(
-                    fov_id=str(fov_id),
-                    shape=img.shape,
-                    dtype=img.dtype,
-                    path=None,
-                    is_loaded=True
+                    fov_id=str(fov_id), shape=img.shape, dtype=img.dtype, path=None, is_loaded=True
                 )
             return handler
 
@@ -369,24 +367,17 @@ class spatioloji:
             if fov_id_col in self._cell_meta.columns:
                 cell_fovs = self._cell_meta[fov_id_col].dropna().astype(str).unique().tolist()
                 handler.load_from_folder(
-                    folder_path=images_folder,
-                    fov_ids=cell_fovs,
-                    pattern=pattern,
-                    extensions=extensions
+                    folder_path=images_folder, fov_ids=cell_fovs, pattern=pattern, extensions=extensions
                 )
             else:
                 # Auto-detect
                 handler.load_from_folder(
-                    folder_path=images_folder,
-                    fov_ids=None,
-                    pattern=pattern,
-                    extensions=extensions
+                    folder_path=images_folder, fov_ids=None, pattern=pattern, extensions=extensions
                 )
 
         return handler
 
-    def _prepare_fov_system(self,
-                           fov_positions: pd.DataFrame | None) -> tuple[pd.DataFrame, pd.Index]:
+    def _prepare_fov_system(self, fov_positions: pd.DataFrame | None) -> tuple[pd.DataFrame, pd.Index]:
         """Prepare FOV system ensuring consistency."""
         fov_id_col = self.config.fov_id_col
 
@@ -418,9 +409,9 @@ class spatioloji:
                 self._cell_meta[fov_id_col] = sorted(all_fovs)[0]
         else:
             # No FOVs - create default
-            all_fovs = {'0'}
+            all_fovs = {"0"}
             if not self._cell_meta.empty:
-                self._cell_meta[fov_id_col] = '0'
+                self._cell_meta[fov_id_col] = "0"
 
         # Create master FOV index
         fov_master_index = pd.Index(sorted(all_fovs), name=fov_id_col)
@@ -485,27 +476,27 @@ class spatioloji:
         issues = []
 
         # Expression matrix
-        status['expression_cells'] = self._expression.shape[0] == self._n_cells
-        status['expression_genes'] = self._expression.shape[1] == self._n_genes
+        status["expression_cells"] = self._expression.shape[0] == self._n_cells
+        status["expression_genes"] = self._expression.shape[1] == self._n_genes
 
-        if not status['expression_cells']:
+        if not status["expression_cells"]:
             issues.append(f"Expression has {self._expression.shape[0]} cells, expected {self._n_cells}")
-        if not status['expression_genes']:
+        if not status["expression_genes"]:
             issues.append(f"Expression has {self._expression.shape[1]} genes, expected {self._n_genes}")
 
         # Cell metadata
-        status['cell_metadata'] = len(self._cell_meta) == self._n_cells
-        if not status['cell_metadata']:
+        status["cell_metadata"] = len(self._cell_meta) == self._n_cells
+        if not status["cell_metadata"]:
             issues.append(f"Cell metadata has {len(self._cell_meta)} rows, expected {self._n_cells}")
 
         # Gene metadata
-        status['gene_metadata'] = len(self._gene_meta) == self._n_genes
-        if not status['gene_metadata']:
+        status["gene_metadata"] = len(self._gene_meta) == self._n_genes
+        if not status["gene_metadata"]:
             issues.append(f"Gene metadata has {len(self._gene_meta)} rows, expected {self._n_genes}")
 
         # Spatial coordinates
-        status['spatial'] = len(self._spatial) == self._n_cells
-        if not status['spatial']:
+        status["spatial"] = len(self._spatial) == self._n_cells
+        if not status["spatial"]:
             issues.append(f"Spatial coords have {len(self._spatial)} cells, expected {self._n_cells}")
 
         # Polygons
@@ -513,11 +504,11 @@ class spatioloji:
             cell_id_col = self.config.cell_id_col
             poly_cells = set(self._polygons[cell_id_col].astype(str))
             extra = poly_cells - set(self._cell_index)
-            status['polygons'] = len(extra) == 0
-            if not status['polygons']:
+            status["polygons"] = len(extra) == 0
+            if not status["polygons"]:
                 issues.append(f"Polygons have {len(extra)} cells not in master index")
         else:
-            status['polygons'] = True
+            status["polygons"] = True
 
         # FOV system
         fov_id_col = self.config.fov_id_col
@@ -526,30 +517,30 @@ class spatioloji:
             master_fovs = set(str(f) for f in self._fov_index)
 
             # Cell FOVs should be subset of master
-            status['cell_fovs'] = cell_fovs.issubset(master_fovs)
-            if not status['cell_fovs']:
+            status["cell_fovs"] = cell_fovs.issubset(master_fovs)
+            if not status["cell_fovs"]:
                 extra = cell_fovs - master_fovs
                 issues.append(f"Cells reference {len(extra)} FOVs not in master index")
         else:
-            status['cell_fovs'] = False
+            status["cell_fovs"] = False
             issues.append(f"Cell metadata missing '{fov_id_col}' column")
 
         # FOV positions
         fov_pos_ids = set(self._fov_positions.index.astype(str))
         master_fovs = set(str(f) for f in self._fov_index)
-        status['fov_positions'] = fov_pos_ids == master_fovs
-        if not status['fov_positions']:
+        status["fov_positions"] = fov_pos_ids == master_fovs
+        if not status["fov_positions"]:
             issues.append("FOV positions index doesn't match master FOV index")
 
         # Images
         image_fovs = set(self._image_handler.fov_ids)
         extra_images = image_fovs - master_fovs
-        status['images'] = len(extra_images) == 0
-        if not status['images']:
+        status["images"] = len(extra_images) == 0
+        if not status["images"]:
             issues.append(f"Images have {len(extra_images)} FOVs not in master index")
 
         # Overall
-        status['overall'] = all(status.values())
+        status["overall"] = all(status.values())
 
         if issues and raise_error:
             raise ConsistencyError("\n".join(issues))
@@ -645,7 +636,7 @@ class spatioloji:
         dict
             Dictionary with embedding names as keys and coordinate arrays as values
         """
-        if not hasattr(self, '_embeddings'):
+        if not hasattr(self, "_embeddings"):
             self._embeddings = {}
         return self._embeddings
 
@@ -655,8 +646,7 @@ class spatioloji:
         print(f"  Cells:              {self._n_cells:,}")
         print(f"  Genes:              {self._n_genes:,}")
         print(f"  FOVs:               {len(self._fov_index)}")
-        print(f"  Images:             {self._image_handler.n_total} "
-              f"({self._image_handler.n_loaded} loaded)")
+        print(f"  Images:             {self._image_handler.n_total} " f"({self._image_handler.n_loaded} loaded)")
         print(f"  Original Expression:         {'sparse' if self._expression.is_sparse else 'dense'}")
         print(f"  Has polygons:       {self._polygons is not None}")
         print(f"  Memory (approx):    {self._estimate_memory_usage():.1f} MB")
@@ -708,8 +698,7 @@ class spatioloji:
         cell_ids = pd.Index(cell_ids).astype(str)
 
         # Fast lookup using map
-        indices = [self._cell_id_to_idx[cid] for cid in cell_ids
-                  if cid in self._cell_id_to_idx]
+        indices = [self._cell_id_to_idx[cid] for cid in cell_ids if cid in self._cell_id_to_idx]
 
         if len(indices) != len(cell_ids):
             n_missing = len(cell_ids) - len(indices)
@@ -733,8 +722,7 @@ class spatioloji:
         """
         gene_names = pd.Index(gene_names).astype(str)
 
-        indices = [self._gene_name_to_idx[gene] for gene in gene_names
-                  if gene in self._gene_name_to_idx]
+        indices = [self._gene_name_to_idx[gene] for gene in gene_names if gene in self._gene_name_to_idx]
 
         if len(indices) != len(gene_names):
             n_missing = len(gene_names) - len(indices)
@@ -758,8 +746,7 @@ class spatioloji:
         """
         fov_ids = pd.Index(fov_ids).astype(str)
 
-        indices = [self._fov_id_to_idx[fid] for fid in fov_ids
-                  if fid in self._fov_id_to_idx]
+        indices = [self._fov_id_to_idx[fid] for fid in fov_ids if fid in self._fov_id_to_idx]
 
         if len(indices) != len(fov_ids):
             n_missing = len(fov_ids) - len(indices)
@@ -769,9 +756,7 @@ class spatioloji:
 
     # ========== Subsetting Methods ==========
 
-    def subset_by_cells(self,
-                       cell_ids: list[str] | np.ndarray | pd.Index,
-                       copy: bool = True) -> spatioloji:
+    def subset_by_cells(self, cell_ids: list[str] | np.ndarray | pd.Index, copy: bool = True) -> spatioloji:
         """
         Create new spatioloji with subset of cells.
 
@@ -827,8 +812,9 @@ class spatioloji:
         fov_id_col = self.config.fov_id_col
         if fov_id_col in subset_cell_meta.columns:
             kept_fovs = subset_cell_meta[fov_id_col].dropna().unique()
-            subset_fov_positions = (self._fov_positions.loc[kept_fovs].copy()
-                                    if copy else self._fov_positions.loc[kept_fovs])
+            subset_fov_positions = (
+                self._fov_positions.loc[kept_fovs].copy() if copy else self._fov_positions.loc[kept_fovs]
+            )
             subset_image_handler = self._image_handler.subset(kept_fovs.tolist())
         else:
             subset_fov_positions = self._fov_positions.copy() if copy else self._fov_positions
@@ -847,7 +833,7 @@ class spatioloji:
             images=subset_image_handler,
             lazy_load_images=self._image_handler.lazy_load,
             image_cache_size=self._image_handler.cache_size,
-            config=self.config
+            config=self.config,
         )
 
         # ── Subset layers (rows = cells) ──────────────────────────────────────
@@ -875,9 +861,7 @@ class spatioloji:
 
         return new_obj
 
-    def subset_by_genes(self,
-                       gene_names: list[str] | np.ndarray | pd.Index,
-                       copy: bool = True) -> spatioloji:
+    def subset_by_genes(self, gene_names: list[str] | np.ndarray | pd.Index, copy: bool = True) -> spatioloji:
         """
         Create new spatioloji with subset of genes.
 
@@ -928,7 +912,7 @@ class spatioloji:
             images=self._image_handler,
             lazy_load_images=self._image_handler.lazy_load,
             image_cache_size=self._image_handler.cache_size,
-            config=self.config
+            config=self.config,
         )
 
         # ── Subset layers (columns = genes) ───────────────────────────────────
@@ -947,9 +931,7 @@ class spatioloji:
 
         return new_obj
 
-    def subset_by_fovs(self,
-                      fov_ids: list[str] | np.ndarray | pd.Index,
-                      copy: bool = True) -> spatioloji:
+    def subset_by_fovs(self, fov_ids: list[str] | np.ndarray | pd.Index, copy: bool = True) -> spatioloji:
         """
         Create new spatioloji with subset of FOVs.
 
@@ -1038,10 +1020,12 @@ class spatioloji:
 
         return None
 
-    def get_expression(self,
-                      cell_ids: list[str] | str | None = None,
-                      gene_names: list[str] | str | None = None,
-                      as_dataframe: bool = False) -> np.ndarray | pd.DataFrame:
+    def get_expression(
+        self,
+        cell_ids: list[str] | str | None = None,
+        gene_names: list[str] | str | None = None,
+        as_dataframe: bool = False,
+    ) -> np.ndarray | pd.DataFrame:
         """
         Get expression data for specific cells and/or genes.
 
@@ -1087,18 +1071,13 @@ class spatioloji:
             data = self._expression._data[np.ix_(cell_indices, gene_indices)]
 
         if as_dataframe:
-            return pd.DataFrame(
-                data,
-                index=self._cell_index[cell_indices],
-                columns=self._gene_index[gene_indices]
-            )
+            return pd.DataFrame(data, index=self._cell_index[cell_indices], columns=self._gene_index[gene_indices])
 
         return data
 
-    def get_spatial_coords(self,
-                          cell_ids: list[str] | str | None = None,
-                          coord_type: str = 'local',
-                          as_dataframe: bool = False) -> np.ndarray | pd.DataFrame:
+    def get_spatial_coords(
+        self, cell_ids: list[str] | str | None = None, coord_type: str = "local", as_dataframe: bool = False
+    ) -> np.ndarray | pd.DataFrame:
         """
         Get spatial coordinates for cells.
 
@@ -1124,10 +1103,10 @@ class spatioloji:
         else:
             indices = np.arange(self._n_cells)
 
-        if coord_type == 'local':
+        if coord_type == "local":
             x = self._spatial.x_local[indices]
             y = self._spatial.y_local[indices]
-        elif coord_type == 'global':
+        elif coord_type == "global":
             x = self._spatial.x_global[indices]
             y = self._spatial.y_global[indices]
         else:
@@ -1137,11 +1116,7 @@ class spatioloji:
 
         if as_dataframe:
             x_col, y_col = self.config.get_coordinate_columns(coord_type)
-            return pd.DataFrame(
-                coords,
-                index=self._cell_index[indices],
-                columns=[x_col, y_col]
-            )
+            return pd.DataFrame(coords, index=self._cell_index[indices], columns=[x_col, y_col])
 
         return coords
 
@@ -1167,9 +1142,7 @@ class spatioloji:
 
         return self._polygons[mask] if mask.any() else None
 
-    def to_geopandas(self,
-                 coord_type: str = 'global',
-                 include_metadata: bool = True) -> gpd.GeoDataFrame:
+    def to_geopandas(self, coord_type: str = "global", include_metadata: bool = True) -> gpd.GeoDataFrame:
         """
         Convert polygon data to GeoPandas GeoDataFrame.
 
@@ -1201,9 +1174,7 @@ class spatioloji:
             import geopandas as gpd
             from shapely.geometry import Polygon
         except ImportError as err:
-            raise ImportError(
-                "GeoPandas required. Install with: pip install geopandas"
-            ) from err
+            raise ImportError("GeoPandas required. Install with: pip install geopandas") from err
 
         if self._polygons is None:
             raise ValueError("No polygon data available")
@@ -1225,11 +1196,7 @@ class spatioloji:
             cell_ids.append(cell_id)
 
         # Create GeoDataFrame
-        gdf = gpd.GeoDataFrame(
-            {cell_id_col: cell_ids},
-            geometry=geometries,
-            crs=None
-        )
+        gdf = gpd.GeoDataFrame({cell_id_col: cell_ids}, geometry=geometries, crs=None)
 
         # Set index
         gdf = gdf.set_index(cell_id_col).reindex(self._cell_index)
@@ -1308,32 +1275,34 @@ class spatioloji:
             sparsity = 1 - np.count_nonzero(self._expression._data) / self._expression._data.size
 
         return {
-            'n_cells': self._n_cells,
-            'n_genes': self._n_genes,
-            'n_fovs': len(self._fov_index),
-            'n_images': self._image_handler.n_total,
-            'n_images_loaded': self._image_handler.n_loaded,
-            'avg_cells_per_fov': avg_cells_per_fov,
-            'min_cells_per_fov': min_cells_per_fov,
-            'max_cells_per_fov': max_cells_per_fov,
-            'has_polygons': self._polygons is not None,
-            'n_polygon_vertices': len(self._polygons) if self._polygons is not None else 0,
-            'is_sparse': self._expression.is_sparse,
-            'sparsity': sparsity,
-            'memory_usage_mb': self._estimate_memory_usage(),
-            'cell_meta_columns': list(self._cell_meta.columns),
-            'gene_meta_columns': list(self._gene_meta.columns),
-            'fov_positions_columns': list(self._fov_positions.columns)
+            "n_cells": self._n_cells,
+            "n_genes": self._n_genes,
+            "n_fovs": len(self._fov_index),
+            "n_images": self._image_handler.n_total,
+            "n_images_loaded": self._image_handler.n_loaded,
+            "avg_cells_per_fov": avg_cells_per_fov,
+            "min_cells_per_fov": min_cells_per_fov,
+            "max_cells_per_fov": max_cells_per_fov,
+            "has_polygons": self._polygons is not None,
+            "n_polygon_vertices": len(self._polygons) if self._polygons is not None else 0,
+            "is_sparse": self._expression.is_sparse,
+            "sparsity": sparsity,
+            "memory_usage_mb": self._estimate_memory_usage(),
+            "cell_meta_columns": list(self._cell_meta.columns),
+            "gene_meta_columns": list(self._gene_meta.columns),
+            "fov_positions_columns": list(self._fov_positions.columns),
         }
 
     def __repr__(self) -> str:
         """String representation."""
-        return (f"spatioloji object\n"
-                f"  Cells: {self._n_cells:,}\n"
-                f"  Genes: {self._n_genes:,}\n"
-                f"  FOVs:  {len(self._fov_index)}\n"
-                f"  Images: {self._image_handler.n_total} "
-                f"({self._image_handler.n_loaded} loaded)")
+        return (
+            f"spatioloji object\n"
+            f"  Cells: {self._n_cells:,}\n"
+            f"  Genes: {self._n_genes:,}\n"
+            f"  FOVs:  {len(self._fov_index)}\n"
+            f"  Images: {self._image_handler.n_total} "
+            f"({self._image_handler.n_loaded} loaded)"
+        )
 
     def __str__(self) -> str:
         """String representation."""
@@ -1355,7 +1324,7 @@ class spatioloji:
 
         print(f"\nSaving spatioloji to: {filepath}")
 
-        with open(filepath, 'wb') as f:
+        with open(filepath, "wb") as f:
             pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         file_size_mb = filepath.stat().st_size / (1024 * 1024)
@@ -1383,7 +1352,7 @@ class spatioloji:
 
         print(f"\nLoading spatioloji from: {filepath}")
 
-        with open(filepath, 'rb') as f:
+        with open(filepath, "rb") as f:
             obj = pickle.load(f)
 
         if not isinstance(obj, spatioloji):
@@ -1419,51 +1388,38 @@ class spatioloji:
 
         # Save expression matrix
         if self._expression.is_sparse:
-            sparse.save_npz(
-                output_path / 'expression.npz',
-                self._expression.get_sparse()
-            )
+            sparse.save_npz(output_path / "expression.npz", self._expression.get_sparse())
             print("  ✓ expression.npz (sparse)")
         else:
-            np.save(
-                output_path / 'expression.npy',
-                self._expression.get_dense()
-            )
+            np.save(output_path / "expression.npy", self._expression.get_dense())
             print("  ✓ expression.npy (dense)")
 
         # Save indices
-        pd.DataFrame({'cell_id': self._cell_index}).to_csv(
-            output_path / 'cell_ids.csv', index=False
-        )
-        pd.DataFrame({'gene': self._gene_index}).to_csv(
-            output_path / 'gene_names.csv', index=False
-        )
+        pd.DataFrame({"cell_id": self._cell_index}).to_csv(output_path / "cell_ids.csv", index=False)
+        pd.DataFrame({"gene": self._gene_index}).to_csv(output_path / "gene_names.csv", index=False)
         print("  ✓ cell_ids.csv, gene_names.csv")
 
         # Save metadata
-        self._cell_meta.to_csv(output_path / 'cell_metadata.csv')
-        self._gene_meta.to_csv(output_path / 'gene_metadata.csv')
+        self._cell_meta.to_csv(output_path / "cell_metadata.csv")
+        self._gene_meta.to_csv(output_path / "gene_metadata.csv")
         print("  ✓ cell_metadata.csv, gene_metadata.csv")
 
         # Save spatial coordinates
-        spatial_df = pd.DataFrame(
-            self._spatial.to_dict(),
-            index=self._cell_index
-        )
-        spatial_df.to_csv(output_path / 'spatial_coords.csv')
+        spatial_df = pd.DataFrame(self._spatial.to_dict(), index=self._cell_index)
+        spatial_df.to_csv(output_path / "spatial_coords.csv")
         print("  ✓ spatial_coords.csv")
 
         # Save polygons
         if self._polygons is not None:
-            self._polygons.to_csv(output_path / 'polygons.csv', index=False)
+            self._polygons.to_csv(output_path / "polygons.csv", index=False)
             print("  ✓ polygons.csv")
 
         # Save FOV positions
-        self._fov_positions.to_csv(output_path / 'fov_positions.csv')
+        self._fov_positions.to_csv(output_path / "fov_positions.csv")
         print("  ✓ fov_positions.csv")
 
         # Save config
-        with open(output_path / 'config.pkl', 'wb') as f:
+        with open(output_path / "config.pkl", "wb") as f:
             pickle.dump(self.config, f)
         print("  ✓ config.pkl")
 
@@ -1472,26 +1428,23 @@ class spatioloji:
         for fov_id in self._image_handler.fov_ids:
             meta = self._image_handler.get_metadata(fov_id)
             if meta:
-                image_meta_list.append({
-                    'fov_id': fov_id,
-                    'path': str(meta.path) if meta.path else None,
-                    'shape': meta.shape,
-                    'dtype': str(meta.dtype)
-                })
+                image_meta_list.append(
+                    {
+                        "fov_id": fov_id,
+                        "path": str(meta.path) if meta.path else None,
+                        "shape": meta.shape,
+                        "dtype": str(meta.dtype),
+                    }
+                )
 
         if image_meta_list:
-            pd.DataFrame(image_meta_list).to_csv(
-                output_path / 'image_metadata.csv', index=False
-            )
+            pd.DataFrame(image_meta_list).to_csv(output_path / "image_metadata.csv", index=False)
             print("  ✓ image_metadata.csv")
 
         print(f"\n✓ All components saved to {output_dir}")
 
     # ========== Layer Methods ==========
-    def add_layer(self,
-                  layer_name: str,
-                  data: np.ndarray | sparse.spmatrix,
-                  overwrite: bool = False) -> None:
+    def add_layer(self, layer_name: str, data: np.ndarray | sparse.spmatrix, overwrite: bool = False) -> None:
         """
         Add a new expression layer (e.g., normalized, scaled data).
 
@@ -1529,29 +1482,26 @@ class spatioloji:
         if isinstance(data, np.ndarray):
             if data.shape != (self._n_cells, self._n_genes):
                 raise ValueError(
-                    f"Layer shape {data.shape} doesn't match "
-                    f"expression shape ({self._n_cells}, {self._n_genes})"
+                    f"Layer shape {data.shape} doesn't match " f"expression shape ({self._n_cells}, {self._n_genes})"
                 )
         elif sparse.issparse(data):
             if data.shape != (self._n_cells, self._n_genes):
                 raise ValueError(
-                    f"Layer shape {data.shape} doesn't match "
-                    f"expression shape ({self._n_cells}, {self._n_genes})"
+                    f"Layer shape {data.shape} doesn't match " f"expression shape ({self._n_cells}, {self._n_genes})"
                 )
         else:
             raise TypeError("Layer data must be numpy array or sparse matrix")
 
         # Check if exists
         if layer_name in self._layers and not overwrite:
-            raise ValueError(
-                f"Layer '{layer_name}' already exists. "
-                "Use overwrite=True to replace it."
-            )
+            raise ValueError(f"Layer '{layer_name}' already exists. " "Use overwrite=True to replace it.")
 
         self._layers[layer_name] = data
-        print(f"✓ Added layer '{layer_name}' "
-              f"({'sparse' if sparse.issparse(data) else 'dense'}, "
-              f"{data.nbytes / (1024**2):.1f} MB)")
+        print(
+            f"✓ Added layer '{layer_name}' "
+            f"({'sparse' if sparse.issparse(data) else 'dense'}, "
+            f"{data.nbytes / (1024**2):.1f} MB)"
+        )
 
     def remove_layer(self, layer_name: str) -> None:
         """
@@ -1583,10 +1533,7 @@ class spatioloji:
             Expression matrix for this layer
         """
         if layer_name not in self._layers:
-            raise ValueError(
-                f"Layer '{layer_name}' not found. "
-                f"Available layers: {list(self._layers.keys())}"
-            )
+            raise ValueError(f"Layer '{layer_name}' not found. " f"Available layers: {list(self._layers.keys())}")
 
         return self._layers[layer_name]
 
@@ -1604,9 +1551,7 @@ class spatioloji:
     # ========== Factory Methods ==========
 
     @staticmethod
-    def from_components(output_dir: str,
-                       images_folder: str | None = None,
-                       lazy_load_images: bool = True) -> spatioloji:
+    def from_components(output_dir: str, images_folder: str | None = None, lazy_load_images: bool = True) -> spatioloji:
         """
         Load spatioloji from component files.
 
@@ -1632,41 +1577,41 @@ class spatioloji:
         print(f"\nLoading spatioloji from components: {output_dir}")
 
         # Load expression
-        if (output_path / 'expression.npz').exists():
-            expression = sparse.load_npz(output_path / 'expression.npz')
+        if (output_path / "expression.npz").exists():
+            expression = sparse.load_npz(output_path / "expression.npz")
             print("  ✓ Loaded expression.npz (sparse)")
-        elif (output_path / 'expression.npy').exists():
-            expression = np.load(output_path / 'expression.npy')
+        elif (output_path / "expression.npy").exists():
+            expression = np.load(output_path / "expression.npy")
             print("  ✓ Loaded expression.npy (dense)")
         else:
             raise FileNotFoundError("Expression file not found")
 
         # Load indices
-        cell_ids = pd.read_csv(output_path / 'cell_ids.csv')['cell_id'].values
-        gene_names = pd.read_csv(output_path / 'gene_names.csv')['gene'].values
+        cell_ids = pd.read_csv(output_path / "cell_ids.csv")["cell_id"].values
+        gene_names = pd.read_csv(output_path / "gene_names.csv")["gene"].values
         print("  ✓ Loaded cell_ids.csv, gene_names.csv")
 
         # Load metadata
-        cell_metadata = pd.read_csv(output_path / 'cell_metadata.csv', index_col=0)
-        gene_metadata = pd.read_csv(output_path / 'gene_metadata.csv', index_col=0)
+        cell_metadata = pd.read_csv(output_path / "cell_metadata.csv", index_col=0)
+        gene_metadata = pd.read_csv(output_path / "gene_metadata.csv", index_col=0)
         print("  ✓ Loaded metadata files")
 
         # Load spatial coords
-        spatial_coords = pd.read_csv(output_path / 'spatial_coords.csv', index_col=0)
+        spatial_coords = pd.read_csv(output_path / "spatial_coords.csv", index_col=0)
         print("  ✓ Loaded spatial_coords.csv")
 
         # Load polygons
-        polygons_path = output_path / 'polygons.csv'
+        polygons_path = output_path / "polygons.csv"
         polygons = pd.read_csv(polygons_path) if polygons_path.exists() else None
 
         # Load FOV positions
-        fov_positions = pd.read_csv(output_path / 'fov_positions.csv', index_col=0)
+        fov_positions = pd.read_csv(output_path / "fov_positions.csv", index_col=0)
         print("  ✓ Loaded fov_positions.csv")
 
         # Load config
-        config_path = output_path / 'config.pkl'
+        config_path = output_path / "config.pkl"
         if config_path.exists():
-            with open(config_path, 'rb') as f:
+            with open(config_path, "rb") as f:
                 config = pickle.load(f)
         else:
             config = None
@@ -1683,20 +1628,22 @@ class spatioloji:
             fov_positions=fov_positions,
             images_folder=images_folder,
             lazy_load_images=lazy_load_images,
-            config=config
+            config=config,
         )
 
     @staticmethod
-    def from_files(polygons_path: str,
-                  cell_meta_path: str,
-                  expression_path: str,
-                  fov_positions_path: str,
-                  gene_names: list[str] | None = None,
-                  images_folder: str | None = None,
-                  image_pattern: str = "CellComposite_F{fov_id}.{ext}",
-                  image_extensions: list[str] | None = None,
-                  lazy_load_images: bool = True,
-                  config: SpatiolojiConfig | None = None) -> spatioloji:
+    def from_files(
+        polygons_path: str,
+        cell_meta_path: str,
+        expression_path: str,
+        fov_positions_path: str,
+        gene_names: list[str] | None = None,
+        images_folder: str | None = None,
+        image_pattern: str = "CellComposite_F{fov_id}.{ext}",
+        image_extensions: list[str] | None = None,
+        lazy_load_images: bool = True,
+        config: SpatiolojiConfig | None = None,
+    ) -> spatioloji:
         """
         Create spatioloji from separate data files.
 
@@ -1729,11 +1676,11 @@ class spatioloji:
             New spatioloji object
         """
         if image_extensions is None:
-          image_extensions = ['jpg', 'png', 'tif', 'tiff']
+            image_extensions = ["jpg", "png", "tif", "tiff"]
 
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("Loading spatioloji from files")
-        print("="*70)
+        print("=" * 70)
 
         config = config or SpatiolojiConfig()
 
@@ -1751,16 +1698,13 @@ class spatioloji:
 
         # Load expression
         print(f"Loading expression: {expression_path}")
-        expression, cell_ids, genes = load_expression_file(
-            expression_path,
-            gene_names=gene_names
-        )
+        expression, cell_ids, genes = load_expression_file(expression_path, gene_names=gene_names)
 
         # Load FOV positions
         print(f"Loading FOV positions: {fov_positions_path}")
         fov_positions = pd.read_csv(fov_positions_path)
 
-        print("="*70)
+        print("=" * 70)
 
         # Create object
         return spatioloji(
@@ -1775,16 +1719,18 @@ class spatioloji:
             image_pattern=image_pattern,
             image_extensions=image_extensions,
             lazy_load_images=lazy_load_images,
-            config=config
+            config=config,
         )
 
     @staticmethod
-    def from_anndata(adata,
-                    polygons: pd.DataFrame | None = None,
-                    fov_positions: pd.DataFrame | None = None,
-                    images_folder: str | None = None,
-                    spatial_key: str = 'spatial',
-                    config: SpatiolojiConfig | None = None) -> spatioloji:
+    def from_anndata(
+        adata,
+        polygons: pd.DataFrame | None = None,
+        fov_positions: pd.DataFrame | None = None,
+        images_folder: str | None = None,
+        spatial_key: str = "spatial",
+        config: SpatiolojiConfig | None = None,
+    ) -> spatioloji:
         """
         Create spatioloji from AnnData object.
 
@@ -1841,18 +1787,18 @@ class spatioloji:
             if spatial_array.shape[1] == 2:
                 # Assume global coordinates
                 spatial_coords = {
-                    'x_local': spatial_array[:, 0],
-                    'y_local': spatial_array[:, 1],
-                    'x_global': spatial_array[:, 0],
-                    'y_global': spatial_array[:, 1]
+                    "x_local": spatial_array[:, 0],
+                    "y_local": spatial_array[:, 1],
+                    "x_global": spatial_array[:, 0],
+                    "y_global": spatial_array[:, 1],
                 }
             elif spatial_array.shape[1] == 4:
                 # Assume [x_local, y_local, x_global, y_global]
                 spatial_coords = {
-                    'x_local': spatial_array[:, 0],
-                    'y_local': spatial_array[:, 1],
-                    'x_global': spatial_array[:, 2],
-                    'y_global': spatial_array[:, 3]
+                    "x_local": spatial_array[:, 0],
+                    "y_local": spatial_array[:, 1],
+                    "x_global": spatial_array[:, 2],
+                    "y_global": spatial_array[:, 3],
                 }
             else:
                 print(f"  ⚠ Spatial array has unexpected shape: {spatial_array.shape}")
@@ -1872,12 +1818,10 @@ class spatioloji:
             polygons=polygons,
             fov_positions=fov_positions,
             images_folder=images_folder,
-            config=config
+            config=config,
         )
 
-    def to_anndata(self,
-                   include_spatial: bool = True,
-                   spatial_key: str = 'spatial') -> anndata.AnnData:
+    def to_anndata(self, include_spatial: bool = True, spatial_key: str = "spatial") -> anndata.AnnData:
         """
         Convert to AnnData object.
 
@@ -1907,22 +1851,19 @@ class spatioloji:
         adata = anndata.AnnData(
             X=self._expression.get_sparse() if self._expression.is_sparse else self._expression.get_dense(),
             obs=self._cell_meta.copy(),
-            var=self._gene_meta.copy()
+            var=self._gene_meta.copy(),
         )
 
         # Add spatial coordinates
         if include_spatial:
-            spatial_array = np.column_stack([
-                self._spatial.x_local,
-                self._spatial.y_local,
-                self._spatial.x_global,
-                self._spatial.y_global
-            ])
+            spatial_array = np.column_stack(
+                [self._spatial.x_local, self._spatial.y_local, self._spatial.x_global, self._spatial.y_global]
+            )
             adata.obsm[spatial_key] = spatial_array
 
         # Add FOV info to uns
-        adata.uns['fov_positions'] = self._fov_positions.to_dict()
-        adata.uns['n_fovs'] = len(self._fov_index)
+        adata.uns["fov_positions"] = self._fov_positions.to_dict()
+        adata.uns["n_fovs"] = len(self._fov_index)
 
         print(f"✓ Created AnnData: {adata.shape[0]} cells × {adata.shape[1]} genes")
 
@@ -1931,8 +1872,10 @@ class spatioloji:
 
 # ========== Helper Functions for File Loading ==========
 
-def load_expression_file(filepath: str,
-                        gene_names: list[str] | None = None) -> tuple[np.ndarray | sparse.spmatrix, pd.Index, pd.Index]:
+
+def load_expression_file(
+    filepath: str, gene_names: list[str] | None = None
+) -> tuple[np.ndarray | sparse.spmatrix, pd.Index, pd.Index]:
     """
     Load expression data from various file formats.
 
@@ -1953,12 +1896,12 @@ def load_expression_file(filepath: str,
     filepath = Path(filepath)
     suffix = filepath.suffix.lower()
 
-    if suffix == '.csv':
+    if suffix == ".csv":
         # Load CSV
         df = pd.read_csv(filepath, index_col=0)
         return df.values, pd.Index(df.index), pd.Index(df.columns)
 
-    elif suffix == '.npy':
+    elif suffix == ".npy":
         # Load numpy array
         arr = np.load(filepath)
         cell_ids = pd.Index([f"cell_{i}" for i in range(arr.shape[0])])
@@ -1970,7 +1913,7 @@ def load_expression_file(filepath: str,
 
         return arr, cell_ids, gene_names
 
-    elif suffix == '.npz':
+    elif suffix == ".npz":
         # Load sparse matrix
         arr = sparse.load_npz(filepath)
         cell_ids = pd.Index([f"cell_{i}" for i in range(arr.shape[0])])
@@ -1986,8 +1929,7 @@ def load_expression_file(filepath: str,
         raise ValueError(f"Unsupported file format: {suffix}")
 
 
-def extract_spatial_coords_from_polygons(polygons: pd.DataFrame,
-                                         config: SpatiolojiConfig) -> pd.DataFrame:
+def extract_spatial_coords_from_polygons(polygons: pd.DataFrame, config: SpatiolojiConfig) -> pd.DataFrame:
     """
     Extract spatial coordinates from polygon data.
 
@@ -2006,17 +1948,14 @@ def extract_spatial_coords_from_polygons(polygons: pd.DataFrame,
         Spatial coordinates per cell
     """
     cell_id_col = config.cell_id_col
-    x_local_col, y_local_col = config.get_coordinate_columns('local')
-    x_global_col, y_global_col = config.get_coordinate_columns('global')
+    x_local_col, y_local_col = config.get_coordinate_columns("local")
+    x_global_col, y_global_col = config.get_coordinate_columns("global")
 
     # Calculate centroids
-    coords = polygons.groupby(cell_id_col).agg({
-        x_local_col: 'mean',
-        y_local_col: 'mean',
-        x_global_col: 'mean',
-        y_global_col: 'mean'
-    })
+    coords = polygons.groupby(cell_id_col).agg(
+        {x_local_col: "mean", y_local_col: "mean", x_global_col: "mean", y_global_col: "mean"}
+    )
 
-    coords.columns = ['x_local', 'y_local', 'x_global', 'y_global']
+    coords.columns = ["x_local", "y_local", "x_global", "y_global"]
 
     return coords

@@ -71,19 +71,19 @@ class TestObjectCreation:
         We check by converting both to sorted lists and comparing.
         """
         expected = sorted([f"cell_{i}" for i in range(60)])
-        actual   = sorted(sp_basic.cell_index.tolist())
+        actual = sorted(sp_basic.cell_index.tolist())
         assert actual == expected
 
     def test_gene_index_values(self, sp_basic):
         """The master gene index should contain exactly the gene names we passed."""
         expected = sorted([f"gene_{i}" for i in range(25)])
-        actual   = sorted(sp_basic.gene_index.tolist())
+        actual = sorted(sp_basic.gene_index.tolist())
         assert actual == expected
 
     def test_fov_index_values(self, sp_basic):
         """FOV index should contain '1' and '2' (our two fake FOVs)."""
         actual = sorted(sp_basic.fov_index.tolist())
-        assert actual == ['1', '2']
+        assert actual == ["1", "2"]
 
     # -----------------------------------------------------------------------
     # (c) Properties — correct types and shapes
@@ -103,26 +103,26 @@ class TestObjectCreation:
 
     def test_cell_meta_has_fov_column(self, sp_basic):
         """cell_meta must contain the 'fov' column we passed."""
-        assert 'fov' in sp_basic.cell_meta.columns
+        assert "fov" in sp_basic.cell_meta.columns
 
     def test_gene_meta_has_negprobe_column(self, sp_basic):
         """gene_meta must contain the 'NegProbe' column we passed."""
-        assert 'NegProbe' in sp_basic.gene_meta.columns
+        assert "NegProbe" in sp_basic.gene_meta.columns
 
     def test_negprobe_count(self, sp_basic):
         """
         We flagged the last 2 genes as NegProbe in conftest.
         Check that exactly 2 genes are marked True.
         """
-        n_neg = sp_basic.gene_meta['NegProbe'].sum()
+        n_neg = sp_basic.gene_meta["NegProbe"].sum()
         assert n_neg == 2
 
     def test_spatial_coords_length(self, sp_basic):
         """Spatial coordinate arrays must have one entry per cell."""
         assert len(sp_basic.spatial.x_global) == 60
         assert len(sp_basic.spatial.y_global) == 60
-        assert len(sp_basic.spatial.x_local)  == 60
-        assert len(sp_basic.spatial.y_local)  == 60
+        assert len(sp_basic.spatial.x_local) == 60
+        assert len(sp_basic.spatial.y_local) == 60
 
     def test_embeddings_starts_empty(self, sp_basic):
         """
@@ -176,15 +176,15 @@ class TestObjectCreation:
 
     def test_polygons_has_cell_column(self, sp_with_polygons):
         """The polygons DataFrame must have a 'cell' column (the cell ID)."""
-        assert 'cell' in sp_with_polygons.polygons.columns
+        assert "cell" in sp_with_polygons.polygons.columns
 
     def test_polygons_cell_ids_match(self, sp_with_polygons):
         """
         Every cell ID in the polygons table should exist
         in the master cell index. No orphan polygons allowed.
         """
-        polygon_cells = set(sp_with_polygons.polygons['cell'].astype(str))
-        master_cells  = set(sp_with_polygons.cell_index.astype(str))
+        polygon_cells = set(sp_with_polygons.polygons["cell"].astype(str))
+        master_cells = set(sp_with_polygons.cell_index.astype(str))
         assert polygon_cells.issubset(master_cells)
 
     # -----------------------------------------------------------------------
@@ -200,8 +200,8 @@ class TestObjectCreation:
         """
         from spatioloji_s.data.core import spatioloji
 
-        expr       = np.ones((10, 5))
-        cell_ids   = [f"c{i}" for i in range(10)]
+        expr = np.ones((10, 5))
+        cell_ids = [f"c{i}" for i in range(10)]
         gene_names = [f"g{i}" for i in range(5)]
 
         sp = spatioloji(expression=expr, cell_ids=cell_ids, gene_names=gene_names)
@@ -234,7 +234,6 @@ class TestObjectCreation:
 
 
 class TestDataConsistency:
-
     # -----------------------------------------------------------------------
     # (A) Happy path — everything should be consistent
     # -----------------------------------------------------------------------
@@ -246,7 +245,7 @@ class TestDataConsistency:
         and 'overall' (the summary key) must also be True.
         """
         status = sp_basic.validate_consistency()
-        assert status['overall'] is True
+        assert status["overall"] is True
 
     def test_validate_consistency_all_keys_true(self, sp_basic):
         """
@@ -256,7 +255,7 @@ class TestDataConsistency:
         """
         status = sp_basic.validate_consistency()
         # Remove 'overall' since it's a summary — check the rest individually
-        component_keys = [k for k in status if k != 'overall']
+        component_keys = [k for k in status if k != "overall"]
         for key in component_keys:
             assert status[key] is True, f"Consistency check failed for: '{key}'"
 
@@ -272,13 +271,13 @@ class TestDataConsistency:
         cell_meta must be indexed by the master cell index.
         Every cell ID in cell_meta.index should exist in cell_index.
         """
-        meta_ids   = set(sp_basic.cell_meta.index.astype(str))
+        meta_ids = set(sp_basic.cell_meta.index.astype(str))
         master_ids = set(sp_basic.cell_index.astype(str))
         assert meta_ids == master_ids
 
     def test_gene_meta_index_matches_gene_index(self, sp_basic):
         """gene_meta must be aligned to the master gene index."""
-        meta_genes   = set(sp_basic.gene_meta.index.astype(str))
+        meta_genes = set(sp_basic.gene_meta.index.astype(str))
         master_genes = set(sp_basic.gene_index.astype(str))
         assert meta_genes == master_genes
 
@@ -287,15 +286,15 @@ class TestDataConsistency:
         sp = sp_basic
         assert len(sp.spatial.x_global) == sp.n_cells
         assert len(sp.spatial.y_global) == sp.n_cells
-        assert len(sp.spatial.x_local)  == sp.n_cells
-        assert len(sp.spatial.y_local)  == sp.n_cells
+        assert len(sp.spatial.x_local) == sp.n_cells
+        assert len(sp.spatial.y_local) == sp.n_cells
 
     def test_fov_index_matches_cell_meta_fovs(self, sp_basic):
         """
         Every FOV label that cells belong to must appear in fov_index.
         No cell should reference a FOV that doesn't exist in the master list.
         """
-        cell_fovs  = set(sp_basic.cell_meta['fov'].astype(str))
+        cell_fovs = set(sp_basic.cell_meta["fov"].astype(str))
         master_fovs = set(sp_basic.fov_index.astype(str))
         assert cell_fovs.issubset(master_fovs)
 
@@ -304,17 +303,17 @@ class TestDataConsistency:
         In conftest we put 30 cells in FOV '1' and 30 in FOV '2'.
         Verify this split is preserved in the object.
         """
-        counts = sp_basic.cell_meta['fov'].value_counts()
-        assert counts['1'] == 30
-        assert counts['2'] == 30
+        counts = sp_basic.cell_meta["fov"].value_counts()
+        assert counts["1"] == 30
+        assert counts["2"] == 30
 
     def test_polygon_cells_in_master_index(self, sp_with_polygons):
         """
         No polygon should reference a cell that isn't in the master index.
         This guards against orphan polygons after subsetting or filtering.
         """
-        polygon_cells = set(sp_with_polygons.polygons['cell'].astype(str))
-        master_cells  = set(sp_with_polygons.cell_index.astype(str))
+        polygon_cells = set(sp_with_polygons.polygons["cell"].astype(str))
+        master_cells = set(sp_with_polygons.cell_index.astype(str))
         # All polygon cells must be a subset of master cells
         orphans = polygon_cells - master_cells
         assert len(orphans) == 0, f"Found {len(orphans)} orphan polygon cell IDs"
@@ -336,17 +335,15 @@ class TestDataConsistency:
         from spatioloji_s.data.core import spatioloji
 
         n = 10
-        expr       = np.ones((n, 5))
-        cell_ids   = [f"c{i}" for i in range(n)]
+        expr = np.ones((n, 5))
+        cell_ids = [f"c{i}" for i in range(n)]
         gene_names = [f"g{i}" for i in range(5)]
 
         # Add 3 extra rows with cell IDs not in cell_ids
-        extra_ids = cell_ids + ['extra_1', 'extra_2', 'extra_3']
-        cell_meta = pd.DataFrame({'fov': ['1'] * len(extra_ids)},
-                                 index=extra_ids)
+        extra_ids = cell_ids + ["extra_1", "extra_2", "extra_3"]
+        cell_meta = pd.DataFrame({"fov": ["1"] * len(extra_ids)}, index=extra_ids)
 
-        sp = spatioloji(expression=expr, cell_ids=cell_ids,
-                        gene_names=gene_names, cell_metadata=cell_meta)
+        sp = spatioloji(expression=expr, cell_ids=cell_ids, gene_names=gene_names, cell_metadata=cell_meta)
 
         # Must still have exactly n cells — extras dropped
         assert sp.n_cells == n
@@ -364,23 +361,21 @@ class TestDataConsistency:
         from spatioloji_s.data.core import spatioloji
 
         n = 10
-        expr       = np.ones((n, 5))
-        cell_ids   = [f"c{i}" for i in range(n)]
+        expr = np.ones((n, 5))
+        cell_ids = [f"c{i}" for i in range(n)]
         gene_names = [f"g{i}" for i in range(5)]
 
         # Only provide metadata for the first 7 cells
-        partial_meta = pd.DataFrame({'score': range(7)},
-                                    index=cell_ids[:7])
+        partial_meta = pd.DataFrame({"score": range(7)}, index=cell_ids[:7])
 
-        sp = spatioloji(expression=expr, cell_ids=cell_ids,
-                        gene_names=gene_names, cell_metadata=partial_meta)
+        sp = spatioloji(expression=expr, cell_ids=cell_ids, gene_names=gene_names, cell_metadata=partial_meta)
 
         # All 10 cells must be present
         assert sp.n_cells == n
         assert len(sp.cell_meta) == n
 
         # The last 3 cells should have NaN in 'score'
-        missing_scores = sp.cell_meta.loc[cell_ids[7:], 'score']
+        missing_scores = sp.cell_meta.loc[cell_ids[7:], "score"]
         assert missing_scores.isna().all()
 
     # -----------------------------------------------------------------------
@@ -399,18 +394,17 @@ class TestDataConsistency:
         """
         from spatioloji_s.data.core import spatioloji
 
-        expr       = np.ones((10, 5))
-        cell_ids   = [f"c{i}" for i in range(10)]
+        expr = np.ones((10, 5))
+        cell_ids = [f"c{i}" for i in range(10)]
         gene_names = [f"g{i}" for i in range(5)]
 
         # Spatial arrays have 8 entries, but we have 10 cells → mismatch
         bad_spatial = {
-            'x_global': np.ones(8),   # ← wrong length
-            'y_global': np.ones(8),
-            'x_local':  np.ones(8),
-            'y_local':  np.ones(8),
+            "x_global": np.ones(8),  # ← wrong length
+            "y_global": np.ones(8),
+            "x_local": np.ones(8),
+            "y_local": np.ones(8),
         }
 
         with pytest.raises((ValueError, Exception)):
-            spatioloji(expression=expr, cell_ids=cell_ids,
-                       gene_names=gene_names, spatial_coords=bad_spatial)
+            spatioloji(expression=expr, cell_ids=cell_ids, gene_names=gene_names, spatial_coords=bad_spatial)
