@@ -23,18 +23,18 @@ Example
 >>> spoint.spatially_variable_genes(sp, graph, layer='lognorm')
 """
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
 
-from typing import Optional, List, Union
+
 import numpy as np
 import pandas as pd
 from scipy import sparse
 
 from .graph import PointSpatialGraph
-
 
 # ========== Shared helpers ==========
 
@@ -48,9 +48,9 @@ def _row_normalize(W: sparse.spmatrix) -> sparse.csr_matrix:
 
 
 def _resolve_values(
-    sj: 'spatioloji',
-    values: Union[str, np.ndarray],
-    layer: Optional[str] = None,
+    sj: spatioloji,
+    values: str | np.ndarray,
+    layer: str | None = None,
 ) -> np.ndarray:
     """
     Resolve values to a 1D numpy array for spatial analysis.
@@ -132,14 +132,14 @@ def _benjamini_hochberg(pvalues: np.ndarray) -> np.ndarray:
 # ========== morans_i ==========
 
 def morans_i(
-    sj: 'spatioloji',
+    sj: spatioloji,
     graph: PointSpatialGraph,
-    values: Union[str, np.ndarray],
-    layer: Optional[str] = None,
+    values: str | np.ndarray,
+    layer: str | None = None,
     local: bool = False,
     n_permutations: int = 999,
-    seed: Optional[int] = None,
-) -> Union[dict, pd.DataFrame]:
+    seed: int | None = None,
+) -> dict | pd.DataFrame:
     """
     Compute Moran's I spatial autocorrelation.
 
@@ -276,14 +276,14 @@ def morans_i(
 # ========== getis_ord_gi ==========
 
 def getis_ord_gi(
-    sj: 'spatioloji',
+    sj: spatioloji,
     graph: PointSpatialGraph,
-    values: Union[str, np.ndarray],
-    layer: Optional[str] = None,
+    values: str | np.ndarray,
+    layer: str | None = None,
     star: bool = True,
     permutation_pvalue: bool = False,
     n_permutations: int = 999,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     store: bool = True,
 ) -> pd.DataFrame:
     """
@@ -415,10 +415,10 @@ def getis_ord_gi(
 # ========== spatially_variable_genes ==========
 
 def spatially_variable_genes(
-    sj: 'spatioloji',
+    sj: spatioloji,
     graph: PointSpatialGraph,
-    genes: Optional[List[str]] = None,
-    layer: Optional[str] = None,
+    genes: list[str] | None = None,
+    layer: str | None = None,
     n_top: int = 50,
     fdr_threshold: float = 0.05,
     method: str = 'morans_i',
@@ -536,7 +536,7 @@ def spatially_variable_genes(
 
     n_sig = (result['fdr'] < fdr_threshold).sum()
     print(f"  ✓ {n_sig}/{n_genes} significant SVGs (FDR < {fdr_threshold})")
-    print(f"    Top genes:")
+    print("    Top genes:")
     for gene_name, row in result.head(min(n_top, 10)).iterrows():
         print(f"      {gene_name:>15s}: I={row['I']:.4f}, "
               f"z={row['zscore']:.1f}, FDR={row['fdr']:.1e}")
@@ -547,15 +547,15 @@ def spatially_variable_genes(
 # ========== co_occurrence (unchanged — no gene analysis) ==========
 
 def co_occurrence(
-    sj: 'spatioloji',
+    sj: spatioloji,
     cell_type_col: str,
     coord_type: str = 'global',
-    intervals: Optional[np.ndarray] = None,
+    intervals: np.ndarray | None = None,
     n_intervals: int = 10,
-    max_distance: Optional[float] = None,
+    max_distance: float | None = None,
     n_permutations: int = 100,
-    seed: Optional[int] = None,
-    type_pairs: Optional[List[tuple]] = None,
+    seed: int | None = None,
+    type_pairs: list[tuple] | None = None,
 ) -> dict:
     """
     Compute distance-resolved co-occurrence between cell types.
@@ -657,7 +657,7 @@ def co_occurrence(
     expected_df = pd.DataFrame([expected[p] for p in type_pairs], index=pair_labels, columns=cols)
 
     print(f"  ✓ Co-occurrence: {len(type_pairs)} pairs × {n_bins} bins")
-    for pair, lbl in zip(type_pairs, pair_labels):
+    for pair, lbl in zip(type_pairs, pair_labels, strict=False):
         mean_score = scores[pair].mean()
         trend = "attract" if mean_score > 1.1 else "avoid" if mean_score < 0.9 else "neutral"
         print(f"    {lbl}: mean score={mean_score:.2f} ({trend})")

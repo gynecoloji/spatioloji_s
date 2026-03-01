@@ -11,16 +11,15 @@ Public API:
 """
 
 import os
-import numpy as np
-import pandas as pd
+from typing import Literal
+
 import cv2
 import matplotlib.pyplot as plt
-import matplotlib as mpl
-from matplotlib import colors, cm
-from matplotlib.patches import Patch
+import numpy as np
+import pandas as pd
+from matplotlib import cm, colors
 from matplotlib.collections import PolyCollection
-from typing import Dict, List, Literal, Optional, Tuple, Union
-
+from matplotlib.patches import Patch
 
 # =============================================================================
 # SECTION 1 — PRIVATE HELPERS
@@ -58,7 +57,7 @@ def _get_feature_data(sj_obj, feature: str,
 def _build_color_mapping(series: pd.Series,
                          kind: Literal['categorical', 'continuous'],
                          colormap: str = 'viridis',
-                         color_map: Optional[Dict] = None,
+                         color_map: dict | None = None,
                          vmin=None, vmax=None):
     """
     Build everything needed to color-code a feature series.
@@ -105,7 +104,7 @@ def _build_color_mapping(series: pd.Series,
 
 
 def _setup_grid(n_plots: int,
-                grid_layout: Optional[Tuple[int, int]],
+                grid_layout: tuple[int, int] | None,
                 fig_w: int, fig_h: int):
     """
     Create a figure + flattened axes array for multi-FOV grid plots.
@@ -143,15 +142,15 @@ def _finalize(fig, save_dir: str, filename: str, dpi: int, show: bool):
 
 def stitch_fov_images(
     sj_obj,
-    fov_ids: Optional[List[Union[str, int]]] = None,
+    fov_ids: list[str | int] | None = None,
     flip_vertical: bool = True,
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
     show_plot: bool = True,
-    title: Optional[str] = None,
-    figsize: Tuple[int, int] = (12, 12),
+    title: str | None = None,
+    figsize: tuple[int, int] = (12, 12),
     dpi: int = 300,
     verbose: bool = True,
-) -> Tuple[np.ndarray, float, float]:
+) -> tuple[np.ndarray, float, float]:
     """
     Stitch FOV images into one canvas using global FOV positions.
 
@@ -283,7 +282,7 @@ def _render_polygons_on_ax(ax, gdf, feature,
     """
     polys, face_colors = [], []
 
-    for cell_id, row in gdf.iterrows():
+    for _cell_id, row in gdf.iterrows():
         geom = row.geometry
         if geom is None or geom.is_empty:
             continue
@@ -318,26 +317,26 @@ def plot_global_polygon(
     sj_obj,
     feature: str,
     feature_df=None,
-    feature_column: Optional[str] = None,
-    background_img: Optional[np.ndarray] = None,
-    min_x: Optional[float] = None,
-    min_y: Optional[float] = None,
+    feature_column: str | None = None,
+    background_img: np.ndarray | None = None,
+    min_x: float | None = None,
+    min_y: float | None = None,
     # continuous params
     colormap: str = "viridis",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     # categorical params
-    color_map: Optional[Dict] = None,
+    color_map: dict | None = None,
     legend_loc: str = 'center left',
-    legend_bbox: Tuple[float, float] = (1.01, 0.5),
+    legend_bbox: tuple[float, float] = (1.01, 0.5),
     # shared style
     edge_color: str = "none",
     edge_width: float = 0.01,
     alpha: float = 1.0,
-    figsize: Tuple[int, int] = (12, 12),
-    fig_title: Optional[str] = None,
+    figsize: tuple[int, int] = (12, 12),
+    fig_title: str | None = None,
     save_dir: str = "./",
-    filename: Optional[str] = None,
+    filename: str | None = None,
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
@@ -434,25 +433,25 @@ def plot_global_polygon(
 def plot_local_polygon(
     sj_obj,
     feature: str,
-    fov_ids: Optional[List[Union[str, int]]] = None,
+    fov_ids: list[str | int] | None = None,
     feature_df=None,
-    feature_column: Optional[str] = None,
+    feature_column: str | None = None,
     background_img: bool = True,
     colormap: str = "viridis",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     colorbar_position: str = 'right',
-    color_map: Optional[Dict] = None,
+    color_map: dict | None = None,
     edge_color: str = 'black',
     edge_width: float = 0.5,
     alpha: float = 0.8,
     figure_width: int = 7,
     figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
+    grid_layout: tuple[int, int] | None = None,
     title_fontsize: int = 20,
     suptitle_fontsize: int = 24,
     save_dir: str = "./",
-    filename: Optional[str] = None,
+    filename: str | None = None,
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
@@ -493,13 +492,13 @@ def plot_local_polygon(
     for idx, fov_id in enumerate(fov_ids):
         ax = axs[idx]
         fov_gdf = gdf[gdf[fov_id_col] == fov_id]
-        
+
         # ── Shared image dimensions (consistent across all subplots) ─────────────
         sample_img = sj_obj.get_image(fov_id)
         if sample_img is None:
             raise ValueError(f"Could not load image for FOV '{fov_ids[0]}'")
         shared_h, shared_w = sample_img.shape[:2]
-        
+
         if fov_gdf.empty:
             ax.set_title(f'FOV {fov_id} (no data)', fontsize=title_fontsize)
             ax.axis('off')
@@ -610,27 +609,27 @@ def plot_global_dots(
     sj_obj,
     feature: str,
     feature_df=None,
-    feature_column: Optional[str] = None,
-    background_img: Optional[np.ndarray] = None,
-    min_x: Optional[float] = None,
-    min_y: Optional[float] = None,
+    feature_column: str | None = None,
+    background_img: np.ndarray | None = None,
+    min_x: float | None = None,
+    min_y: float | None = None,
     # continuous params
     colormap: str = "viridis",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     # categorical params
-    color_map: Optional[Dict] = None,
+    color_map: dict | None = None,
     legend_loc: str = 'center left',
-    legend_bbox: Tuple[float, float] = (1.01, 0.5),
+    legend_bbox: tuple[float, float] = (1.01, 0.5),
     # shared style
     dot_size: int = 20,
-    edge_color: Optional[str] = None,
+    edge_color: str | None = None,
     edge_width: float = 0.0,
     alpha: float = 1.0,
-    figsize: Tuple[int, int] = (12, 12),
-    fig_title: Optional[str] = None,
+    figsize: tuple[int, int] = (12, 12),
+    fig_title: str | None = None,
     save_dir: str = "./",
-    filename: Optional[str] = None,
+    filename: str | None = None,
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
@@ -717,17 +716,17 @@ def plot_global_dots(
 def plot_local_dots(
     sj_obj,
     feature: str,
-    fov_ids: Optional[List[Union[str, int]]] = None,
+    fov_ids: list[str | int] | None = None,
     feature_df=None,
-    feature_column: Optional[str] = None,
+    feature_column: str | None = None,
     background_img: bool = True,
     # continuous params
     colormap: str = "viridis",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     colorbar_position: str = 'right',
     # categorical params
-    color_map: Optional[Dict] = None,
+    color_map: dict | None = None,
     # shared style
     dot_size: float = 20,
     edge_color: str = 'none',
@@ -735,11 +734,11 @@ def plot_local_dots(
     alpha: float = 0.8,
     figure_width: int = 7,
     figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
+    grid_layout: tuple[int, int] | None = None,
     title_fontsize: int = 20,
     suptitle_fontsize: int = 24,
     save_dir: str = "./",
-    filename: Optional[str] = None,
+    filename: str | None = None,
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
@@ -803,10 +802,10 @@ def plot_local_dots(
         if sample_img is None:
             raise ValueError(f"Could not load image for FOV '{fov_ids[0]}' to determine shared dimensions")
         shared_h, shared_w = sample_img.shape[:2]
-        
+
         ax.set_xlim(0, shared_w)
         ax.set_ylim(0, shared_h)
-        
+
         # Optional background image
         if background_img:
             img = sj_obj.get_image(fov_id)
@@ -814,12 +813,12 @@ def plot_local_dots(
                 h, w = img.shape[:2]
                 ax.imshow(np.flipud(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)), origin='lower')
 
-        scatter = _render_dots_on_ax(
+        _render_dots_on_ax(
             ax, fov_data, 'CenterX_local_px', 'CenterY_local_px', feat_col,
             kind, color_lookup, norm, cmap,
             dot_size, edge_color, edge_width, alpha,
         )
-        
+
 
         ax.set_title(f'FOV {fov_id}', fontsize=title_fontsize)
 
@@ -861,7 +860,7 @@ def plot_local_dots(
 # =============================================================================
 
 def _get_gene_expression(sj_obj, gene: str,
-                         layer: Optional[str] = 'log_normalized') -> pd.DataFrame:
+                         layer: str | None = 'log_normalized') -> pd.DataFrame:
     """
     Return a two-column DataFrame: [cell_id_col, gene].
     Same shape as _get_feature_data output — plugs into existing rendering pipeline.
@@ -906,7 +905,7 @@ def _get_gene_expression(sj_obj, gene: str,
         cell_id: sj_obj.cell_index.astype(str),
         gene:    expr,
     })
-    
+
 # =============================================================================
 # SECTION B — GENE POLYGON FUNCTIONS
 # =============================================================================
@@ -914,19 +913,19 @@ def _get_gene_expression(sj_obj, gene: str,
 def plot_global_polygon_gene(
     sj_obj,
     gene: str,
-    layer: Optional[str] = 'log_normalized',
-    background_img: Optional[np.ndarray] = None,
-    min_x: Optional[float] = None,
-    min_y: Optional[float] = None,
+    layer: str | None = 'log_normalized',
+    background_img: np.ndarray | None = None,
+    min_x: float | None = None,
+    min_y: float | None = None,
     colormap: str = "magma",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     edge_color: str = "none",
     edge_width: float = 0.01,
     alpha: float = 1.0,
-    figsize: Tuple[int, int] = (12, 12),
+    figsize: tuple[int, int] = (12, 12),
     save_dir: str = "./",
-    filename: Optional[str] = None,
+    filename: str | None = None,
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
@@ -966,23 +965,23 @@ def plot_global_polygon_gene(
 def plot_local_polygon_gene(
     sj_obj,
     gene: str,
-    layer: Optional[str] = 'log_normalized',
-    fov_ids: Optional[List[Union[str, int]]] = None,
+    layer: str | None = 'log_normalized',
+    fov_ids: list[str | int] | None = None,
     background_img: bool = True,
     colormap: str = "magma",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     colorbar_position: str = 'right',
     edge_color: str = 'none',
     edge_width: float = 0.01,
     alpha: float = 1.0,
     figure_width: int = 7,
     figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
+    grid_layout: tuple[int, int] | None = None,
     title_fontsize: int = 20,
     suptitle_fontsize: int = 24,
     save_dir: str = "./",
-    filename: Optional[str] = None,
+    filename: str | None = None,
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
@@ -1027,20 +1026,20 @@ def plot_local_polygon_gene(
 def plot_global_dots_gene(
     sj_obj,
     gene: str,
-    layer: Optional[str] = 'log_normalized',
-    background_img: Optional[np.ndarray] = None,
-    min_x: Optional[float] = None,
-    min_y: Optional[float] = None,
+    layer: str | None = 'log_normalized',
+    background_img: np.ndarray | None = None,
+    min_x: float | None = None,
+    min_y: float | None = None,
     colormap: str = "magma",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     dot_size: int = 20,
-    edge_color: Optional[str] = None,
+    edge_color: str | None = None,
     edge_width: float = 0.0,
     alpha: float = 1.0,
-    figsize: Tuple[int, int] = (12, 12),
+    figsize: tuple[int, int] = (12, 12),
     save_dir: str = "./",
-    filename: Optional[str] = None,
+    filename: str | None = None,
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:
@@ -1081,12 +1080,12 @@ def plot_global_dots_gene(
 def plot_local_dots_gene(
     sj_obj,
     gene: str,
-    layer: Optional[str] = 'log_normalized',
-    fov_ids: Optional[List[Union[str, int]]] = None,
+    layer: str | None = 'log_normalized',
+    fov_ids: list[str | int] | None = None,
     background_img: bool = True,
     colormap: str = "magma",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     colorbar_position: str = 'right',
     dot_size: float = 20,
     edge_color: str = 'none',
@@ -1094,11 +1093,11 @@ def plot_local_dots_gene(
     alpha: float = 0.8,
     figure_width: int = 7,
     figure_height: int = 7,
-    grid_layout: Optional[Tuple[int, int]] = None,
+    grid_layout: tuple[int, int] | None = None,
     title_fontsize: int = 20,
     suptitle_fontsize: int = 24,
     save_dir: str = "./",
-    filename: Optional[str] = None,
+    filename: str | None = None,
     dpi: int = 300,
     show_plot: bool = True,
 ) -> plt.Figure:

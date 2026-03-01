@@ -5,15 +5,16 @@ spatioloji - Spatial transcriptomics data analysis package
 """
 
 # Core data structures
-from .data.core import spatioloji
-from .data.config import SpatiolojiConfig, SpatialData
-from .data.qc import spatioloji_qc, QCConfig
-
 # Import submodules
-from . import data
-from . import processing
-from . import visualization
-from . import spatial  # <-- ADD THIS LINE
+from . import (
+    data,
+    processing,
+    spatial,  # <-- ADD THIS LINE
+    visualization,
+)
+from .data.config import SpatialData, SpatiolojiConfig
+from .data.core import spatioloji
+from .data.qc import QCConfig, spatioloji_qc
 
 __version__ = '0.1.0'
 
@@ -24,7 +25,7 @@ __all__ = [
     'SpatialData',
     'spatioloji_qc',
     'QCConfig',
-    
+
     # Submodules
     'data',
     'processing',

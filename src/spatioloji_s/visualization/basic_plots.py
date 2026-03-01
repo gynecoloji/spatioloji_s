@@ -10,22 +10,21 @@ Architecture:
     Specialized plots   → plot_violin, plot_heatmap, plot_dotplot
 """
 
-from typing import Optional, Union, List, Tuple, Literal, Dict
+import warnings
+from typing import Literal
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-from matplotlib.colors import Normalize, TwoSlopeNorm
 import seaborn as sns
-import warnings
+from matplotlib.colors import Normalize, TwoSlopeNorm
 from scipy import sparse
-
 
 # =============================================================================
 # SECTION 1 — PRIVATE HELPERS
 # =============================================================================
 
-def _finalize_plot(fig: plt.Figure, save_path: Optional[str], dpi: int,
+def _finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int,
                    show: bool) -> plt.Figure:
     """Shared save / show / close logic."""
     plt.tight_layout()
@@ -36,7 +35,7 @@ def _finalize_plot(fig: plt.Figure, save_path: Optional[str], dpi: int,
         plt.close(fig)
         return None      # Jupyter has no object to render
     plt.close(fig)
-    return fig 
+    return fig
 
 
 def _clean_axes(ax: plt.Axes) -> None:
@@ -68,7 +67,7 @@ def _build_norm(vmin, vmax, vcenter):
 
 
 def _get_gene_expression(spatioloji_obj, gene_name: str,
-                         layer: Optional[str] = None) -> np.ndarray:
+                         layer: str | None = None) -> np.ndarray:
     """
     Get 1-D gene expression array from any layer.
 
@@ -89,8 +88,8 @@ def _get_gene_expression(spatioloji_obj, gene_name: str,
     return layer_data[:, gene_idx].flatten()
 
 
-def _validate_and_filter_genes(spatioloji_obj, genes: List[str],
-                               verbose: bool = True) -> List[str]:
+def _validate_and_filter_genes(spatioloji_obj, genes: list[str],
+                               verbose: bool = True) -> list[str]:
     """Return only genes present in the dataset; warn about missing ones."""
     available = set(spatioloji_obj.gene_index)
     valid = [g for g in genes if g in available]
@@ -101,7 +100,7 @@ def _validate_and_filter_genes(spatioloji_obj, genes: List[str],
         suffix = '...' if len(missing) > 10 else ''
         warnings.warn(
             f"{len(missing)} gene(s) not found and will be skipped: "
-            f"{preview}{suffix}"
+            f"{preview}{suffix}", stacklevel=2
         )
     if not valid:
         raise ValueError(
@@ -113,8 +112,8 @@ def _validate_and_filter_genes(spatioloji_obj, genes: List[str],
 
 def _get_categorical_colors(
     n: int,
-    spec: Optional[Union[str, List, Dict]] = None
-) -> List:
+    spec: str | list | dict | None = None
+) -> list:
     """
     Produce *n* colours from a flexible specification.
 
@@ -141,7 +140,7 @@ def _get_categorical_colors(
             cmap = plt.get_cmap(spec)
             return [cmap(i / max(n - 1, 1)) for i in range(n)]
         except Exception:
-            warnings.warn(f"Unknown colormap '{spec}', falling back to default")
+            warnings.warn(f"Unknown colormap '{spec}', falling back to default", stacklevel=2)
 
     # default
     if n <= 20:
@@ -164,16 +163,16 @@ def _scatter_embedding(
     coords: np.ndarray,
     *,
     # What to colour by — exactly one of these should be set
-    color_by: Optional[str] = None,        # cell_meta column
-    gene: Optional[str] = None,            # gene name
-    layer: Optional[str] = 'log_normalized',
+    color_by: str | None = None,        # cell_meta column
+    gene: str | None = None,            # gene name
+    layer: str | None = 'log_normalized',
     # Colour options
-    color_map: Optional[Union[str, List, Dict]] = None,
-    palette: Optional[Union[str, List, Dict]] = None,
-    colors: Optional[Dict[str, str]] = None,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    vcenter: Optional[float] = None,
+    color_map: str | list | dict | None = None,
+    palette: str | list | dict | None = None,
+    colors: dict[str, str] | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    vcenter: float | None = None,
     robust: bool = False,
     # Scatter options
     point_size: float = 5.0,
@@ -182,14 +181,14 @@ def _scatter_embedding(
     # Labels & legend
     xlabel: str = 'Dim 1',
     ylabel: str = 'Dim 2',
-    title: Optional[str] = None,
+    title: str | None = None,
     legend: bool = True,
     legend_loc: str = 'right margin',
-    colorbar_label: Optional[str] = None,
+    colorbar_label: str | None = None,
     # Figure
-    ax: Optional[plt.Axes] = None,
-    figsize: Tuple[float, float] = (8, 6),
-    save_path: Optional[str] = None,
+    ax: plt.Axes | None = None,
+    figsize: tuple[float, float] = (8, 6),
+    save_path: str | None = None,
     dpi: int = 300,
     show: bool = True,
 ) -> plt.Figure:
@@ -296,26 +295,26 @@ def _scatter_embedding(
 
 def plot_umap(
     spatioloji_obj,
-    color_by: Optional[str] = None,
-    gene: Optional[str] = None,
-    layer: Optional[str] = 'log_normalized',
+    color_by: str | None = None,
+    gene: str | None = None,
+    layer: str | None = 'log_normalized',
     *,
-    color_map: Optional[Union[str, List, Dict]] = None,
-    palette: Optional[Union[str, List, Dict]] = None,
-    colors: Optional[Dict[str, str]] = None,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    vcenter: Optional[float] = None,
+    color_map: str | list | dict | None = None,
+    palette: str | list | dict | None = None,
+    colors: dict[str, str] | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    vcenter: float | None = None,
     robust: bool = False,
     point_size: float = 5.0,
     alpha: float = 0.7,
     sort_by_value: bool = False,
     legend: bool = True,
     legend_loc: str = 'right margin',
-    colorbar_label: Optional[str] = None,
-    title: Optional[str] = None,
-    figsize: Tuple[float, float] = (8, 6),
-    save_path: Optional[str] = None,
+    colorbar_label: str | None = None,
+    title: str | None = None,
+    figsize: tuple[float, float] = (8, 6),
+    save_path: str | None = None,
     dpi: int = 300,
     show: bool = True,
 ) -> plt.Figure:
@@ -384,23 +383,23 @@ def plot_umap(
 
 def plot_pca(
     spatioloji_obj,
-    color_by: Optional[str] = None,
-    gene: Optional[str] = None,
-    layer: Optional[str] = 'log_normalized',
-    pcs: Tuple[int, int] = (1, 2),
+    color_by: str | None = None,
+    gene: str | None = None,
+    layer: str | None = 'log_normalized',
+    pcs: tuple[int, int] = (1, 2),
     *,
-    color_map: Optional[Union[str, List, Dict]] = None,
-    palette: Optional[Union[str, List, Dict]] = None,
-    colors: Optional[Dict[str, str]] = None,
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    color_map: str | list | dict | None = None,
+    palette: str | list | dict | None = None,
+    colors: dict[str, str] | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     point_size: float = 5.0,
     alpha: float = 0.7,
     show_variance: bool = True,
     legend: bool = True,
-    title: Optional[str] = None,
-    figsize: Tuple[float, float] = (8, 6),
-    save_path: Optional[str] = None,
+    title: str | None = None,
+    figsize: tuple[float, float] = (8, 6),
+    save_path: str | None = None,
     dpi: int = 300,
     show: bool = True,
 ) -> plt.Figure:
@@ -449,14 +448,14 @@ def plot_pca(
 
 def plot_umap_grid(
     spatioloji_obj,
-    features: Optional[List[str]] = None,
-    genes: Optional[List[str]] = None,
+    features: list[str] | None = None,
+    genes: list[str] | None = None,
     layer: str = 'log_normalized',
-    color_maps: Optional[Dict[str, str]] = None,
+    color_maps: dict[str, str] | None = None,
     ncols: int = 3,
     point_size: float = 3.0,
-    figsize: Optional[Tuple[float, float]] = None,
-    save_path: Optional[str] = None,
+    figsize: tuple[float, float] | None = None,
+    save_path: str | None = None,
     dpi: int = 300,
     show: bool = True,
 ) -> plt.Figure:
@@ -485,7 +484,7 @@ def plot_umap_grid(
         "Run UMAP first:  sj.processing.umap(sp, use_pca=True)"
     )
 
-    items: List[Tuple[str, str]] = []  # (name, kind)  kind ∈ {'feature', 'gene'}
+    items: list[tuple[str, str]] = []  # (name, kind)  kind ∈ {'feature', 'gene'}
     for f in (features or []):
         items.append((f, 'feature'))
     for g in (genes or []):
@@ -519,12 +518,14 @@ def plot_umap_grid(
             except ValueError:
                 ax.text(0.5, 0.5, f"'{name}' not found",
                         ha='center', va='center', transform=ax.transAxes)
-                ax.set_xticks([]); ax.set_yticks([])
+                ax.set_xticks([])
+                ax.set_yticks([])
         else:
             if name not in spatioloji_obj.cell_meta.columns:
                 ax.text(0.5, 0.5, f"'{name}' not found",
                         ha='center', va='center', transform=ax.transAxes)
-                ax.set_xticks([]); ax.set_yticks([])
+                ax.set_xticks([])
+                ax.set_yticks([])
                 continue
             _scatter_embedding(
                 spatioloji_obj, umap, color_by=name,
@@ -547,7 +548,7 @@ def plot_umap_grid(
 # ---- helpers shared by Section 4 -----------------------------------------
 
 def _resolve_group_order(groups: pd.Series,
-                         group_order: Optional[List[str]]) -> List[str]:
+                         group_order: list[str] | None) -> list[str]:
     """
     Return an ordered list of group labels.
 
@@ -560,7 +561,7 @@ def _resolve_group_order(groups: pd.Series,
         present = [g for g in order if g in available]
         missing = [g for g in order if g not in available]
         if missing:
-            warnings.warn(f"Groups not in data and will be skipped: {missing}")
+            warnings.warn(f"Groups not in data and will be skipped: {missing}", stacklevel=2)
         if not present:
             raise ValueError(
                 f"None of the groups in group_order exist. "
@@ -574,16 +575,16 @@ def _resolve_group_order(groups: pd.Series,
 
 def plot_violin(
     spatioloji_obj,
-    genes: Union[str, List[str]],
+    genes: str | list[str],
     group_by: str = 'leiden',
     layer: str = 'log_normalized',
-    group_order: Optional[List[str]] = None,
-    color_map: Optional[Union[str, List]] = None,
-    colors: Optional[Dict[str, str]] = None,
-    figsize: Optional[Tuple[float, float]] = None,
+    group_order: list[str] | None = None,
+    color_map: str | list | None = None,
+    colors: dict[str, str] | None = None,
+    figsize: tuple[float, float] | None = None,
     rotation: int = 45,
-    ylabel: Optional[str] = 'Expression',
-    save_path: Optional[str] = None,
+    ylabel: str | None = 'Expression',
+    save_path: str | None = None,
     dpi: int = 300,
     show: bool = True,
 ) -> plt.Figure:
@@ -671,24 +672,24 @@ def plot_violin(
 
 def plot_heatmap(
     spatioloji_obj,
-    genes: Union[str, List[str]],
+    genes: str | list[str],
     group_by: str = 'leiden',
     layer: str = 'log_normalized',
-    group_order: Optional[List[str]] = None,
-    gene_order: Optional[List[str]] = None,
+    group_order: list[str] | None = None,
+    gene_order: list[str] | None = None,
     scale: Literal['none', 'row', 'column'] = 'row',
     cluster_genes: bool = False,
     cluster_groups: bool = False,
     show_gene_names: bool = True,
     show_group_names: bool = True,
     color_map: str = 'RdBu_r',
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    vcenter: Optional[float] = 0,
-    figsize: Optional[Tuple[float, float]] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    vcenter: float | None = 0,
+    figsize: tuple[float, float] | None = None,
     dendrogram_ratio: float = 0.1,
-    cbar_pos: Optional[Tuple[float, float, float, float]] = None,
-    save_path: Optional[str] = None,
+    cbar_pos: tuple[float, float, float, float] | None = None,
+    save_path: str | None = None,
     dpi: int = 300,
     show: bool = True,
 ) -> plt.Figure:
@@ -708,9 +709,9 @@ def plot_heatmap(
     --------
     >>> sj.plotting.plot_heatmap(sp, genes=marker_genes, group_by='leiden')
     """
+    from matplotlib.gridspec import GridSpec
     from scipy.cluster.hierarchy import dendrogram, linkage
     from scipy.spatial.distance import pdist
-    from matplotlib.gridspec import GridSpec
 
     if isinstance(genes, str):
         genes = [genes]
@@ -757,17 +758,19 @@ def plot_heatmap(
         try:
             gene_link = linkage(pdist(expr), method='average')
             leaves = dendrogram(gene_link, no_plot=True)['leaves']
-            expr = expr[leaves]; genes = [genes[k] for k in leaves]
+            expr = expr[leaves]
+            genes = [genes[k] for k in leaves]
         except Exception as e:
-            warnings.warn(f"Gene clustering failed: {e}")
+            warnings.warn(f"Gene clustering failed: {e}", stacklevel=2)
 
     if cluster_groups and n_groups > 1:
         try:
             group_link = linkage(pdist(expr.T), method='average')
             leaves = dendrogram(group_link, no_plot=True)['leaves']
-            expr = expr[:, leaves]; unique_groups = [unique_groups[k] for k in leaves]
+            expr = expr[:, leaves]
+            unique_groups = [unique_groups[k] for k in leaves]
         except Exception as e:
-            warnings.warn(f"Group clustering failed: {e}")
+            warnings.warn(f"Group clustering failed: {e}", stacklevel=2)
 
     # --- figure layout ----------------------------------------------------
     if figsize is None:
@@ -824,7 +827,8 @@ def plot_heatmap(
     # dendrograms
     def _draw_dendro(ax, link, orientation):
         dendrogram(link, ax=ax, orientation=orientation)
-        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_yticks([])
         for s in ax.spines.values():
             s.set_visible(False)
 
@@ -850,19 +854,19 @@ def plot_heatmap(
 
 def plot_dotplot(
     spatioloji_obj,
-    genes: Union[str, List[str]],
+    genes: str | list[str],
     group_by: str = 'leiden',
     layer: str = 'log_normalized',
-    group_order: Optional[List[str]] = None,
-    gene_order: Optional[List[str]] = None,
-    size_scale: Tuple[float, float] = (20, 200),
+    group_order: list[str] | None = None,
+    gene_order: list[str] | None = None,
+    size_scale: tuple[float, float] = (20, 200),
     color_map: str = 'Reds',
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
     show_gene_names: bool = True,
     show_group_names: bool = True,
-    figsize: Optional[Tuple[float, float]] = None,
-    save_path: Optional[str] = None,
+    figsize: tuple[float, float] | None = None,
+    save_path: str | None = None,
     dpi: int = 300,
     show: bool = True,
 ) -> plt.Figure:

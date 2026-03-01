@@ -15,18 +15,17 @@ Key design decisions:
 Requires polygon data and a contact/buffer graph from graph.py.
 """
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
 
-from typing import Optional
 import numpy as np
 import pandas as pd
 from shapely.ops import unary_union
 
 from .graph import PolygonSpatialGraph, _get_gdf
-
 
 # ========== Helper ==========
 
@@ -64,7 +63,7 @@ def _boundary_intersection_length(geom_src, geom_nbr):
 
 # ========== contact_length ==========
 
-def contact_length(sp: 'spatioloji',
+def contact_length(sp: spatioloji,
                    graph: PolygonSpatialGraph,
                    coord_type: str = 'global') -> pd.DataFrame:
     """
@@ -87,7 +86,7 @@ def contact_length(sp: 'spatioloji',
         contact_length_a = length of cell_a's boundary inside cell_b
         contact_length_b = length of cell_b's boundary inside cell_a
     """
-    print(f"\n[Boundaries] Computing contact lengths...")
+    print("\n[Boundaries] Computing contact lengths...")
 
     gdf = _get_gdf(sp, coord_type=coord_type)
     geom = gdf.geometry
@@ -177,7 +176,7 @@ def _collect_contact_segments(sp, graph, gdf):
 
 # ========== contact_fraction ==========
 
-def contact_fraction(sp: 'spatioloji',
+def contact_fraction(sp: spatioloji,
                      graph: PolygonSpatialGraph,
                      coord_type: str = 'global',
                      store: bool = True) -> pd.DataFrame:
@@ -205,7 +204,7 @@ def contact_fraction(sp: 'spatioloji',
         Columns: cell_a, cell_b, contact_length_a, contact_length_b,
                  fraction_a, fraction_b
     """
-    print(f"\n[Boundaries] Computing contact fractions...")
+    print("\n[Boundaries] Computing contact fractions...")
 
     gdf = _get_gdf(sp, coord_type=coord_type)
     geom = gdf.geometry
@@ -249,7 +248,7 @@ def contact_fraction(sp: 'spatioloji',
 
         total_frac = total_frac.reindex(sp.cell_index, fill_value=0.0)
         sp.cell_meta['total_contact_fraction'] = total_frac.values
-        print(f"  ✓ Stored 'total_contact_fraction' in cell_meta")
+        print("  ✓ Stored 'total_contact_fraction' in cell_meta")
 
     print(f"  ✓ Contact fractions computed for {len(edges)} pairs")
 
@@ -258,7 +257,7 @@ def contact_fraction(sp: 'spatioloji',
 
 # ========== free_boundary_fraction ==========
 
-def free_boundary_fraction(sp: 'spatioloji',
+def free_boundary_fraction(sp: spatioloji,
                            graph: PolygonSpatialGraph,
                            coord_type: str = 'global',
                            store: bool = True) -> pd.Series:
@@ -287,7 +286,7 @@ def free_boundary_fraction(sp: 'spatioloji',
     pd.Series
         Free boundary fraction per cell (indexed by cell_id)
     """
-    print(f"\n[Boundaries] Computing free boundary fractions...")
+    print("\n[Boundaries] Computing free boundary fractions...")
 
     gdf = _get_gdf(sp, coord_type=coord_type)
     geom = gdf.geometry
@@ -315,7 +314,7 @@ def free_boundary_fraction(sp: 'spatioloji',
         sp.cell_meta['free_boundary_fraction'] = free_frac.values
         # Exact complement — always consistent with free_boundary_fraction
         sp.cell_meta['total_contact_fraction'] = (1.0 - free_frac).values
-        print(f"  ✓ Stored 'free_boundary_fraction' and 'total_contact_fraction'")
+        print("  ✓ Stored 'free_boundary_fraction' and 'total_contact_fraction'")
 
     print(f"  ✓ Free boundary: mean={free_frac.mean():.3f}, "
           f"median={free_frac.median():.3f}")
@@ -327,7 +326,7 @@ def free_boundary_fraction(sp: 'spatioloji',
 
 # ========== contact_summary ==========
 
-def contact_summary(sp: 'spatioloji',
+def contact_summary(sp: spatioloji,
                     graph: PolygonSpatialGraph,
                     group_col: str,
                     coord_type: str = 'global') -> pd.DataFrame:
@@ -393,7 +392,7 @@ def contact_summary(sp: 'spatioloji',
     }).reset_index().sort_values('total_length', ascending=False)
 
     print(f"  ✓ {len(summary)} cell type pair combinations")
-    print(f"\n  Top contacts:")
+    print("\n  Top contacts:")
     for _, row in summary.head(5).iterrows():
         print(f"    {row.type_a} – {row.type_b}: "
               f"{row.n_contacts} contacts, "

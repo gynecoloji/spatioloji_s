@@ -46,50 +46,49 @@ Typical workflow
 """
 
 # Graph construction
+# Boundaries
+from .boundaries import (
+    contact_fraction,
+    contact_length,
+    contact_summary,
+    free_boundary_fraction,
+)
 from .graph import (
     PolygonSpatialGraph,
-    build_contact_graph,
     build_buffer_graph,
+    build_contact_graph,
     build_knn_graph,
 )
 
 # Morphology
 from .morphology import (
-    compute_morphology,
     classify_morphology,
+    compute_morphology,
     morphology_by_group,
-)
-
-# Boundaries
-from .boundaries import (
-    contact_length,
-    contact_fraction,
-    free_boundary_fraction,
-    contact_summary,
 )
 
 # Neighborhoods
 from .neighborhoods import (
+    boundary_cells,
     neighborhood_composition,
     neighborhood_enrichment,
     niche_identification,
-    boundary_cells,
 )
 
 # Patterns
 from .patterns import (
     cell_density_map,
+    colocalization,
     hotspot_detection,
     spatial_autocorrelation,
-    colocalization,
 )
 
 # Statistics
 from .statistics import (
+    boundary_enrichment_test,
     contact_permutation_test,
     morphology_association_test,
     spatial_autocorrelation_test,
-    boundary_enrichment_test,
 )
 
 __all__ = [

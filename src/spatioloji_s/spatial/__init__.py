@@ -28,8 +28,7 @@ Usage
 >>> sj.spatial.polygon.compute_morphology(sp)
 """
 
-from . import point
-from . import polygon
+from . import point, polygon
 
 __all__ = [
     'point',
