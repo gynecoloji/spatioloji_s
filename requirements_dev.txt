@@ -1,2 +1,23 @@
+# Core runtime
+numpy
+pandas
+scipy
+scikit-learn
+matplotlib
+seaborn
+opencv-python
+typer
+
+# Optional features
+anndata
+geopandas
+umap-learn
+harmonypy
+igraph
+leidenalg
+
+# Dev/test
 pytest
+coverage
 ruff
+ipdb
