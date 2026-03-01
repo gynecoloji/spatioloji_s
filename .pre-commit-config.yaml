@@ -1,0 +1,20 @@
+# .pre-commit-config.yaml
+repos:
+  # 1. General file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace       # remove trailing spaces
+      - id: end-of-file-fixer         # ensure files end with newline
+      - id: check-yaml                # validate yaml files
+      - id: check-toml                # validate pyproject.toml
+      - id: check-added-large-files   # block files > 500KB
+      - id: detect-private-key        # block accidental key commits
+
+  # 2. Ruff — formatter + linter (already in your pyproject.toml!)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0
+    hooks:
+      - id: ruff-format               # auto-format code
+      - id: ruff                      # lint and auto-fix
+        args: [--fix]
