@@ -25,6 +25,7 @@ How fixtures work:
 import numpy as np
 import pandas as pd
 import pytest
+
 from spatioloji_s.data.core import spatioloji
 
 # ===========================================================================

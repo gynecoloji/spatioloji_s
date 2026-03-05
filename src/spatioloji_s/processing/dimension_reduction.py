@@ -13,10 +13,9 @@ from scipy import sparse
 
 def pca(
     spatioloji_obj,
-    layer: str | None = "log_normalized",
+    layer: str | None = "scaled",
     use_highly_variable: bool = True,
     n_comps: int = 50,
-    zero_center: bool = True,
     random_state: int = 42,
     output_key: str = "X_pca",
     inplace: bool = True,
@@ -112,12 +111,7 @@ def pca(
     # Run PCA
     print("  Running PCA...")
     pca_model = PCA(n_components=n_comps_actual, random_state=random_state)
-
-    if zero_center:
-        X_pca = pca_model.fit_transform(X)
-    else:
-        # Manual centering control
-        X_pca = pca_model.fit_transform(X - X.mean(axis=0))
+    X_pca = pca_model.fit_transform(X)
 
     # Get variance explained
     variance = pca_model.explained_variance_

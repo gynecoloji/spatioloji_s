@@ -273,6 +273,228 @@ python {script_file}
         return X_imputed
 
 
+def scvi_impute(
+    spatioloji_obj,
+    layer: str | None = "log_normalized",
+    batch_key: str | None = None,
+    use_highly_variable: bool = True,   # recommended: True for speed
+    n_latent: int = 30,
+    max_epochs: int | None = None,      # None = auto heuristic
+    early_stopping: bool = True,        # NEW: stop when loss plateaus
+    early_stopping_patience: int = 20,  # NEW: epochs to wait
+    batch_size: int = 512,              # NEW: increased from default 128
+    accelerator: str = "auto",          # NEW: "auto", "gpu", "cpu", "mps"
+    gene_likelihood: str = "zinb",
+    random_state: int = 42,
+    conda_env: str | None = None,
+    output_layer: str = "scvi_imputed",
+    inplace: bool = True,
+):
+    print(f"\nscVI imputation (n_latent={n_latent})")
+
+    if batch_key is not None and batch_key not in spatioloji_obj.cell_meta.columns:
+        raise ValueError(f"Column '{batch_key}' not found in cell_meta")
+
+    if layer is None:
+        X = spatioloji_obj.expression.get_dense()
+    else:
+        X = spatioloji_obj.get_layer(layer)
+        if sparse.issparse(X):
+            X = X.toarray()
+
+    X_base     = X
+    gene_names = spatioloji_obj.gene_index.astype(str).values
+    gene_mask  = None
+
+    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+        gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
+        if gene_mask.sum() > 0:
+            X          = X[:, gene_mask]
+            gene_names = spatioloji_obj.gene_index[gene_mask].astype(str).values
+            print(f"  Using {gene_mask.sum()} highly variable genes (faster)")
+        else:
+            gene_mask = None
+
+    batch = None
+    if batch_key is not None:
+        batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
+
+    if conda_env is not None:
+        print(f"  Running scVI in conda environment: '{conda_env}'")
+        X_imputed = _run_scvi_impute_in_conda_env(
+            X=X, batch=batch,
+            cell_ids=spatioloji_obj.cell_index.astype(str).values,
+            gene_names=gene_names,
+            n_latent=n_latent,
+            max_epochs=max_epochs,
+            early_stopping=early_stopping,
+            early_stopping_patience=early_stopping_patience,
+            batch_size=batch_size,
+            accelerator=accelerator,
+            gene_likelihood=gene_likelihood,
+            random_state=random_state,
+            conda_env=conda_env,
+        )
+    else:
+        try:
+            import anndata
+            import scvi
+        except ImportError as err:
+            raise ImportError(
+                "scvi-tools not found. Install: pip install scvi-tools anndata\n"
+                "Or specify conda_env: scvi_impute(sp, conda_env='scvi_env')"
+            ) from err
+
+        obs   = pd.DataFrame(index=spatioloji_obj.cell_index.astype(str))
+        if batch is not None:
+            obs["batch"] = batch
+        var   = pd.DataFrame(index=gene_names)
+        adata = anndata.AnnData(X=X, obs=obs, var=var)
+
+        scvi.settings.seed = random_state
+        scvi.model.SCVI.setup_anndata(adata, batch_key="batch" if batch is not None else None)
+
+        model = scvi.model.SCVI(adata, n_latent=n_latent, gene_likelihood=gene_likelihood)
+
+        # --- detect and report accelerator ---
+        import torch
+        if accelerator == "auto":
+            if torch.cuda.is_available():
+                print("  Accelerator: GPU (CUDA) ✓")
+            elif torch.backends.mps.is_available():
+                print("  Accelerator: GPU (Apple MPS) ✓")
+            else:
+                print("  Accelerator: CPU (no GPU found — training will be slow)")
+        else:
+            print(f"  Accelerator: {accelerator}")
+
+        print(f"  batch_size={batch_size}, early_stopping={early_stopping}")
+        print("  Training scVI model...")
+
+        model.train(
+            max_epochs              = max_epochs,
+            accelerator             = accelerator,
+            batch_size              = batch_size,
+            early_stopping          = early_stopping,
+            early_stopping_patience = early_stopping_patience,
+        )
+
+        X_imputed = model.get_normalized_expression(return_numpy=True)
+
+    if gene_mask is not None:
+        X_full = X_base.copy()
+        X_full[:, gene_mask] = X_imputed
+        X_imputed = X_full
+
+    print("  ✓ scVI imputation complete")
+
+    if inplace:
+        spatioloji_obj.add_layer(output_layer, X_imputed, overwrite=True)
+        return None
+    else:
+        return X_imputed
+
+
+def _run_scvi_impute_in_conda_env(X, batch, cell_ids, gene_names, n_latent, max_epochs,
+                                  early_stopping, early_stopping_patience, batch_size,
+                                  accelerator, gene_likelihood, random_state, conda_env):
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_file  = os.path.join(tmpdir, "scvi_input.npz")
+        output_file = os.path.join(tmpdir, "scvi_output.npy")
+        script_file = os.path.join(tmpdir, "run_scvi.py")
+
+        np.savez_compressed(
+            input_file,
+            X                       = X,
+            batch                   = np.array([]) if batch is None else batch,
+            cell_ids                = np.asarray(cell_ids, dtype=str),
+            gene_names              = np.asarray(gene_names, dtype=str),
+            n_latent                = n_latent,
+            max_epochs              = -1 if max_epochs is None else int(max_epochs),
+            early_stopping          = int(early_stopping),
+            early_stopping_patience = int(early_stopping_patience),
+            batch_size              = int(batch_size),
+            accelerator             = str(accelerator),
+            gene_likelihood         = str(gene_likelihood),
+            random_state            = int(random_state),
+        )
+
+        script = f"""
+import numpy as np
+import pandas as pd
+import anndata
+import scvi
+
+data                    = np.load('{input_file}', allow_pickle=True)
+X                       = data['X']
+batch                   = data['batch'].astype(str)
+cell_ids                = data['cell_ids'].astype(str)
+gene_names              = data['gene_names'].astype(str)
+n_latent                = int(data['n_latent'])
+max_epochs_raw          = int(data['max_epochs'])
+early_stopping          = bool(int(data['early_stopping']))
+early_stopping_patience = int(data['early_stopping_patience'])
+batch_size              = int(data['batch_size'])
+accelerator             = str(data['accelerator'])
+gene_likelihood         = str(data['gene_likelihood'])
+random_state            = int(data['random_state'])
+
+max_epochs = None if max_epochs_raw < 0 else max_epochs_raw
+has_batch  = len(batch) > 0
+
+obs = pd.DataFrame(index=cell_ids)
+if has_batch:
+    obs['batch'] = batch
+var   = pd.DataFrame(index=gene_names)
+adata = anndata.AnnData(X=X, obs=obs, var=var)
+
+scvi.settings.seed = random_state
+scvi.model.SCVI.setup_anndata(adata, batch_key='batch' if has_batch else None)
+model = scvi.model.SCVI(adata, n_latent=n_latent, gene_likelihood=gene_likelihood)
+
+model.train(
+    max_epochs              = max_epochs,
+    accelerator             = accelerator,
+    batch_size              = batch_size,
+    early_stopping          = early_stopping,
+    early_stopping_patience = early_stopping_patience,
+)
+
+X_imputed = model.get_normalized_expression(return_numpy=True)
+np.save('{output_file}', X_imputed)
+print('scVI done!')
+"""
+        with open(script_file, "w") as f:
+            f.write(script)
+
+        try:
+            result = subprocess.run(["conda", "run", "-n", conda_env, "python", script_file],
+                                    capture_output=True, text=True, check=True)
+            print(result.stdout)
+        except (subprocess.CalledProcessError, FileNotFoundError) as e1:
+            try:
+                sh = os.path.join(tmpdir, "run_scvi.sh")
+                with open(sh, "w") as f:
+                    f.write(f"#!/bin/bash\nsource $(conda info --base)/etc/profile.d/conda.sh\n"
+                            f"conda activate {conda_env}\npython {script_file}\n")
+                result = subprocess.run(["bash", sh], capture_output=True, text=True, check=True)
+                print(result.stdout)
+            except Exception as e2:
+                raise RuntimeError(
+                    f"Failed to run scVI in '{conda_env}'.\n{e1}\n{e2}\n"
+                    f"Setup: conda create -n {conda_env} python=3.10\n"
+                    f"       pip install scvi-tools anndata"
+                ) from e2
+
+        if not os.path.exists(output_file):
+            raise RuntimeError(f"scVI failed — output not created in '{conda_env}'")
+        return np.load(output_file)
+
+
 def knn_smooth(
     spatioloji_obj,
     layer: str | None = "log_normalized",
@@ -385,60 +607,18 @@ def alra_impute(
     layer: str | None = None,
     use_highly_variable: bool = False,
     k: int | None = None,
-    q: int = 10,
-    quantile_prob: float = 0.001,
+    conda_env: str | None = None,
     output_layer: str = "alra_imputed",
     inplace: bool = True,
 ):
     """
-    ALRA (Adaptively-thresholded Low Rank Approximation) imputation.
+    ALRA imputation using pyALRA package.
 
-    Uses low-rank matrix approximation to recover dropout events. Adaptively
-    chooses rank and thresholds values. Works well on log-normalized data.
-    No special packages required (pure numpy/scipy).
-
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object with expression data
-    layer : str, optional
-        Which layer to impute. If None, uses main expression matrix.
-        Works best on log-normalized data.
-    use_highly_variable : bool, optional
-        Impute only HVGs, by default False
-    k : int, optional
-        Rank for low-rank approximation. If None, automatically determined
-    q : int, optional
-        Number of additional PCs for rank selection, by default 10
-    quantile_prob : float, optional
-        Quantile for thresholding, by default 0.001
-    output_layer : str, optional
-        Name for imputed layer, by default 'alra_imputed'
-    inplace : bool, optional
-        Add imputed layer to spatioloji object, by default True
-
-    Returns
-    -------
-    np.ndarray or None
-        Imputed expression if inplace=False, otherwise None
-
-    Examples
-    --------
-    >>> # ALRA imputation with automatic rank selection
-    >>> sp.processing.alra_impute(sp, layer='log_normalized')
-    >>>
-    >>> # Manual rank specification
-    >>> sp.processing.alra_impute(sp, k=20)
-
-    References
-    ----------
-    Linderman et al. (2018) bioRxiv
+    Requires: pip install pyALRA
+    Works best on log-normalized data (NOT raw counts).
     """
-    from scipy.sparse.linalg import svds
-
     print("\nALRA imputation")
 
-    # Get expression data
     if layer is None:
         X = spatioloji_obj.expression.get_dense()
     else:
@@ -446,7 +626,6 @@ def alra_impute(
         if sparse.issparse(X):
             X = X.toarray()
 
-    # Subset to HVGs if requested
     gene_mask = None
     if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
         gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
@@ -458,96 +637,18 @@ def alra_impute(
     else:
         X_impute = X
 
-    # Center the data
-    X_center = X_impute - X_impute.mean(axis=0)
+    if conda_env is not None:
+        print(f"  Running ALRA in conda environment: '{conda_env}'")
+        X_imputed = _run_alra_in_conda_env(X_impute, k, conda_env)
+    else:
+        X_imputed = _run_alra_core(X_impute, k)
 
-    # Determine rank if not provided
-    if k is None:
-        print("  Determining optimal rank...")
-
-        # Compute SVD for rank selection
-        max_k = min(100, X_impute.shape[0] - 1, X_impute.shape[1] - 1)
-
-        try:
-            U, s, Vt = svds(X_center, k=max_k)
-            # Sort by singular values (descending)
-            idx = np.argsort(-s)
-            s = s[idx]
-
-            # Find elbow point
-            # Use second derivative to find change in curvature
-            if len(s) > 10:
-                diffs = np.diff(s)
-                diffs2 = np.diff(diffs)
-                k = np.argmax(diffs2) + 2  # +2 for offset from double diff
-                k = min(k, max_k - q)
-            else:
-                k = max(5, len(s) // 2)
-
-            print(f"    Selected rank: {k}")
-
-        except Exception:
-            print("    SVD failed, using default rank: 20")
-            k = 20
-
-    k_actual = min(k, X_impute.shape[0] - 1, X_impute.shape[1] - 1)
-
-    # Compute low-rank approximation
-    print(f"  Computing low-rank approximation (k={k_actual})...")
-
-    try:
-        U, s, Vt = svds(X_center, k=k_actual)
-
-        # Sort by singular values (descending)
-        idx = np.argsort(-s)
-        U = U[:, idx]
-        s = s[idx]
-        Vt = Vt[idx, :]
-
-        # Reconstruct
-        X_lr = U @ np.diag(s) @ Vt
-        X_lr = X_lr + X_impute.mean(axis=0)  # Add back mean
-
-    except Exception as e:
-        print(f"    Error in SVD: {e}")
-        print("    Falling back to PCA-based approximation...")
-
-        pca = PCA(n_components=k_actual)
-        X_pca = pca.fit_transform(X_center)
-        X_lr = pca.inverse_transform(X_pca) + X_impute.mean(axis=0)
-
-    # Adaptive thresholding
-    print(f"  Applying adaptive thresholding (quantile={quantile_prob})...")
-
-    # For each gene, threshold at quantile
-    X_imputed = X_impute.copy()
-
-    for j in range(X_impute.shape[1]):
-        # Get non-zero values
-        nonzero_vals = X_impute[:, j][X_impute[:, j] > 0]
-
-        if len(nonzero_vals) > 10:
-            # Calculate threshold
-            threshold = np.quantile(nonzero_vals, quantile_prob)
-
-            # Where original was zero and imputed > threshold, use imputed
-            zero_mask = X_impute[:, j] == 0
-            impute_mask = zero_mask & (X_lr[:, j] > threshold)
-
-            X_imputed[impute_mask, j] = X_lr[impute_mask, j]
-
-    # Count imputed values
-    n_imputed = (X_impute == 0).sum() - (X_imputed == 0).sum()
-    pct_imputed = n_imputed / (X_impute == 0).sum() * 100
+    if gene_mask is not None:
+        X_full = X.copy()
+        X_full[:, gene_mask] = X_imputed
+        X_imputed = X_full
 
     print("  ✓ ALRA imputation complete")
-    print(f"    Imputed {n_imputed:,} values ({pct_imputed:.1f}% of zeros)")
-
-    # If we only imputed HVGs, merge back
-    if gene_mask is not None:
-        X_full = X.copy()
-        X_full[:, gene_mask] = X_imputed
-        X_imputed = X_full
 
     if inplace:
         spatioloji_obj.add_layer(output_layer, X_imputed, overwrite=True)
@@ -556,272 +657,322 @@ def alra_impute(
         return X_imputed
 
 
-def dca_impute(
-    spatioloji_obj,
-    layer: str | None = None,
-    use_highly_variable: bool = False,
-    epochs: int = 300,
-    hidden_size: tuple[int, int, int] = (64, 32, 64),
-    output_layer: str = "dca_imputed",
-    inplace: bool = True,
-):
-    """
-    DCA (Deep Count Autoencoder) imputation.
-
-    Uses a deep autoencoder to denoise and impute expression data.
-    Works on raw counts. Requires `dca` package.
-
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object with expression data
-    layer : str, optional
-        Which layer to impute (should be raw counts)
-    use_highly_variable : bool, optional
-        Use only HVGs, by default False
-    epochs : int, optional
-        Number of training epochs, by default 300
-    hidden_size : tuple, optional
-        Hidden layer dimensions, by default (64, 32, 64)
-    output_layer : str, optional
-        Name for imputed layer, by default 'dca_imputed'
-    inplace : bool, optional
-        Add imputed layer to spatioloji object, by default True
-
-    Returns
-    -------
-    np.ndarray or None
-        Imputed expression if inplace=False, otherwise None
-
-    Examples
-    --------
-    >>> # DCA imputation on raw counts
-    >>> sp.processing.dca_impute(sp, layer=None, epochs=300)
-
-    References
-    ----------
-    Eraslan et al. (2019) Nature Communications
-
-    Notes
-    -----
-    DCA requires TensorFlow and can be slow. Consider using simpler methods
-    like ALRA or k-NN smoothing for faster results.
-    """
+def _run_alra_core(X_impute, k):
     try:
-        from dca.api import dca
+        from pyALRA import alra, choose_k
     except ImportError as err:
         raise ImportError(
-            "DCA requires dca package. " "Install with: pip install dca\n" "Note: Also requires TensorFlow"
+            "pyALRA not found. Install with: pip install pyALRA"
         ) from err
 
-    print(f"\nDCA imputation (epochs={epochs})")
-    print("  Warning: This may take several minutes...")
+    if k is None:
+        print("  Selecting rank automatically...")
+        k = choose_k(X_impute)['k']
+        print(f"    Selected rank: {k}")
 
-    # Get expression data (should be raw counts)
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
+    print(f"  Running pyALRA (k={k})...")
+    X_imputed = alra(X_impute, k)['A_norm_rank_k_cor_sc']
 
-    # Subset to HVGs if requested
-    gene_mask = None
-    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
-        gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
-        if gene_mask.sum() > 0:
-            X_impute = X[:, gene_mask]
-            print(f"  Imputing {gene_mask.sum()} highly variable genes")
-        else:
-            X_impute = X
-    else:
-        X_impute = X
+    n_imp = (X_impute == 0).sum() - (X_imputed == 0).sum()
+    print(f"    Imputed {n_imp:,} values ({n_imp / max((X_impute == 0).sum(), 1) * 100:.1f}% of zeros)")
+    return X_imputed
 
-    # Convert to AnnData for DCA
-    import anndata
 
-    adata_temp = anndata.AnnData(X=X_impute)
+def _run_alra_in_conda_env(X_impute, k, conda_env):
+    import os
+    import subprocess
+    import tempfile
 
-    # Run DCA
-    print("  Running DCA...")
-    dca(adata_temp, epochs=epochs, hidden_size=hidden_size, verbose=True)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_file  = os.path.join(tmpdir, "alra_input.npz")
+        output_file = os.path.join(tmpdir, "alra_output.npy")
+        script_file = os.path.join(tmpdir, "run_alra.py")
 
-    X_imputed = adata_temp.X
-    if sparse.issparse(X_imputed):
-        X_imputed = X_imputed.toarray()
+        np.savez_compressed(input_file, X=X_impute,
+                            k=-1 if k is None else int(k))
 
-    print("  ✓ DCA imputation complete")
+        script = f"""
+import numpy as np
+from pyALRA import alra, choose_k
 
-    # If we only imputed HVGs, merge back
-    if gene_mask is not None:
-        X_full = X.copy()
-        X_full[:, gene_mask] = X_imputed
-        X_imputed = X_full
+data     = np.load('{input_file}', allow_pickle=True)
+X_impute = data['X']
+k        = None if int(data['k']) < 0 else int(data['k'])
 
-    if inplace:
-        spatioloji_obj.add_layer(output_layer, X_imputed, overwrite=True)
-        return None
-    else:
-        return X_imputed
+if k is None:
+    k = choose_k(X_impute)['k']
+    print(f"Selected rank: {{k}}")
+
+X_imputed = alra(X_impute, k)['A_norm_rank_k_cor_sc']
+np.save('{output_file}', X_imputed)
+print("ALRA done!")
+"""
+        with open(script_file, "w") as f:
+            f.write(script)
+
+        try:
+            result = subprocess.run(["conda", "run", "-n", conda_env, "python", script_file],
+                                    capture_output=True, text=True, check=True)
+            print(result.stdout)
+        except (subprocess.CalledProcessError, FileNotFoundError) as e1:
+            try:
+                sh = os.path.join(tmpdir, "run_alra.sh")
+                with open(sh, "w") as f:
+                    f.write(f"#!/bin/bash\nsource $(conda info --base)/etc/profile.d/conda.sh\n"
+                            f"conda activate {conda_env}\npython {script_file}\n")
+                result = subprocess.run(["bash", sh], capture_output=True, text=True, check=True)
+                print(result.stdout)
+            except Exception as e2:
+                raise RuntimeError(
+                    f"Failed to run ALRA in '{conda_env}'.\n{e1}\n{e2}\n"
+                    f"Setup: conda create -n {conda_env} python=3.10 && pip install pyALRA"
+                ) from e2
+
+        if not os.path.exists(output_file):
+            raise RuntimeError(f"ALRA failed — output file not created in '{conda_env}'")
+        return np.load(output_file)
+
+
+def _mask_and_run(spatioloji_obj, method_name, method_kwargs, X_masked):
+    """
+    Deep-copy spatioloji, inject masked data, run imputation,
+    and return full imputed matrix.
+    """
+    import copy
+
+    sp_temp = copy.deepcopy(spatioloji_obj)
+    sp_temp.add_layer("_masked", X_masked, overwrite=True)
+
+    run_kwargs = {**method_kwargs, "layer": "_masked", "output_layer": "_imputed", "inplace": True}
+
+    method_map = {
+        "knn_smooth": knn_smooth,
+        "alra": alra_impute,
+        "magic": magic_impute,
+        "scvi": scvi_impute,
+    }
+
+    if method_name not in method_map:
+        raise ValueError(
+            f"Unknown method '{method_name}'. "
+            f"Choose from: {list(method_map.keys())}"
+        )
+
+    method_map[method_name](sp_temp, **run_kwargs)
+
+    X_imp = sp_temp.get_layer("_imputed")
+    if sparse.issparse(X_imp):
+        X_imp = X_imp.toarray()
+    return np.asarray(X_imp, dtype=float)
 
 
 def compare_imputation_methods(
     spatioloji_obj,
+    methods: dict,
     layer: str = "log_normalized",
     test_genes: list[str] | None = None,
     n_test_genes: int = 10,
-    methods: list[str] | None = None,
-    magic_conda_env: str | None = None,  # NEW PARAMETER
+    mask_fraction: float = 0.1,
     random_state: int = 42,
+    convert_raw_to_log_for_metrics: bool = True,
+    raw_layer_keywords: tuple[str, ...] = ("raw", "count", "counts"),
 ) -> pd.DataFrame:
     """
-    Compare different imputation methods.
+    Compare imputation methods using a masking experiment (gold standard).
 
-    Randomly masks values and compares how well different methods recover them.
+    Metrics:
+    - RMSE
+    - Pearson correlation
+    - Spearman correlation
+    - Calibration of variance
+    - Recovery of zero inflation
 
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object with expression data
-    layer : str, optional
-        Which layer to test, by default 'log_normalized'
-    test_genes : list of str, optional
-        Specific genes to test. If None, randomly selects genes
-    n_test_genes : int, optional
-        Number of genes to test if test_genes is None, by default 10
-    methods : list of str, optional
-        Methods to compare, by default ['knn_smooth', 'alra']
-        Options: 'knn_smooth', 'alra', 'magic'
-    magic_conda_env : str, optional
-        Conda environment for MAGIC (if 'magic' in methods), by default None
-    random_state : int, optional
-        Random seed, by default 42
-
-    Returns
-    -------
-    pd.DataFrame
-        Comparison results with correlation and MSE for each method
-
-    Examples
-    --------
-    >>> # Compare k-NN and ALRA (no dependencies)
-    >>> results = sp.processing.compare_imputation_methods(
-    ...     sp,
-    ...     methods=['knn_smooth', 'alra'],
-    ...     n_test_genes=20
-    ... )
-    >>>
-    >>> # Include MAGIC using separate environment
-    >>> results = sp.processing.compare_imputation_methods(
-    ...     sp,
-    ...     methods=['knn_smooth', 'alra', 'magic'],
-    ...     magic_conda_env='magic_env',
-    ...     n_test_genes=20
-    ... )
+    If a method uses a raw/count-like layer, metrics are optionally computed
+    in log-normalized space for fair comparison.
     """
-    from scipy.stats import pearsonr
+    from scipy.stats import pearsonr, spearmanr
     from sklearn.metrics import mean_squared_error
 
-    if methods is None:
-        methods = ["knn_smooth", "alra"]
+    def _is_raw_like(layer_name: str | None) -> bool:
+        if layer_name is None:
+            return True
+        lname = str(layer_name).lower()
+        return any(k in lname for k in raw_layer_keywords)
 
-    print(f"\nComparing imputation methods: {methods}")
-    print(f"  Testing on {n_test_genes} genes")
+    def _get_dense_layer(layer_name: str | None) -> np.ndarray:
+        if layer_name is None:
+            X_layer = spatioloji_obj.expression.get_dense()
+        else:
+            X_layer = spatioloji_obj.get_layer(layer_name)
+        if sparse.issparse(X_layer):
+            X_layer = X_layer.toarray()
+        return np.asarray(X_layer, dtype=float)
+
+    def _log_normalize_matrix(X: np.ndarray, target_sum: float = 1e4) -> np.ndarray:
+        X_nonneg = np.clip(np.asarray(X, dtype=float), a_min=0.0, a_max=None)
+        libsize = X_nonneg.sum(axis=1, keepdims=True)
+        libsize[libsize == 0] = 1.0
+        X_norm = X_nonneg / libsize * target_sum
+        return np.log1p(X_norm)
+
+    def _safe_pearson(x: np.ndarray, y: np.ndarray) -> float:
+        if np.std(x) == 0 or np.std(y) == 0:
+            return np.nan
+        return float(pearsonr(x, y)[0])
+
+    def _safe_spearman(x: np.ndarray, y: np.ndarray) -> float:
+        if len(np.unique(x)) < 2 or len(np.unique(y)) < 2:
+            return np.nan
+        return float(spearmanr(x, y)[0])
+
+    print(f"\nMasking experiment: comparing {list(methods.keys())}")
+    print(f"  Reference layer : '{layer}'")
+    print(f"  Mask fraction   : {mask_fraction:.0%}")
 
     np.random.seed(random_state)
 
-    # Get expression data
-    X = spatioloji_obj.get_layer(layer)
-    if sparse.issparse(X):
-        X = X.toarray()
+    # Reference layer for selecting genes/mask positions
+    X_ref = _get_dense_layer(layer)
 
-    # Select test genes
+    # Select genes (moderate sparsity preferred)
     if test_genes is None:
-        # Select genes with moderate sparsity (not too sparse, not too dense)
-        sparsity = (X == 0).mean(axis=0)
-        moderate_sparse = (sparsity > 0.2) & (sparsity < 0.8)
-
-        if moderate_sparse.sum() < n_test_genes:
-            test_gene_indices = np.random.choice(X.shape[1], n_test_genes, replace=False)
-        else:
-            candidates = np.where(moderate_sparse)[0]
-            test_gene_indices = np.random.choice(candidates, n_test_genes, replace=False)
-
-        test_genes = spatioloji_obj.gene_index[test_gene_indices].tolist()
+        sparsity = (X_ref == 0).mean(axis=0)
+        candidates = np.where((sparsity > 0.2) & (sparsity < 0.8))[0]
+        if len(candidates) < n_test_genes:
+            print(f"  Warning: only {len(candidates)} genes with moderate sparsity; sampling from all genes")
+            candidates = np.arange(X_ref.shape[1])
+        test_gene_indices = np.random.choice(candidates, n_test_genes, replace=False)
     else:
         test_gene_indices = spatioloji_obj._get_gene_indices(test_genes)
 
-    # For each gene, mask 10% of non-zero values
-    X_masked = X.copy()
+    print(f"  Test genes      : {len(test_gene_indices)} selected")
+
+    # Build mask positions from reference layer
     mask_positions = []
-    true_values = []
-
     for gene_idx in test_gene_indices:
-        nonzero_idx = np.where(X[:, gene_idx] > 0)[0]
+        nonzero_idx = np.where(X_ref[:, gene_idx] > 0)[0]
+        if len(nonzero_idx) < 10:
+            continue
+        n_mask = max(1, int(len(nonzero_idx) * mask_fraction))
+        mask_idx = np.random.choice(nonzero_idx, n_mask, replace=False)
+        mask_positions.extend((int(i), int(gene_idx)) for i in mask_idx)
 
-        if len(nonzero_idx) > 10:
-            n_mask = max(1, len(nonzero_idx) // 10)
-            mask_idx = np.random.choice(nonzero_idx, n_mask, replace=False)
+    if len(mask_positions) == 0:
+        raise ValueError("No values were masked. Check selected genes and mask_fraction.")
 
-            mask_positions.extend([(i, gene_idx) for i in mask_idx])
-            true_values.extend(X[mask_idx, gene_idx])
+    mask_rows = np.asarray([i for i, _ in mask_positions], dtype=int)
+    mask_cols = np.asarray([j for _, j in mask_positions], dtype=int)
+    print(f"  Masked values   : {len(mask_rows)}")
 
-            X_masked[mask_idx, gene_idx] = 0
-
-    print(f"  Masked {len(true_values)} values")
-
-    # Test each method
+    layer_cache: dict[str | None, np.ndarray] = {layer: X_ref}
     results = []
 
-    for method in methods:
-        print(f"\n  Testing: {method}")
-
-        # Create temporary spatioloji with masked data
-        import copy
-
-        sp_temp = copy.deepcopy(spatioloji_obj)
-        sp_temp.add_layer("test_masked", X_masked, overwrite=True)
-
-        # Run imputation
+    for method_name, method_kwargs in methods.items():
+        print(f"\n  [{method_name}] running on masked data...")
         try:
-            if method == "knn_smooth":
-                knn_smooth(sp_temp, layer="test_masked", output_layer="imputed", inplace=True)
-            elif method == "alra":
-                alra_impute(sp_temp, layer="test_masked", output_layer="imputed", inplace=True)
-            elif method == "magic":
-                magic_impute(
-                    sp_temp,
-                    layer="test_masked",
-                    conda_env=magic_conda_env,  # Use specified environment
-                    output_layer="imputed",
-                    inplace=True,
+            run_kwargs = dict(method_kwargs)
+            method_layer = run_kwargs.pop("layer", layer)
+
+            if method_layer not in layer_cache:
+                layer_cache[method_layer] = _get_dense_layer(method_layer)
+
+            X_method_orig = layer_cache[method_layer]
+            if X_method_orig.shape != X_ref.shape:
+                raise ValueError(
+                    f"Layer '{method_layer}' shape {X_method_orig.shape} does not match "
+                    f"reference layer '{layer}' shape {X_ref.shape}"
                 )
+
+            X_method_masked = X_method_orig.copy()
+            X_method_masked[mask_rows, mask_cols] = 0
+
+            X_imputed = _mask_and_run(
+                spatioloji_obj=spatioloji_obj,
+                method_name=method_name,
+                method_kwargs=run_kwargs,
+                X_masked=X_method_masked,
+            )
+
+            metric_space = "native"
+            X_true_metric = X_method_orig
+            X_imp_metric = X_imputed
+
+            if convert_raw_to_log_for_metrics and _is_raw_like(method_layer):
+                print("    Converting raw/count-like layer to log-normalized space for metrics")
+                X_true_metric = _log_normalize_matrix(X_method_orig)
+                X_imp_metric = _log_normalize_matrix(X_imputed)
+                metric_space = "log_normalized"
+
+            true_values = X_true_metric[mask_rows, mask_cols]
+            imputed_values = X_imp_metric[mask_rows, mask_cols]
+
+            pearson_r = _safe_pearson(true_values, imputed_values)
+            spearman_r = _safe_spearman(true_values, imputed_values)
+            mse = float(mean_squared_error(true_values, imputed_values))
+            rmse = float(np.sqrt(mse))
+
+            true_var = float(np.var(true_values))
+            imp_var = float(np.var(imputed_values))
+            variance_ratio = np.nan if true_var == 0 else imp_var / true_var
+
+            if np.isnan(variance_ratio) or variance_ratio <= 0:
+                variance_calibration = np.nan
             else:
-                print(f"    Unknown method: {method}")
-                continue
+                # 1 is ideal, decreases symmetrically for over/under-smoothing
+                variance_calibration = max(0.0, 1.0 - abs(np.log2(variance_ratio)))
 
-            X_imputed = sp_temp.get_layer("imputed")
+            true_zero_frac = float((X_true_metric[:, test_gene_indices] == 0).mean())
+            imp_zero_frac = float((X_imp_metric[:, test_gene_indices] == 0).mean())
+            zero_inflation_recovery = max(0.0, 1.0 - abs(imp_zero_frac - true_zero_frac))
 
-            # Extract imputed values at masked positions
-            imputed_values = [X_imputed[i, j] for i, j in mask_positions]
+            variance_calibration_val = (
+                round(variance_calibration, 4)
+                if not np.isnan(variance_calibration)
+                else np.nan
+            )
 
-            # Calculate metrics
-            correlation, _ = pearsonr(true_values, imputed_values)
-            mse = mean_squared_error(true_values, imputed_values)
-            rmse = np.sqrt(mse)
+            results.append({
+                "method": method_name,
+                "input_layer": method_layer,
+                "metric_space": metric_space,
+                "pearson_r": round(pearson_r, 4) if not np.isnan(pearson_r) else np.nan,
+                "spearman_r": round(spearman_r, 4) if not np.isnan(spearman_r) else np.nan,
+                "mse": round(mse, 4),
+                "rmse": round(rmse, 4),
+                "variance_ratio": round(variance_ratio, 4) if not np.isnan(variance_ratio) else np.nan,
+                "variance_calibration": variance_calibration_val,
+                "zero_inflation_recovery": round(zero_inflation_recovery, 4),
+            })
 
-            results.append({"method": method, "correlation": correlation, "mse": mse, "rmse": rmse})
-
-            print(f"    Correlation: {correlation:.3f}")
-            print(f"    RMSE: {rmse:.3f}")
+            print(f"    Pearson r : {pearson_r:.4f}")
+            print(f"    Spearman r: {spearman_r:.4f}")
+            print(f"    RMSE      : {rmse:.4f}")
+            print(f"    Var ratio : {variance_ratio:.4f}")
+            print(f"    Var calib : {variance_calibration:.4f}")
+            print(f"    Zero recov: {zero_inflation_recovery:.4f}")
 
         except Exception as e:
-            print(f"    Error: {e}")
+            print(f"    ✗ Failed: {e}")
+            results.append({
+                "method": method_name,
+                "input_layer": method_kwargs.get("layer", layer),
+                "metric_space": np.nan,
+                "pearson_r": np.nan,
+                "spearman_r": np.nan,
+                "mse": np.nan,
+                "rmse": np.nan,
+                "variance_ratio": np.nan,
+                "variance_calibration": np.nan,
+                "zero_inflation_recovery": np.nan,
+            })
 
-    results_df = pd.DataFrame(results)
+    results_df = (
+        pd.DataFrame(results)
+        .sort_values("pearson_r", ascending=False, na_position="last")
+        .reset_index(drop=True)
+    )
 
-    print("\n  ✓ Comparison complete")
-    print("\n  Results:")
-    print(results_df.to_string(index=False))
-
+    print("\n  ✓ Masking experiment complete")
+    print("\n" + results_df.to_string(index=False))
     return results_df
+

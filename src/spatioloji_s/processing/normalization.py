@@ -307,6 +307,98 @@ def scale(
         return X_scaled
 
 
+def scale_by_batch_normalization(
+    spatioloji_obj,
+    batch_key: str,
+    layer: str | None = "log_normalized",
+    output_layer: str = "batch_scaled",
+    method: Literal["standard", "robust"] = "standard",
+    max_value: float | None = 10.0,
+    zero_center: bool = True,
+    inplace: bool = False,
+    copy: bool = False,
+):
+    """
+    Scale expression separately within each batch.
+
+    Useful when you want to standardize expression per gene while preserving
+    batch-local distributions (e.g., FOV, slide, sample).
+
+    Parameters
+    ----------
+    spatioloji_obj : spatioloji
+        Spatioloji object with expression data
+    batch_key : str
+        Column in `cell_meta` indicating batches (e.g. 'fov', 'slide', 'sample_id')
+    layer : str, optional
+        Which layer to scale, by default 'log_normalized'
+    output_layer : str, optional
+        Name for output layer, by default 'batch_scaled'
+    method : {'standard', 'robust'}, optional
+        Scaling method within each batch
+    max_value : float, optional
+        Clip values to [-max_value, max_value], by default 10.0
+    zero_center : bool, optional
+        Center data before scaling, by default True
+    inplace : bool, optional
+        Add output layer to object in place, by default False
+    copy : bool, optional
+        Return deep copy with added layer, by default False
+
+    Returns
+    -------
+    spatioloji, np.ndarray, or None
+        Depends on `copy` and `inplace` parameters
+    """
+    if batch_key not in spatioloji_obj.cell_meta.columns:
+        raise ValueError(f"Column '{batch_key}' not found in cell_meta")
+
+    if layer is None:
+        X = spatioloji_obj.expression.get_dense()
+    else:
+        X = spatioloji_obj.get_layer(layer)
+        if sparse.issparse(X):
+            X = X.toarray()
+
+    batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
+    batches = np.unique(batch)
+
+    print(f"\nBatch-wise scaling (batch_key='{batch_key}', method={method})")
+    print(f"  Found {len(batches)} batches")
+
+    X_scaled = np.zeros_like(X)
+
+    for batch_id in batches:
+        batch_mask = batch == batch_id
+
+        if method == "standard":
+            scaler = StandardScaler(with_mean=zero_center, with_std=True)
+        elif method == "robust":
+            scaler = RobustScaler(with_centering=zero_center, with_scaling=True)
+        else:
+            raise ValueError(f"Unknown scaling method: {method}")
+
+        X_scaled[batch_mask, :] = scaler.fit_transform(X[batch_mask, :])
+
+    if max_value is not None:
+        X_scaled = np.clip(X_scaled, -max_value, max_value)
+        print(f"  Clipped values to [{-max_value}, {max_value}]")
+
+    print(f"  ✓ Scaled {X.shape[0]:,} cells × {X.shape[1]:,} genes across batches")
+
+    if copy:
+        import copy as copy_module
+
+        sp_new = copy_module.deepcopy(spatioloji_obj)
+        sp_new.add_layer(output_layer, X_scaled, overwrite=True)
+        return sp_new
+    elif inplace:
+        spatioloji_obj.add_layer(output_layer, X_scaled, overwrite=True)
+        return None
+    else:
+        return X_scaled
+
+
 def normalize_pearson_residuals(
     spatioloji_obj,
     layer: str | None = None,

@@ -14,12 +14,14 @@ Usage
 """
 
 from .batch_correction import (
+    cca_integrate,
     combat,
     evaluate_batch_correction,
     harmony,
-    mnn_correct,
     regress_out,
+    rpca_integrate,
     scale_by_batch,
+    scvi_integrate,
 )
 from .clustering import (
     find_optimal_clusters,
@@ -43,9 +45,9 @@ from .feature_selection import (
 from .imputation import (
     alra_impute,
     compare_imputation_methods,
-    dca_impute,
     knn_smooth,
     magic_impute,
+    scvi_impute,
 )
 from .normalization import (
     log_transform,
@@ -53,6 +55,7 @@ from .normalization import (
     normalize_standard_workflow,
     normalize_total,
     scale,
+    scale_by_batch_normalization,
 )
 
 __all__ = [
@@ -60,6 +63,7 @@ __all__ = [
     "normalize_total",
     "log_transform",
     "scale",
+    "scale_by_batch_normalization",
     "normalize_pearson_residuals",
     "normalize_standard_workflow",
     # Feature selection
@@ -83,12 +87,14 @@ __all__ = [
     "harmony",
     "regress_out",
     "scale_by_batch",
-    "mnn_correct",
+    "scvi_integrate",
+    "cca_integrate",
+    "rpca_integrate",
     "evaluate_batch_correction",
     # Imputation
     "magic_impute",
     "knn_smooth",
     "alra_impute",
-    "dca_impute",
+    "scvi_impute",
     "compare_imputation_methods",
 ]

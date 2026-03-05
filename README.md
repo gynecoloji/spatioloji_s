@@ -24,7 +24,7 @@ This package was created with [Cookiecutter](https://github.com/audreyfeldroy/co
 - **Custom data structure** — A `spatioloji` object that unifies expression matrices, cell metadata, spatial coordinates, cell polygons, and FOV images under a single master cell index, ensuring automatic alignment across all components.
 - **Efficient memory handling** — Automatic sparse/dense matrix switching (`ExpressionMatrix`), and lazy-loading of FOV images with LRU caching (`ImageHandler`).
 - **Quality control** — Comprehensive QC metrics for cells, genes, and FOVs with diagnostic plots.
-- **Processing pipeline** — Normalization, feature selection, dimensionality reduction (PCA, UMAP, t-SNE), clustering (Leiden, Louvain, K-Means), batch correction (ComBat, Harmony), and imputation (MAGIC).
+- **Processing pipeline** — Normalization, feature selection, dimensionality reduction (PCA, UMAP, t-SNE), clustering (Leiden, Louvain, K-Means), batch correction (ComBat, Harmony, scVI), and imputation (MAGIC, scVI, ALRA, DCA, KNN).
 - **Spatial analysis** — Point-based and polygon-based spatial analysis including neighborhood enrichment, spatial statistics, Ripley's functions, and pattern analysis.
 - **Visualization** — Static and interactive spatial plots supporting both scatter (dot) and polygon (cell boundary) rendering, with flexible color customization.
 

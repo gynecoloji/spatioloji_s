@@ -157,11 +157,13 @@ def combat(
 
     # If we only corrected HVGs, need to merge back
     if gene_mask is not None:
-        X_full = X.copy() if layer is None else spatioloji_obj.get_layer(layer).copy()
-        if sparse.issparse(X_full):
-            X_full = X_full.toarray()
-        X_full[:, gene_mask] = X_corrected
-        X_corrected = X_full
+        warnings.warn(
+            "ComBat was run on HVGs only. Merging corrected HVGs "
+            "with uncorrected non-HVGs creates an inconsistent matrix. "
+            "Use use_highly_variable=False for consistent correction, "
+            "or use the output for HVG-only downstream analysis.",
+            UserWarning, stacklevel=2
+        )
 
     if inplace:
         spatioloji_obj.add_layer(output_layer, X_corrected, overwrite=True)
@@ -173,9 +175,8 @@ def combat(
 def harmony(
     spatioloji_obj,
     batch_key: str,
-    use_pca: bool = True,
     n_pcs: int = 50,
-    layer: str | None = "log_normalized",
+    layer: str | None = "scaled",       # ✅ fixed: scaled instead of log_normalized
     use_highly_variable: bool = True,
     max_iter_harmony: int = 10,
     theta: float = 2.0,
@@ -183,13 +184,14 @@ def harmony(
     random_state: int = 42,
     output_key: str = "X_pca_harmony",
     inplace: bool = True,
+    # removed use_pca parameter — Harmony always operates on PCA
 ):
     """
     Harmony batch correction in PCA space.
 
     Fast integration method that corrects batch effects in reduced dimension
-    space (typically PCA). Preserves more variance than ComBat and is
-    scalable to large datasets. Requires `harmonypy` package.
+    space (PCA). Preserves more variance than ComBat and is scalable to
+    large datasets. Requires `harmonypy` package.
 
     Parameters
     ----------
@@ -197,23 +199,23 @@ def harmony(
         Spatioloji object with expression data
     batch_key : str
         Column name in cell_meta that defines batches
-    use_pca : bool, optional
-        Run on PCA coordinates, by default True (recommended)
+        (e.g., 'sample_id', 'batch', 'fov_id')
     n_pcs : int, optional
-        Number of PCs to use, by default 50
+        Number of PCs to use for Harmony, by default 50
     layer : str, optional
-        Which layer to use if not using PCA, by default 'log_normalized'
+        Which layer to use if PCA needs to be computed.
+        Should be scaled (mean=0, std=1), by default 'scaled'
     use_highly_variable : bool, optional
-        Use only HVGs for PCA, by default True
+        Use only HVGs if PCA needs to be computed, by default True
     max_iter_harmony : int, optional
         Maximum Harmony iterations, by default 10
     theta : float, optional
         Diversity clustering penalty (0-inf), by default 2.0
-        Higher values = more aggressive correction
+        Higher values = more aggressive batch correction
     sigma : float, optional
         Ridge regression penalty, by default 0.1
     random_state : int, optional
-        Random seed, by default 42
+        Random seed for reproducibility, by default 42
     output_key : str, optional
         Key for storing corrected embeddings, by default 'X_pca_harmony'
     inplace : bool, optional
@@ -222,19 +224,29 @@ def harmony(
     Returns
     -------
     np.ndarray or None
-        Harmony-corrected coordinates if inplace=False, otherwise None
+        Harmony-corrected coordinates (n_cells x n_pcs) if inplace=False,
+        otherwise None
+
+    Notes
+    -----
+    - Always operates on PCA embedding — run pca() first for best results.
+    - If PCA not found in object, computes it automatically using scaled layer.
+    - Input layer must be scaled (mean=0, std=1) before PCA computation.
+    - Output is a corrected PCA embedding, NOT corrected expression values.
+    - Do NOT use Harmony-corrected embedding for pseudobulk DE analysis —
+      always use raw counts with batch as a covariate in the design matrix.
 
     Examples
     --------
-    >>> # Standard Harmony on PCA
-    >>> sp.processing.pca(sp, n_comps=50)
+    >>> # Recommended workflow
+    >>> sp.processing.pca(sp, layer='scaled', n_comps=50)
     >>> sp.processing.harmony(sp, batch_key='sample_id')
     >>>
     >>> # More aggressive correction
     >>> sp.processing.harmony(sp, batch_key='batch', theta=5.0)
     >>>
-    >>> # Then use corrected PCA for clustering
-    >>> # (modify clustering functions to accept 'use_harmony' parameter)
+    >>> # Access corrected embedding
+    >>> X_harmony = sp.embeddings['X_pca_harmony']
 
     References
     ----------
@@ -243,7 +255,10 @@ def harmony(
     try:
         import harmonypy as hm
     except ImportError as err:
-        raise ImportError("Harmony requires harmonypy package. " "Install with: pip install harmonypy") from err
+        raise ImportError(
+            "Harmony requires harmonypy package. "
+            "Install with: pip install harmonypy"
+        ) from err
 
     print(f"\nHarmony integration (batch_key='{batch_key}', theta={theta})")
 
@@ -253,35 +268,26 @@ def harmony(
 
     batch = spatioloji_obj.cell_meta[batch_key].values
     n_batches = len(np.unique(batch))
-
     print(f"  Found {n_batches} batches")
 
-    # Get input data
-    if use_pca:
-        # Use or compute PCA
-        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
-            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
-            print(f"  Using first {n_pcs} PCs")
-        else:
-            print("  Computing PCA first...")
-            from .dimension_reduction import pca as run_pca
-
-            run_pca(spatioloji_obj, layer=layer, use_highly_variable=use_highly_variable, n_comps=n_pcs, inplace=True)
-            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
+    # --- Always operate on PCA embedding ---
+    # Use existing PCA if available, otherwise compute it
+    if hasattr(spatioloji_obj, "_embeddings") and \
+       "X_pca" in spatioloji_obj._embeddings:
+        X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
+        print(f"  Using existing PCA ({n_pcs} PCs)")
     else:
-        # Use expression data
-        if layer is None:
-            X = spatioloji_obj.expression.get_dense()
-        else:
-            X = spatioloji_obj.get_layer(layer)
-            if sparse.issparse(X):
-                X = X.toarray()
-
-        if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
-            gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
-            if gene_mask.sum() > 0:
-                X = X[:, gene_mask]
-                print(f"  Using {gene_mask.sum()} highly variable genes")
+        print("  PCA not found — computing first...")
+        print(f"  (using layer='{layer}', use_highly_variable={use_highly_variable})")
+        from .dimension_reduction import pca as run_pca
+        run_pca(
+            spatioloji_obj,
+            layer=layer,
+            use_highly_variable=use_highly_variable,
+            n_comps=n_pcs,
+            inplace=True
+        )
+        X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
 
     # Prepare metadata DataFrame for Harmony
     meta_data = pd.DataFrame({batch_key: batch})
@@ -299,10 +305,10 @@ def harmony(
         verbose=False,
     )
 
-    X_corrected = ho.Z_corr.T  # Transpose to get (cells × components)
+    X_corrected = ho.Z_corr
 
     print("  ✓ Harmony integration complete")
-    print(f"    Converged after {ho.n_iter} iterations")
+    print(f"    Output shape: {X_corrected.shape}")
 
     if inplace:
         if not hasattr(spatioloji_obj, "_embeddings"):
@@ -310,7 +316,7 @@ def harmony(
 
         spatioloji_obj._embeddings[output_key] = X_corrected
 
-        # Add to cell_meta
+        # Add to cell_meta for easy access
         for i in range(X_corrected.shape[1]):
             spatioloji_obj._cell_meta[f"PC_harmony{i+1}"] = X_corrected[:, i]
 
@@ -546,24 +552,24 @@ def scale_by_batch(
         return X_scaled
 
 
-def mnn_correct(
+def scvi_integrate(
     spatioloji_obj,
     batch_key: str,
     layer: str | None = "log_normalized",
-    use_highly_variable: bool = True,
-    k: int = 20,
-    sigma: float = 1.0,
-    n_pcs: int = 50,
+    n_latent: int = 30,
+    max_epochs: int | None = None,
     conda_env: str | None = None,
-    output_layer: str = "mnn_corrected",
+    use_highly_variable: bool = True,
+    gene_likelihood: Literal["zinb", "nb", "poisson", "normal"] = "zinb",
+    random_state: int = 42,
+    output_key: str = "X_scvi",
     inplace: bool = True,
 ):
     """
-    Mutual Nearest Neighbors (MNN) batch correction.
+    Batch correction and integration using scVI.
 
-    Identifies mutual nearest neighbors between batches and uses them to
-    learn batch-specific corrections. Can run in a separate conda environment
-    if mnnpy has dependency conflicts.
+    Learns a batch-corrected latent representation with a variational
+    autoencoder. Requires `scvi-tools` and `anndata`.
 
     Parameters
     ----------
@@ -572,70 +578,35 @@ def mnn_correct(
     batch_key : str
         Column name in cell_meta that defines batches
     layer : str, optional
-        Which layer to correct, by default 'log_normalized'
-    use_highly_variable : bool, optional
-        Use only HVGs, by default True
-    k : int, optional
-        Number of nearest neighbors, by default 20
-    sigma : float, optional
-        Gaussian smoothing parameter, by default 1.0
-    n_pcs : int, optional
-        Number of PCs to use for finding neighbors, by default 50
+        Which layer to use for model training, by default 'log_normalized'
+    n_latent : int, optional
+        Number of latent dimensions, by default 30
+    max_epochs : int, optional
+        Maximum number of training epochs, by default None (auto)
     conda_env : str, optional
-        Name of conda environment with mnnpy installed, by default None
-        If None, tries to import mnnpy from current environment
-        If specified, runs MNN in that environment via subprocess
-    output_layer : str, optional
-        Name for corrected layer, by default 'mnn_corrected'
+        Name of conda environment with scvi-tools installed, by default None
+        If None, runs in current environment
+        If specified, runs scVI in that environment via subprocess
+    use_highly_variable : bool, optional
+        Train on highly variable genes only when available, by default True
+    gene_likelihood : {'zinb', 'nb', 'poisson', 'normal'}, optional
+        Observation model for expression counts, by default 'zinb'
+    random_state : int, optional
+        Random seed, by default 42
+    output_key : str, optional
+        Key for storing latent embedding, by default 'X_scvi'
     inplace : bool, optional
-        Add corrected layer to spatioloji object, by default True
+        Store results in spatioloji object, by default True
 
     Returns
     -------
     np.ndarray or None
-        MNN-corrected expression if inplace=False, otherwise None
-
-    Examples
-    --------
-    >>> # Try current environment first
-    >>> sp.processing.mnn_correct(sp, batch_key='sample_id', k=20)
-
-    >>> # Use separate conda environment (recommended if mnnpy fails to install)
-    >>> # First create environment: conda create -n mnnpy_env python=3.8 mnnpy -c bioconda
-    >>> sp.processing.mnn_correct(
-    ...     sp,
-    ...     batch_key='sample_id',
-    ...     conda_env='mnnpy_env',
-    ...     k=20
-    ... )
-
-    References
-    ----------
-    Haghverdi et al. (2018) Nature Biotechnology
-
-    Notes
-    -----
-    If using conda_env, make sure the environment has mnnpy installed:
-        conda create -n mnnpy_env python=3.8
-        conda activate mnnpy_env
-        conda install -c bioconda mnnpy
-        # or: pip install mnnpy
+        scVI latent representation if inplace=False, otherwise None
     """
+    print(f"\nscVI integration (batch_key='{batch_key}', n_latent={n_latent})")
 
-    print(f"\nMNN batch correction (batch_key='{batch_key}', k={k})")
-
-    # Check batch column exists
     if batch_key not in spatioloji_obj.cell_meta.columns:
         raise ValueError(f"Column '{batch_key}' not found in cell_meta")
-
-    batch = spatioloji_obj.cell_meta[batch_key].values
-    batches = np.unique(batch)
-    n_batches = len(batches)
-
-    if n_batches < 2:
-        raise ValueError("Need at least 2 batches for MNN correction")
-
-    print(f"  Found {n_batches} batches")
 
     # Get expression data
     if layer is None:
@@ -645,124 +616,139 @@ def mnn_correct(
         if sparse.issparse(X):
             X = X.toarray()
 
-    # Subset to HVGs if requested
+    gene_names = spatioloji_obj.gene_index.astype(str).values
+
     if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
         gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
         if gene_mask.sum() > 0:
             X = X[:, gene_mask]
+            gene_names = spatioloji_obj.gene_index[gene_mask].astype(str).values
             print(f"  Using {gene_mask.sum()} highly variable genes")
 
-    # If conda_env is specified, run in separate environment
+    batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
+
     if conda_env is not None:
-        print(f"  Running MNN in conda environment: '{conda_env}'")
-        X_corrected = _run_mnn_in_conda_env(X, batch, batches, k, sigma, n_pcs, conda_env)
+        print(f"  Running scVI in conda environment: '{conda_env}'")
+        X_scvi = _run_scvi_in_conda_env(
+            X=X,
+            batch=batch,
+            gene_names=gene_names,
+            n_latent=n_latent,
+            max_epochs=max_epochs,
+            gene_likelihood=gene_likelihood,
+            random_state=random_state,
+            conda_env=conda_env,
+        )
     else:
-        # Try to import mnnpy from current environment
         try:
-            import mnnpy
+            import anndata
+            import scvi
         except ImportError as err:
             raise ImportError(
-                "mnnpy not found in current environment. Either:\n"
-                "  1. Install mnnpy: pip install mnnpy\n"
-                "  2. Or specify conda_env with mnnpy installed:\n"
-                "     sp.processing.mnn_correct(sp, batch_key='...', conda_env='mnnpy_env')"
+                "scvi_integrate requires scvi-tools and anndata. "
+                "Install with: pip install scvi-tools anndata"
             ) from err
 
-        # Split data by batch
-        batch_data = []
-        for batch_id in batches:
-            batch_mask = batch == batch_id
-            batch_data.append(X[batch_mask, :])
-            print(f"    Batch '{batch_id}': {batch_mask.sum()} cells")
+        obs_df = spatioloji_obj.cell_meta.copy()
+        var_df = pd.DataFrame(index=gene_names)
+        adata = anndata.AnnData(X=X, obs=obs_df, var=var_df)
 
-        # Run MNN
-        print("  Running MNN correction...")
-        corrected, _, _ = mnnpy.mnn_correct(*batch_data, k=k, sigma=sigma, svd_dim=n_pcs, var_adj=True)
+        scvi.settings.seed = random_state
+        scvi.model.SCVI.setup_anndata(adata, batch_key=batch_key)
 
-        X_corrected = corrected[0]
+        print("  Training scVI model...")
+        model = scvi.model.SCVI(adata, n_latent=n_latent, gene_likelihood=gene_likelihood)
+        model.train(max_epochs=max_epochs)
 
-    print("  ✓ MNN correction complete")
+        X_scvi = model.get_latent_representation()
+
+    print("  ✓ scVI integration complete")
 
     if inplace:
-        spatioloji_obj.add_layer(output_layer, X_corrected, overwrite=True)
+        if not hasattr(spatioloji_obj, "_embeddings"):
+            spatioloji_obj._embeddings = {}
+
+        spatioloji_obj._embeddings[output_key] = X_scvi
+
+        for i in range(X_scvi.shape[1]):
+            spatioloji_obj._cell_meta[f"SCVI{i+1}"] = X_scvi[:, i]
+
         return None
     else:
-        return X_corrected
+        return X_scvi
 
 
-def _run_mnn_in_conda_env(X, batch, batches, k, sigma, n_pcs, conda_env):
+def _run_scvi_in_conda_env(X, batch, gene_names, n_latent, max_epochs, gene_likelihood, random_state, conda_env):
     """
-    Helper function to run MNN correction in a separate conda environment.
+    Helper function to run scVI integration in a separate conda environment.
 
     This creates temporary files, calls a Python script in the specified
-    conda environment, and loads the results back.
+    conda environment, and loads the latent embedding back.
     """
     import os
     import subprocess
     import tempfile
 
-    # Create temporary directory
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Save input data
-        input_file = os.path.join(tmpdir, "mnn_input.npz")
-        np.savez_compressed(input_file, X=X, batch=batch, batches=batches, k=k, sigma=sigma, n_pcs=n_pcs)
+        input_file = os.path.join(tmpdir, "scvi_input.npz")
+        np.savez_compressed(
+            input_file,
+            X=X,
+            batch=batch,
+            gene_names=np.asarray(gene_names, dtype=str),
+            n_latent=n_latent,
+            max_epochs=-1 if max_epochs is None else int(max_epochs),
+            gene_likelihood=str(gene_likelihood),
+            random_state=int(random_state),
+        )
 
-        output_file = os.path.join(tmpdir, "mnn_output.npy")
+        output_file = os.path.join(tmpdir, "scvi_output.npy")
 
-        # Create Python script for MNN
-        script_file = os.path.join(tmpdir, "run_mnn.py")
+        script_file = os.path.join(tmpdir, "run_scvi.py")
         script_content = f"""
 import numpy as np
-import mnnpy
+import pandas as pd
+import anndata
+import scvi
 
-# Load input
 data = np.load('{input_file}', allow_pickle=True)
 X = data['X']
-batch = data['batch']
-batches = data['batches']
-k = int(data['k'])
-sigma = float(data['sigma'])
-n_pcs = int(data['n_pcs'])
+batch = data['batch'].astype(str)
+gene_names = data['gene_names'].astype(str)
+n_latent = int(data['n_latent'])
+max_epochs_raw = int(data['max_epochs'])
+gene_likelihood = str(data['gene_likelihood'])
+random_state = int(data['random_state'])
 
-# Split data by batch
-batch_data = []
-for batch_id in batches:
-    batch_mask = batch == batch_id
-    batch_data.append(X[batch_mask, :])
-    print(f"Batch '{{batch_id}}': {{batch_mask.sum()}} cells")
+max_epochs = None if max_epochs_raw < 0 else max_epochs_raw
 
-# Run MNN
-print("Running MNN correction...")
-corrected, _, _ = mnnpy.mnn_correct(
-    *batch_data,
-    k=k,
-    sigma=sigma,
-    svd_dim=n_pcs,
-    var_adj=True
-)
+obs = pd.DataFrame({{'batch': batch}})
+var = pd.DataFrame(index=gene_names)
+adata = anndata.AnnData(X=X, obs=obs, var=var)
 
-# Save output
-np.save('{output_file}', corrected[0])
-print("MNN correction complete!")
+scvi.settings.seed = random_state
+scvi.model.SCVI.setup_anndata(adata, batch_key='batch')
+
+model = scvi.model.SCVI(adata, n_latent=n_latent, gene_likelihood=gene_likelihood)
+model.train(max_epochs=max_epochs)
+latent = model.get_latent_representation()
+
+np.save('{output_file}', latent)
+print('scVI integration complete!')
 """
 
         with open(script_file, "w") as f:
             f.write(script_content)
 
-        # Run script in conda environment
         print(f"    Calling conda environment '{conda_env}'...")
 
-        # Try different conda activation methods
         try:
-            # Method 1: Using conda run (newer conda versions)
             cmd = ["conda", "run", "-n", conda_env, "python", script_file]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             print(result.stdout)
-
         except (subprocess.CalledProcessError, FileNotFoundError) as e1:
             try:
-                # Method 2: Using shell script with source activate
-                shell_script = os.path.join(tmpdir, "run_mnn.sh")
+                shell_script = os.path.join(tmpdir, "run_scvi.sh")
                 with open(shell_script, "w") as f:
                     f.write(f"""#!/bin/bash
 source $(conda info --base)/etc/profile.d/conda.sh
@@ -772,27 +758,525 @@ python {script_file}
 
                 result = subprocess.run(["bash", shell_script], capture_output=True, text=True, check=True)
                 print(result.stdout)
-
             except Exception as e2:
                 raise RuntimeError(
-                    f"Failed to run MNN in conda environment '{conda_env}'.\n"
+                    f"Failed to run scVI in conda environment '{conda_env}'.\n"
                     f"Error 1 (conda run): {str(e1)}\n"
                     f"Error 2 (conda activate): {str(e2)}\n"
-                    f"Make sure the environment exists and has mnnpy installed:\n"
-                    f"  conda create -n {conda_env} python=3.8\n"
+                    "Make sure the environment exists and has scvi-tools installed:\n"
+                    f"  conda create -n {conda_env} python=3.10\n"
                     f"  conda activate {conda_env}\n"
-                    f"  conda install -c bioconda mnnpy"
+                    "  pip install scvi-tools anndata"
                 ) from e2
 
-        # Load results
         if not os.path.exists(output_file):
             raise RuntimeError(
-                f"MNN correction failed - output file not created.\n"
-                f"Check that mnnpy is properly installed in '{conda_env}'"
+                "scVI integration failed - output file not created.\n"
+                f"Check that scvi-tools is properly installed in '{conda_env}'"
             )
 
-        X_corrected = np.load(output_file)
+        return np.load(output_file)
 
+def _run_seurat_integration_in_conda(
+    X,
+    batch,
+    batches,
+    gene_names,
+    cell_names,
+    method,
+    n_dims,
+    n_features,
+    conda_env,
+    n_cores=1,
+):
+    """
+    Helper: run Seurat CCA or RPCA integration via R in a conda environment.
+
+    Writes input data to temp files, executes an R script using Rscript
+    inside the specified conda environment, and loads results back.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Log-normalized expression matrix (cells x genes)
+    batch : np.ndarray
+        Batch labels per cell
+    batches : np.ndarray
+        Unique batch identifiers
+    gene_names : np.ndarray
+        Gene names
+    cell_names : np.ndarray
+        Cell barcodes/names
+    method : str
+        'cca' or 'rpca'
+    n_dims : int
+        Number of dimensions for integration
+    n_features : int
+        Number of variable features per sample
+    conda_env : str or None
+        Conda environment name with R + Seurat installed
+
+    Returns
+    -------
+    np.ndarray
+        Corrected embedding (cells x n_dims)
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+
+        # --- Save input data as CSV per batch ---
+        input_files = []
+        for batch_id in batches:
+            mask = batch == batch_id
+            batch_X = X[mask, :]
+            batch_cells = cell_names[mask]
+
+            df = pd.DataFrame(
+                batch_X,
+                index=batch_cells,
+                columns=gene_names
+            )
+            fpath = os.path.join(tmpdir, f"batch_{batch_id}.csv")
+            df.to_csv(fpath)
+            input_files.append((batch_id, fpath))
+
+        output_file = os.path.join(tmpdir, "seurat_output.csv")
+
+        # --- Build R script ---
+        # Dynamically build the batch loading section
+        r_load_lines = []
+        r_obj_names = []
+        for batch_id, fpath in input_files:
+            safe_name = f"seurat_{str(batch_id).replace('-', '_').replace(' ', '_')}"
+            r_obj_names.append(safe_name)
+            r_load_lines.append(f"""
+mat_{safe_name} <- read.csv('{fpath}', row.names=1, check.names=FALSE)
+mat_{safe_name} <- t(as.matrix(mat_{safe_name}))  # genes x cells
+{safe_name} <- CreateSeuratObject(counts=mat_{safe_name})
+{safe_name} <- NormalizeData({safe_name}, verbose=FALSE)
+{safe_name} <- FindVariableFeatures({safe_name}, nfeatures={n_features}, verbose=FALSE)
+""")
+
+        r_obj_list = "list(" + ", ".join(r_obj_names) + ")"
+        reduction_method = '"cca"' if method == 'cca' else '"rpca"'
+
+        # For RPCA, need to run PCA on each object first
+        rpca_pca_lines = ""
+        if method == "rpca":
+            rpca_pca_lines = f"""
+# RPCA requires PCA on each object first
+features <- SelectIntegrationFeatures(seurat_list, nfeatures={n_features})
+seurat_list <- lapply(seurat_list, function(x) {{
+  x <- ScaleData(x, features=features, verbose=FALSE)
+  x <- RunPCA(x, features=features, verbose=FALSE)
+  x
+}})
+"""
+
+        r_script = f"""
+suppressPackageStartupMessages({{
+  library(Seurat)
+  library(dplyr)
+  library(future)
+}})
+
+# Enable multi-threading
+plan("multicore", workers={n_cores})
+options(future.globals.maxSize = 8 * 1024^3)  # 8 GB per worker
+
+cat("Using {n_cores} core(s) for integration\\n")
+
+cat("Loading batch data...\\n")
+
+# --- Load each batch as a Seurat object ---
+{"".join(r_load_lines)}
+
+# --- Create list of Seurat objects ---
+seurat_list <- {r_obj_list}
+
+cat("Finding integration features...\\n")
+features <- SelectIntegrationFeatures(seurat_list, nfeatures={n_features})
+
+{rpca_pca_lines}
+
+cat("Finding integration anchors ({method.upper()})...\\n")
+anchors <- FindIntegrationAnchors(
+  object.list = seurat_list,
+  anchor.features = features,
+  reduction = {reduction_method},
+  dims = 1:{n_dims},
+  verbose = FALSE
+)
+
+cat("Integrating data...\\n")
+integrated <- IntegrateData(
+  anchorset = anchors,
+  dims = 1:{n_dims},
+  verbose = FALSE
+)
+
+cat("Running PCA on integrated assay...\\n")
+DefaultAssay(integrated) <- "integrated"
+integrated <- ScaleData(integrated, verbose=FALSE)
+integrated <- RunPCA(integrated, npcs={n_dims}, verbose=FALSE)
+
+# --- Extract corrected PCA embedding ---
+pca_embed <- Embeddings(integrated, "pca")
+
+cat("Saving output...\\n")
+write.csv(pca_embed, "{output_file}", quote=FALSE)
+cat("Done!\\n")
+"""
+
+        script_file = os.path.join(tmpdir, "run_seurat.R")
+        with open(script_file, "w") as f:
+            f.write(r_script)
+
+        # --- Execute R script ---
+        def run_cmd(cmd):
+            return subprocess.run(
+                cmd, capture_output=True, text=True, check=True
+            )
+
+        print(f"    Executing R script ({method.upper()})...")
+
+        if conda_env is not None:
+            try:
+                # Method 1: conda run
+                result = run_cmd(
+                    ["conda", "run", "-n", conda_env, "Rscript", script_file]
+                )
+                print(result.stdout)
+            except (subprocess.CalledProcessError, FileNotFoundError) as e1:
+                try:
+                    # Method 2: shell + conda activate
+                    shell_script = os.path.join(tmpdir, "run_seurat.sh")
+                    with open(shell_script, "w") as f:
+                        f.write(f"""#!/bin/bash
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate {conda_env}
+Rscript {script_file}
+""")
+                    result = run_cmd(["bash", shell_script])
+                    print(result.stdout)
+                except Exception as e2:
+                    raise RuntimeError(
+                        f"Failed to run Seurat in conda environment '{conda_env}'.\n"
+                        f"Error 1 (conda run): {str(e1)}\n"
+                        f"Error 2 (conda activate): {str(e2)}\n"
+                        f"Make sure R + Seurat are installed in '{conda_env}':\n"
+                        f"  conda create -n {conda_env} -c conda-forge r-base r-seurat"
+                    ) from e2
+        else:
+            try:
+                # Run Rscript directly from current environment
+                result = run_cmd(["Rscript", script_file])
+                print(result.stdout)
+            except FileNotFoundError as err:
+                raise RuntimeError(
+                    "Rscript not found. Install R or specify conda_env with R + Seurat:\n"
+                    "  conda create -n seurat_env -c conda-forge r-base r-seurat"
+                ) from err
+
+        # --- Load output ---
+        if not os.path.exists(output_file):
+            raise RuntimeError(
+                f"Seurat {method.upper()} failed — output file not created.\n"
+                "Check that Seurat is properly installed and R script ran without errors."
+            )
+
+        result_df = pd.read_csv(output_file, index_col=0)
+        return result_df.values
+
+
+def cca_integrate(
+    spatioloji_obj,
+    batch_key: str,
+    layer: str | None = "log_normalized",
+    use_highly_variable: bool = True,
+    n_dims: int = 30,
+    n_features: int = 2000,
+    conda_env: str | None = None,
+    n_cores: int = 1,
+    output_key: str = "X_cca",
+    inplace: bool = True,
+):
+    """
+    Seurat CCA (Canonical Correlation Analysis) batch integration via R.
+
+    Identifies shared correlation structure across batches using CCA,
+    finds MNN anchors in this shared space, and integrates data.
+    This is Seurat's classic integration method (v3+).
+
+    Parameters
+    ----------
+    spatioloji_obj : spatioloji
+        Spatioloji object with expression data
+    batch_key : str
+        Column name in cell_meta that defines batches
+        (e.g., 'sample_id', 'batch')
+    layer : str, optional
+        Which layer to use, by default 'log_normalized'
+        Must be log-normalized — CCA assumes additive batch model in log space
+    use_highly_variable : bool, optional
+        Use only HVGs for integration, by default True
+    n_dims : int, optional
+        Number of CCA dimensions and PCs to compute, by default 30
+    n_features : int, optional
+        Number of variable features per batch, by default 2000
+    conda_env : str, optional
+        Conda environment with R + Seurat installed, by default None
+        If None, uses Rscript from current PATH
+        If specified, runs R in that environment via subprocess
+    output_key : str, optional
+        Key for storing corrected embedding, by default 'X_cca'
+    inplace : bool, optional
+        Store results in spatioloji object, by default True
+
+    Returns
+    -------
+    np.ndarray or None
+        CCA-corrected PCA embedding (n_cells x n_dims) if inplace=False,
+        otherwise None
+
+    Notes
+    -----
+    - Input layer must be log-normalized (NOT scaled, NOT raw counts)
+    - CCA is most powerful for strong batch effects across diverse datasets
+    - Output is a corrected PCA embedding — NOT corrected expression values
+    - Do NOT use for pseudobulk DE — always use raw counts with batch covariate
+    - For large datasets (>200k cells), consider RPCA or Harmony instead
+    - Requires R + Seurat installed (either in PATH or in conda_env)
+
+    Examples
+    --------
+    >>> # Basic CCA integration
+    >>> sp.processing.cca_integrate(sp, batch_key='sample_id')
+    >>>
+    >>> # Use specific conda environment
+    >>> sp.processing.cca_integrate(
+    ...     sp,
+    ...     batch_key='sample_id',
+    ...     conda_env='seurat_env',
+    ...     n_dims=30
+    ... )
+    >>>
+    >>> # Then use for clustering
+    >>> sp.processing.umap(sp, use_rep='X_cca')
+
+    References
+    ----------
+    Stuart et al. (2019) Cell — Seurat v3
+    """
+    print(f"\nSeurat CCA integration (batch_key='{batch_key}')")
+
+    if batch_key not in spatioloji_obj.cell_meta.columns:
+        raise ValueError(f"Column '{batch_key}' not found in cell_meta")
+
+    batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
+    batches = np.unique(batch)
+    n_batches = len(batches)
+
+    if n_batches < 2:
+        raise ValueError("Need at least 2 batches for CCA integration")
+
+    print(f"  Found {n_batches} batches")
+
+    # Get expression data — must be log-normalized
+    if layer is None:
+        X = spatioloji_obj.expression.get_dense()
+    else:
+        X = spatioloji_obj.get_layer(layer)
+        if sparse.issparse(X):
+            X = X.toarray()
+
+    gene_names = spatioloji_obj.gene_index.astype(str).values
+    cell_names = spatioloji_obj.cell_index.astype(str).values
+
+    # Subset to HVGs if available
+    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+        gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
+        if gene_mask.sum() > 0:
+            X = X[:, gene_mask]
+            gene_names = gene_names[gene_mask]
+            print(f"  Using {gene_mask.sum()} highly variable genes")
+
+    # Run CCA via R/Seurat
+    X_corrected = _run_seurat_integration_in_conda(
+        X=X,
+        batch=batch,
+        batches=batches,
+        gene_names=gene_names,
+        cell_names=cell_names,
+        method="cca",
+        n_dims=n_dims,
+        n_features=n_features,
+        conda_env=conda_env,
+        n_cores=n_cores,
+    )
+
+    print("  ✓ CCA integration complete")
+    print(f"    Output shape: {X_corrected.shape}")
+
+    if inplace:
+        if not hasattr(spatioloji_obj, "_embeddings"):
+            spatioloji_obj._embeddings = {}
+
+        spatioloji_obj._embeddings[output_key] = X_corrected
+
+        for i in range(X_corrected.shape[1]):
+            spatioloji_obj._cell_meta[f"CCA{i+1}"] = X_corrected[:, i]
+
+        return None
+    else:
+        return X_corrected
+
+
+def rpca_integrate(
+    spatioloji_obj,
+    batch_key: str,
+    layer: str | None = "log_normalized",
+    use_highly_variable: bool = True,
+    n_dims: int = 30,
+    n_features: int = 2000,
+    conda_env: str | None = None,
+    n_cores=1,
+    output_key: str = "X_rpca",
+    inplace: bool = True,
+):
+    """
+    Seurat RPCA (Reciprocal PCA) batch integration via R.
+
+    Faster alternative to CCA integration. Projects each dataset into
+    the PCA space of the other, finds MNN anchors in this reciprocal
+    space, and integrates. Better suited for large datasets.
+
+    Parameters
+    ----------
+    spatioloji_obj : spatioloji
+        Spatioloji object with expression data
+    batch_key : str
+        Column name in cell_meta that defines batches
+        (e.g., 'sample_id', 'batch')
+    layer : str, optional
+        Which layer to use, by default 'log_normalized'
+        Must be log-normalized — RPCA assumes additive batch model in log space
+    use_highly_variable : bool, optional
+        Use only HVGs for integration, by default True
+    n_dims : int, optional
+        Number of PCA dimensions to compute per batch, by default 30
+    n_features : int, optional
+        Number of variable features per batch, by default 2000
+    conda_env : str, optional
+        Conda environment with R + Seurat installed, by default None
+        If None, uses Rscript from current PATH
+        If specified, runs R in that environment via subprocess
+    output_key : str, optional
+        Key for storing corrected embedding, by default 'X_rpca'
+    inplace : bool, optional
+        Store results in spatioloji object, by default True
+
+    Returns
+    -------
+    np.ndarray or None
+        RPCA-corrected PCA embedding (n_cells x n_dims) if inplace=False,
+        otherwise None
+
+    Notes
+    -----
+    - Input layer must be log-normalized (NOT scaled, NOT raw counts)
+    - RPCA is faster and less prone to overcorrection than CCA
+    - RPCA runs PCA on each batch separately before anchor finding
+    - Output is a corrected PCA embedding — NOT corrected expression values
+    - Do NOT use for pseudobulk DE — always use raw counts with batch covariate
+    - Preferred over CCA for large datasets (>100k cells) or many batches
+    - Requires R + Seurat installed (either in PATH or in conda_env)
+
+    Examples
+    --------
+    >>> # Basic RPCA integration
+    >>> sp.processing.rpca_integrate(sp, batch_key='sample_id')
+    >>>
+    >>> # Use specific conda environment
+    >>> sp.processing.rpca_integrate(
+    ...     sp,
+    ...     batch_key='sample_id',
+    ...     conda_env='seurat_env',
+    ...     n_dims=30,
+    ...     n_features=3000
+    ... )
+    >>>
+    >>> # Then use for clustering
+    >>> sp.processing.umap(sp, use_rep='X_rpca')
+
+    References
+    ----------
+    Hao et al. (2021) Cell — Seurat v4
+    """
+    print(f"\nSeurat RPCA integration (batch_key='{batch_key}')")
+
+    if batch_key not in spatioloji_obj.cell_meta.columns:
+        raise ValueError(f"Column '{batch_key}' not found in cell_meta")
+
+    batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
+    batches = np.unique(batch)
+    n_batches = len(batches)
+
+    if n_batches < 2:
+        raise ValueError("Need at least 2 batches for RPCA integration")
+
+    print(f"  Found {n_batches} batches")
+
+    # Get expression data — must be log-normalized
+    if layer is None:
+        X = spatioloji_obj.expression.get_dense()
+    else:
+        X = spatioloji_obj.get_layer(layer)
+        if sparse.issparse(X):
+            X = X.toarray()
+
+    gene_names = spatioloji_obj.gene_index.astype(str).values
+    cell_names = spatioloji_obj.cell_index.astype(str).values
+
+    # Subset to HVGs if available
+    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+        gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
+        if gene_mask.sum() > 0:
+            X = X[:, gene_mask]
+            gene_names = gene_names[gene_mask]
+            print(f"  Using {gene_mask.sum()} highly variable genes")
+
+    # Run RPCA via R/Seurat
+    X_corrected = _run_seurat_integration_in_conda(
+        X=X,
+        batch=batch,
+        batches=batches,
+        gene_names=gene_names,
+        cell_names=cell_names,
+        method="rpca",
+        n_dims=n_dims,
+        n_features=n_features,
+        conda_env=conda_env,
+        n_cores=n_cores,
+    )
+
+    print("✓ RPCA integration complete")
+    print(f"Output shape: {X_corrected.shape}")
+
+    if inplace:
+        if not hasattr(spatioloji_obj, "_embeddings"):
+            spatioloji_obj._embeddings = {}
+
+        spatioloji_obj._embeddings[output_key] = X_corrected
+
+        for i in range(X_corrected.shape[1]):
+            spatioloji_obj._cell_meta[f"RPCA{i+1}"] = X_corrected[:, i]
+
+        return None
+    else:
         return X_corrected
 
 
