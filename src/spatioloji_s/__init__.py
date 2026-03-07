@@ -7,6 +7,7 @@ spatioloji - Spatial transcriptomics data analysis package
 # Core data structures
 # Import submodules
 from . import (
+    ccc,
     data,
     processing,
     spatial,  # <-- ADD THIS LINE
@@ -29,5 +30,6 @@ __all__ = [
     "data",
     "processing",
     "visualization",
-    "spatial",  # <-- ADD THIS LINE
+    "spatial",
+    "ccc",
 ]

@@ -102,10 +102,18 @@ def leiden_clustering(
 
     # Apply PCA if requested
     if use_pca:
-        print(f"  Computing PCA (n_pcs={n_pcs})...")
-        pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
-        X_reduced = pca.fit_transform(X)
-        print(f"    Variance explained: {pca.explained_variance_ratio_.sum()*100:.1f}%")
+        if hasattr(spatioloji_obj, '_embeddings') and 'X_pca' in spatioloji_obj._embeddings:
+            X_reduced = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+            print(f"  Using stored PCA (first {n_pcs} PCs)")
+        else:
+            print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
+            from sklearn.decomposition import PCA
+            pca_model = PCA(
+                n_components=min(n_pcs, X.shape[0], X.shape[1]),
+                random_state=random_state
+            )
+            X_reduced = pca_model.fit_transform(X)
+            print(f"    Variance explained: {pca_model.explained_variance_ratio_.sum()*100:.1f}%")
     else:
         X_reduced = X
 
