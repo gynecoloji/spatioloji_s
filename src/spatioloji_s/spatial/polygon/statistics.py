@@ -72,7 +72,7 @@ def contact_permutation_test(
     """
     from .neighborhoods import neighborhood_enrichment
 
-    print(f"\n[Statistics] Contact permutation test " f"(correction='{correction}')...")
+    print(f"\n[Statistics] Contact permutation test (correction='{correction}')...")
 
     # Run enrichment analysis (does the heavy permutation work)
     enrichment = neighborhood_enrichment(sp, graph, group_col, n_permutations=n_permutations, seed=seed)
@@ -120,7 +120,7 @@ def contact_permutation_test(
     elif correction == "none":
         adjusted = raw_pvals.copy()
     else:
-        raise ValueError(f"Unknown correction: '{correction}'. " "Use 'bonferroni', 'fdr', or 'none'.")
+        raise ValueError(f"Unknown correction: '{correction}'. Use 'bonferroni', 'fdr', or 'none'.")
 
     results["p_adjusted"] = adjusted
     results["significant"] = adjusted < 0.05
@@ -135,9 +135,7 @@ def contact_permutation_test(
         print("\n  Significant pairs:")
         for _, row in results[results["significant"]].iterrows():
             print(
-                f"    {row.type_a} – {row.type_b}: "
-                f"z={row.z_score:+.2f}, p_adj={row.p_adjusted:.3f} "
-                f"({row.direction})"
+                f"    {row.type_a} – {row.type_b}: z={row.z_score:+.2f}, p_adj={row.p_adjusted:.3f} ({row.direction})"
             )
 
     return results
@@ -197,7 +195,7 @@ def morphology_association_test(
     morph_col = f"morph_{metric}"
 
     if morph_col not in sp.cell_meta.columns:
-        raise ValueError(f"'{morph_col}' not found in cell_meta. " "Run compute_morphology(sp) first.")
+        raise ValueError(f"'{morph_col}' not found in cell_meta. Run compute_morphology(sp) first.")
 
     if group_col is None and expression_gene is None:
         raise ValueError("Provide either group_col or expression_gene")
@@ -206,7 +204,7 @@ def morphology_association_test(
 
     # Mode 1: Group comparison
     if group_col is not None:
-        print(f"\n[Statistics] Morphology association: " f"{metric} ~ {group_col} ({test})...")
+        print(f"\n[Statistics] Morphology association: {metric} ~ {group_col} ({test})...")
 
         if group_col not in sp.cell_meta.columns:
             raise ValueError(f"'{group_col}' not found in cell_meta")
@@ -248,7 +246,7 @@ def morphology_association_test(
 
     # Mode 2: Correlation with gene expression
     if expression_gene is not None:
-        print(f"\n[Statistics] Morphology correlation: " f"{metric} ~ {expression_gene} ({test})...")
+        print(f"\n[Statistics] Morphology correlation: {metric} ~ {expression_gene} ({test})...")
 
         if expression_gene not in sp.gene_index:
             raise ValueError(f"Gene '{expression_gene}' not found")
@@ -337,7 +335,7 @@ def spatial_autocorrelation_test(
     """
     from .patterns import spatial_autocorrelation
 
-    print(f"\n[Statistics] Spatial autocorrelation test " f"({method}, correction='{correction}')...")
+    print(f"\n[Statistics] Spatial autocorrelation test ({method}, correction='{correction}')...")
 
     # Select metrics
     if metrics is None:
@@ -400,7 +398,7 @@ def spatial_autocorrelation_test(
         elif correction == "none":
             valid_adj = valid_raw.copy()
         else:
-            raise ValueError(f"Unknown correction: '{correction}'. " "Use 'bonferroni', 'fdr', or 'none'.")
+            raise ValueError(f"Unknown correction: '{correction}'. Use 'bonferroni', 'fdr', or 'none'.")
 
         adjusted[valid_p] = valid_adj
 
@@ -412,11 +410,11 @@ def spatial_autocorrelation_test(
 
     # Report
     n_sig = results["significant"].sum()
-    print(f"\n  ✓ {n_sig}/{n_tests} metrics spatially autocorrelated " f"(p_adj < 0.05)")
+    print(f"\n  ✓ {n_sig}/{n_tests} metrics spatially autocorrelated (p_adj < 0.05)")
     if n_sig > 0:
         for _, row in results[results["significant"]].head(10).iterrows():
             direction = "clustered" if row.z_score > 0 else "dispersed"
-            print(f"    {row.metric}: {method}={row.statistic:.4f}, " f"p_adj={row.p_adjusted:.2e} ({direction})")
+            print(f"    {row.metric}: {method}={row.statistic:.4f}, p_adj={row.p_adjusted:.2e} ({direction})")
 
     return results
 
@@ -567,9 +565,9 @@ def boundary_enrichment_test(
 
     # Report
     n_sig = results["significant"].sum()
-    print(f"\n  ✓ {n_sig}/{len(unique_types)} types significantly " f"enriched/depleted at boundaries")
+    print(f"\n  ✓ {n_sig}/{len(unique_types)} types significantly enriched/depleted at boundaries")
     for _, row in results[results["significant"]].iterrows():
         direction = "enriched" if row.fold_change > 1 else "depleted"
-        print(f"    {row.cell_type}: FC={row.fold_change:.2f}, " f"p={row.p_value:.3f} ({direction})")
+        print(f"    {row.cell_type}: FC={row.fold_change:.2f}, p={row.p_value:.3f} ({direction})")
 
     return results

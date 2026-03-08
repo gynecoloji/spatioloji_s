@@ -125,7 +125,7 @@ def _get_gdf(sp: spatioloji, coord_type: str = "global") -> gpd.GeoDataFrame:
     """
     if sp.polygons is None:
         raise ValueError(
-            "spatioloji has no polygon data. " "Polygon-based spatial analysis requires cell boundary polygons."
+            "spatioloji has no polygon data. Polygon-based spatial analysis requires cell boundary polygons."
         )
     return sp.to_geopandas(coord_type=coord_type, include_metadata=False)
 

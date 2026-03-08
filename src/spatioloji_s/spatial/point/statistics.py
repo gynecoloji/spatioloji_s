@@ -72,7 +72,7 @@ def nearest_neighbor_distances(
 
     # Report
     print(f"  ✓ Nearest neighbor distances (k={k}):")
-    print(f"    mean={nnd.mean():.2f}, median={np.median(nnd):.2f}, " f"std={nnd.std():.2f}")
+    print(f"    mean={nnd.mean():.2f}, median={np.median(nnd):.2f}, std={nnd.std():.2f}")
 
     # Per-type summary
     if cell_type_col is not None:
@@ -85,7 +85,7 @@ def nearest_neighbor_distances(
         for ct in np.unique(labels):
             mask = labels == ct
             ct_nnd = nnd[mask]
-            print(f"      {str(ct):>20s}: mean={ct_nnd.mean():.2f}, " f"median={np.median(ct_nnd):.2f}, n={mask.sum()}")
+            print(f"      {str(ct):>20s}: mean={ct_nnd.mean():.2f}, median={np.median(ct_nnd):.2f}, n={mask.sum()}")
 
     return result
 
@@ -181,7 +181,7 @@ def cross_type_distances(
 
     print(f"  ✓ Cross-type distance ({source_type}→{target_type}):")
     print(f"    n_source={n_source}, n_target={n_target}")
-    print(f"    mean={nn_dists.mean():.2f}, " f"median={np.median(nn_dists):.2f}, " f"std={nn_dists.std():.2f}")
+    print(f"    mean={nn_dists.mean():.2f}, median={np.median(nn_dists):.2f}, std={nn_dists.std():.2f}")
 
     return result
 
@@ -284,9 +284,7 @@ def proximity_score(
         np.fill_diagonal(norm_vals, np.inf)
         min_idx = np.unravel_index(norm_vals.argmin(), norm_vals.shape)
         closest = (types[min_idx[0]], types[min_idx[1]])
-        print(
-            f"    Closest pair: {closest[0]}→{closest[1]} " f"(norm={normalized_df.iloc[min_idx[0], min_idx[1]]:.2f})"
-        )
+        print(f"    Closest pair: {closest[0]}→{closest[1]} (norm={normalized_df.iloc[min_idx[0], min_idx[1]]:.2f})")
 
     return {
         "median_distance": median_df,
@@ -387,7 +385,7 @@ def permutation_test(
     elif alternative == "less":
         extreme = np.sum(null_dist <= observed)
     else:
-        raise ValueError(f"Unknown alternative: {alternative}. " "Use 'two-sided', 'greater', or 'less'.")
+        raise ValueError(f"Unknown alternative: {alternative}. Use 'two-sided', 'greater', or 'less'.")
 
     pvalue = (extreme + 1) / (n_permutations + 1)
 

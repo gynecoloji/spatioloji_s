@@ -74,8 +74,7 @@ def neighborhood_composition(
         result = result.div(row_sums.replace(0, np.nan), axis=0).fillna(0)
 
     print(
-        f"  ✓ Neighborhood composition: {n_cells} cells × {n_types} types"
-        f" ({'proportions' if normalize else 'counts'})"
+        f"  ✓ Neighborhood composition: {n_cells} cells × {n_types} types ({'proportions' if normalize else 'counts'})"
     )
 
     return result
@@ -182,7 +181,7 @@ def neighborhood_enrichment(
     top_enriched = sorted(zip(type_pairs, z_flat, strict=False), key=lambda x: -x[1])[:3]
     top_depleted = sorted(zip(type_pairs, z_flat, strict=False), key=lambda x: x[1])[:3]
 
-    print(f"  ✓ Neighborhood enrichment: {n_types} types, " f"{n_permutations} permutations")
+    print(f"  ✓ Neighborhood enrichment: {n_types} types, {n_permutations} permutations")
     print(f"    Top enriched:  {top_enriched[0][0]} (z={top_enriched[0][1]:.2f})")
     print(f"    Top depleted:  {top_depleted[0][0]} (z={top_depleted[0][1]:.2f})")
 
@@ -255,7 +254,7 @@ def identify_niches(
             import leidenalg
         except ImportError as err:
             raise ImportError(
-                "Leiden requires leidenalg and igraph. " "Install with: pip install leidenalg igraph"
+                "Leiden requires leidenalg and igraph. Install with: pip install leidenalg igraph"
             ) from err
         from sklearn.neighbors import NearestNeighbors
 
@@ -305,7 +304,7 @@ def identify_niches(
     for niche, count in niche_counts.items():
         top_type = signatures.loc[niche].idxmax()
         top_pct = signatures.loc[niche].max() * 100
-        print(f"    {niche}: {count:,} cells " f"(dominant: {top_type} {top_pct:.0f}%)")
+        print(f"    {niche}: {count:,} cells (dominant: {top_type} {top_pct:.0f}%)")
 
     return {
         "labels": labels,
@@ -389,6 +388,6 @@ def neighborhood_diversity(
     print(f"  ✓ Neighborhood diversity ({len(metrics)} metrics):")
     for col in result.columns:
         vals = result[col]
-        print(f"    {col}: mean={vals.mean():.3f}, " f"range=[{vals.min():.3f}, {vals.max():.3f}]")
+        print(f"    {col}: mean={vals.mean():.3f}, range=[{vals.min():.3f}, {vals.max():.3f}]")
 
     return result

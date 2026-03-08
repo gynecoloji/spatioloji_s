@@ -152,7 +152,7 @@ def ripleys_k(
 
     csr_expected = np.pi * r_values**2
 
-    print(f"  ✓ Ripley's K: n={n}, max_r={max_r:.1f}, " f"correction={correction}")
+    print(f"  ✓ Ripley's K: n={n}, max_r={max_r:.1f}, correction={correction}")
 
     return RipleyResult(
         r=r_values,
@@ -353,7 +353,7 @@ def cross_k(
     n_b = len(coords_b)
 
     if n_a == 0 or n_b == 0:
-        raise ValueError(f"No cells found for type_a='{type_a}' " f"({n_a}) or type_b='{type_b}' ({n_b})")
+        raise ValueError(f"No cells found for type_a='{type_a}' ({n_a}) or type_b='{type_b}' ({n_b})")
 
     # Bounding box from all cells
     xmin, ymin = all_coords.min(axis=0)
@@ -394,7 +394,7 @@ def cross_k(
 
     csr_expected = np.pi * r_values**2
 
-    print(f"  ✓ Cross-K ({type_a}→{type_b}): n_a={n_a}, n_b={n_b}, " f"max_r={max_r:.1f}")
+    print(f"  ✓ Cross-K ({type_a}→{type_b}): n_a={n_a}, n_b={n_b}, max_r={max_r:.1f}")
 
     return RipleyResult(
         r=r_values,
@@ -458,7 +458,7 @@ def cross_l(
     L_values = np.sqrt(k_result.statistic / np.pi) - k_result.r
     csr_expected = np.zeros_like(k_result.r)
 
-    print(f"  ✓ Cross-L ({type_a}→{type_b}): " f"max deviation = {np.max(np.abs(L_values)):.4f}")
+    print(f"  ✓ Cross-L ({type_a}→{type_b}): max deviation = {np.max(np.abs(L_values)):.4f}")
 
     return RipleyResult(
         r=k_result.r,
@@ -602,9 +602,7 @@ def simulation_envelope(
     # Report
     above = np.sum(observed.statistic > envelope_hi)
     below = np.sum(observed.statistic < envelope_lo)
-    print(
-        f"  ✓ Envelope ({confidence:.0%}): " f"{above} distances above, {below} below, " f"{n_r - above - below} inside"
-    )
+    print(f"  ✓ Envelope ({confidence:.0%}): {above} distances above, {below} below, {n_r - above - below} inside")
 
     # Return observed with envelope attached
     observed.envelope_lo = envelope_lo

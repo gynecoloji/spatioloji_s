@@ -156,7 +156,7 @@ def build_knn_graph(
 
     adjacency = (dist_sym != 0).astype(np.float32)
 
-    print(f"  ✓ KNN graph: k={k}, {adjacency.nnz // 2} edges, " f"mean degree={np.array(adjacency.sum(1)).mean():.1f}")
+    print(f"  ✓ KNN graph: k={k}, {adjacency.nnz // 2} edges, mean degree={np.array(adjacency.sum(1)).mean():.1f}")
 
     return PointSpatialGraph(
         adjacency=adjacency,
@@ -210,9 +210,9 @@ def build_radius_graph(
 
     # Warn if graph is very dense
     if mean_deg > 100:
-        print(f"  ⚠ Very dense graph (mean degree={mean_deg:.0f}). " f"Consider a smaller radius.")
+        print(f"  ⚠ Very dense graph (mean degree={mean_deg:.0f}). Consider a smaller radius.")
 
-    print(f"  ✓ Radius graph: r={radius}, {adjacency.nnz // 2} edges, " f"mean degree={mean_deg:.1f}")
+    print(f"  ✓ Radius graph: r={radius}, {adjacency.nnz // 2} edges, mean degree={mean_deg:.1f}")
 
     return PointSpatialGraph(
         adjacency=adjacency,
@@ -295,7 +295,7 @@ def build_delaunay_graph(
     adjacency = (dist_sparse != 0).astype(np.float32)
     mean_deg = np.array(adjacency.sum(1)).mean()
 
-    print(f"  ✓ Delaunay graph: {adjacency.nnz // 2} edges, " f"mean degree={mean_deg:.1f}")
+    print(f"  ✓ Delaunay graph: {adjacency.nnz // 2} edges, mean degree={mean_deg:.1f}")
 
     return PointSpatialGraph(
         adjacency=adjacency,

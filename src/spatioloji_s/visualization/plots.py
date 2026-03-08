@@ -927,14 +927,14 @@ def _get_gene_expression(sj_obj, gene: str, layer: str | None = "log_normalized"
 
     # Validate gene exists
     if gene not in sj_obj.gene_index:
-        raise ValueError(f"Gene '{gene}' not found. " f"Check sj_obj.gene_index for available genes.")
+        raise ValueError(f"Gene '{gene}' not found. Check sj_obj.gene_index for available genes.")
 
     # Extract expression vector (n_cells,)
     if layer is None:
         expr = sj_obj.get_expression(gene_names=gene).flatten()
     else:
         if layer not in sj_obj.layers:
-            raise ValueError(f"Layer '{layer}' not found. " f"Available layers: {list(sj_obj.layers.keys())}")
+            raise ValueError(f"Layer '{layer}' not found. Available layers: {list(sj_obj.layers.keys())}")
         layer_data = sj_obj.get_layer(layer)
         gene_idx = sj_obj._get_gene_indices([gene])[0]
 

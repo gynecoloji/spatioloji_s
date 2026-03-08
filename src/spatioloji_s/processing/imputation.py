@@ -277,13 +277,13 @@ def scvi_impute(
     spatioloji_obj,
     layer: str | None = "log_normalized",
     batch_key: str | None = None,
-    use_highly_variable: bool = True,   # recommended: True for speed
+    use_highly_variable: bool = True,  # recommended: True for speed
     n_latent: int = 30,
-    max_epochs: int | None = None,      # None = auto heuristic
-    early_stopping: bool = True,        # NEW: stop when loss plateaus
+    max_epochs: int | None = None,  # None = auto heuristic
+    early_stopping: bool = True,  # NEW: stop when loss plateaus
     early_stopping_patience: int = 20,  # NEW: epochs to wait
-    batch_size: int = 512,              # NEW: increased from default 128
-    accelerator: str = "auto",          # NEW: "auto", "gpu", "cpu", "mps"
+    batch_size: int = 512,  # NEW: increased from default 128
+    accelerator: str = "auto",  # NEW: "auto", "gpu", "cpu", "mps"
     gene_likelihood: str = "zinb",
     random_state: int = 42,
     conda_env: str | None = None,
@@ -302,14 +302,14 @@ def scvi_impute(
         if sparse.issparse(X):
             X = X.toarray()
 
-    X_base     = X
+    X_base = X
     gene_names = spatioloji_obj.gene_index.astype(str).values
-    gene_mask  = None
+    gene_mask = None
 
     if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
         gene_mask = spatioloji_obj.gene_meta["highly_variable"].values
         if gene_mask.sum() > 0:
-            X          = X[:, gene_mask]
+            X = X[:, gene_mask]
             gene_names = spatioloji_obj.gene_index[gene_mask].astype(str).values
             print(f"  Using {gene_mask.sum()} highly variable genes (faster)")
         else:
@@ -322,7 +322,8 @@ def scvi_impute(
     if conda_env is not None:
         print(f"  Running scVI in conda environment: '{conda_env}'")
         X_imputed = _run_scvi_impute_in_conda_env(
-            X=X, batch=batch,
+            X=X,
+            batch=batch,
             cell_ids=spatioloji_obj.cell_index.astype(str).values,
             gene_names=gene_names,
             n_latent=n_latent,
@@ -345,10 +346,10 @@ def scvi_impute(
                 "Or specify conda_env: scvi_impute(sp, conda_env='scvi_env')"
             ) from err
 
-        obs   = pd.DataFrame(index=spatioloji_obj.cell_index.astype(str))
+        obs = pd.DataFrame(index=spatioloji_obj.cell_index.astype(str))
         if batch is not None:
             obs["batch"] = batch
-        var   = pd.DataFrame(index=gene_names)
+        var = pd.DataFrame(index=gene_names)
         adata = anndata.AnnData(X=X, obs=obs, var=var)
 
         scvi.settings.seed = random_state
@@ -358,6 +359,7 @@ def scvi_impute(
 
         # --- detect and report accelerator ---
         import torch
+
         if accelerator == "auto":
             if torch.cuda.is_available():
                 print("  Accelerator: GPU (CUDA) ✓")
@@ -372,11 +374,11 @@ def scvi_impute(
         print("  Training scVI model...")
 
         model.train(
-            max_epochs              = max_epochs,
-            accelerator             = accelerator,
-            batch_size              = batch_size,
-            early_stopping          = early_stopping,
-            early_stopping_patience = early_stopping_patience,
+            max_epochs=max_epochs,
+            accelerator=accelerator,
+            batch_size=batch_size,
+            early_stopping=early_stopping,
+            early_stopping_patience=early_stopping_patience,
         )
 
         X_imputed = model.get_normalized_expression(return_numpy=True)
@@ -395,32 +397,44 @@ def scvi_impute(
         return X_imputed
 
 
-def _run_scvi_impute_in_conda_env(X, batch, cell_ids, gene_names, n_latent, max_epochs,
-                                  early_stopping, early_stopping_patience, batch_size,
-                                  accelerator, gene_likelihood, random_state, conda_env):
+def _run_scvi_impute_in_conda_env(
+    X,
+    batch,
+    cell_ids,
+    gene_names,
+    n_latent,
+    max_epochs,
+    early_stopping,
+    early_stopping_patience,
+    batch_size,
+    accelerator,
+    gene_likelihood,
+    random_state,
+    conda_env,
+):
     import os
     import subprocess
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        input_file  = os.path.join(tmpdir, "scvi_input.npz")
+        input_file = os.path.join(tmpdir, "scvi_input.npz")
         output_file = os.path.join(tmpdir, "scvi_output.npy")
         script_file = os.path.join(tmpdir, "run_scvi.py")
 
         np.savez_compressed(
             input_file,
-            X                       = X,
-            batch                   = np.array([]) if batch is None else batch,
-            cell_ids                = np.asarray(cell_ids, dtype=str),
-            gene_names              = np.asarray(gene_names, dtype=str),
-            n_latent                = n_latent,
-            max_epochs              = -1 if max_epochs is None else int(max_epochs),
-            early_stopping          = int(early_stopping),
-            early_stopping_patience = int(early_stopping_patience),
-            batch_size              = int(batch_size),
-            accelerator             = str(accelerator),
-            gene_likelihood         = str(gene_likelihood),
-            random_state            = int(random_state),
+            X=X,
+            batch=np.array([]) if batch is None else batch,
+            cell_ids=np.asarray(cell_ids, dtype=str),
+            gene_names=np.asarray(gene_names, dtype=str),
+            n_latent=n_latent,
+            max_epochs=-1 if max_epochs is None else int(max_epochs),
+            early_stopping=int(early_stopping),
+            early_stopping_patience=int(early_stopping_patience),
+            batch_size=int(batch_size),
+            accelerator=str(accelerator),
+            gene_likelihood=str(gene_likelihood),
+            random_state=int(random_state),
         )
 
         script = f"""
@@ -472,15 +486,18 @@ print('scVI done!')
             f.write(script)
 
         try:
-            result = subprocess.run(["conda", "run", "-n", conda_env, "python", script_file],
-                                    capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                ["conda", "run", "-n", conda_env, "python", script_file], capture_output=True, text=True, check=True
+            )
             print(result.stdout)
         except (subprocess.CalledProcessError, FileNotFoundError) as e1:
             try:
                 sh = os.path.join(tmpdir, "run_scvi.sh")
                 with open(sh, "w") as f:
-                    f.write(f"#!/bin/bash\nsource $(conda info --base)/etc/profile.d/conda.sh\n"
-                            f"conda activate {conda_env}\npython {script_file}\n")
+                    f.write(
+                        f"#!/bin/bash\nsource $(conda info --base)/etc/profile.d/conda.sh\n"
+                        f"conda activate {conda_env}\npython {script_file}\n"
+                    )
                 result = subprocess.run(["bash", sh], capture_output=True, text=True, check=True)
                 print(result.stdout)
             except Exception as e2:
@@ -661,17 +678,15 @@ def _run_alra_core(X_impute, k):
     try:
         from pyALRA import alra, choose_k
     except ImportError as err:
-        raise ImportError(
-            "pyALRA not found. Install with: pip install pyALRA"
-        ) from err
+        raise ImportError("pyALRA not found. Install with: pip install pyALRA") from err
 
     if k is None:
         print("  Selecting rank automatically...")
-        k = choose_k(X_impute)['k']
+        k = choose_k(X_impute)["k"]
         print(f"    Selected rank: {k}")
 
     print(f"  Running pyALRA (k={k})...")
-    X_imputed = alra(X_impute, k)['A_norm_rank_k_cor_sc']
+    X_imputed = alra(X_impute, k)["A_norm_rank_k_cor_sc"]
 
     n_imp = (X_impute == 0).sum() - (X_imputed == 0).sum()
     print(f"    Imputed {n_imp:,} values ({n_imp / max((X_impute == 0).sum(), 1) * 100:.1f}% of zeros)")
@@ -684,12 +699,11 @@ def _run_alra_in_conda_env(X_impute, k, conda_env):
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        input_file  = os.path.join(tmpdir, "alra_input.npz")
+        input_file = os.path.join(tmpdir, "alra_input.npz")
         output_file = os.path.join(tmpdir, "alra_output.npy")
         script_file = os.path.join(tmpdir, "run_alra.py")
 
-        np.savez_compressed(input_file, X=X_impute,
-                            k=-1 if k is None else int(k))
+        np.savez_compressed(input_file, X=X_impute, k=-1 if k is None else int(k))
 
         script = f"""
 import numpy as np
@@ -711,15 +725,18 @@ print("ALRA done!")
             f.write(script)
 
         try:
-            result = subprocess.run(["conda", "run", "-n", conda_env, "python", script_file],
-                                    capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                ["conda", "run", "-n", conda_env, "python", script_file], capture_output=True, text=True, check=True
+            )
             print(result.stdout)
         except (subprocess.CalledProcessError, FileNotFoundError) as e1:
             try:
                 sh = os.path.join(tmpdir, "run_alra.sh")
                 with open(sh, "w") as f:
-                    f.write(f"#!/bin/bash\nsource $(conda info --base)/etc/profile.d/conda.sh\n"
-                            f"conda activate {conda_env}\npython {script_file}\n")
+                    f.write(
+                        f"#!/bin/bash\nsource $(conda info --base)/etc/profile.d/conda.sh\n"
+                        f"conda activate {conda_env}\npython {script_file}\n"
+                    )
                 result = subprocess.run(["bash", sh], capture_output=True, text=True, check=True)
                 print(result.stdout)
             except Exception as e2:
@@ -753,10 +770,7 @@ def _mask_and_run(spatioloji_obj, method_name, method_kwargs, X_masked):
     }
 
     if method_name not in method_map:
-        raise ValueError(
-            f"Unknown method '{method_name}'. "
-            f"Choose from: {list(method_map.keys())}"
-        )
+        raise ValueError(f"Unknown method '{method_name}'. Choose from: {list(method_map.keys())}")
 
     method_map[method_name](sp_temp, **run_kwargs)
 
@@ -925,24 +939,22 @@ def compare_imputation_methods(
             imp_zero_frac = float((X_imp_metric[:, test_gene_indices] == 0).mean())
             zero_inflation_recovery = max(0.0, 1.0 - abs(imp_zero_frac - true_zero_frac))
 
-            variance_calibration_val = (
-                round(variance_calibration, 4)
-                if not np.isnan(variance_calibration)
-                else np.nan
-            )
+            variance_calibration_val = round(variance_calibration, 4) if not np.isnan(variance_calibration) else np.nan
 
-            results.append({
-                "method": method_name,
-                "input_layer": method_layer,
-                "metric_space": metric_space,
-                "pearson_r": round(pearson_r, 4) if not np.isnan(pearson_r) else np.nan,
-                "spearman_r": round(spearman_r, 4) if not np.isnan(spearman_r) else np.nan,
-                "mse": round(mse, 4),
-                "rmse": round(rmse, 4),
-                "variance_ratio": round(variance_ratio, 4) if not np.isnan(variance_ratio) else np.nan,
-                "variance_calibration": variance_calibration_val,
-                "zero_inflation_recovery": round(zero_inflation_recovery, 4),
-            })
+            results.append(
+                {
+                    "method": method_name,
+                    "input_layer": method_layer,
+                    "metric_space": metric_space,
+                    "pearson_r": round(pearson_r, 4) if not np.isnan(pearson_r) else np.nan,
+                    "spearman_r": round(spearman_r, 4) if not np.isnan(spearman_r) else np.nan,
+                    "mse": round(mse, 4),
+                    "rmse": round(rmse, 4),
+                    "variance_ratio": round(variance_ratio, 4) if not np.isnan(variance_ratio) else np.nan,
+                    "variance_calibration": variance_calibration_val,
+                    "zero_inflation_recovery": round(zero_inflation_recovery, 4),
+                }
+            )
 
             print(f"    Pearson r : {pearson_r:.4f}")
             print(f"    Spearman r: {spearman_r:.4f}")
@@ -953,26 +965,25 @@ def compare_imputation_methods(
 
         except Exception as e:
             print(f"    ✗ Failed: {e}")
-            results.append({
-                "method": method_name,
-                "input_layer": method_kwargs.get("layer", layer),
-                "metric_space": np.nan,
-                "pearson_r": np.nan,
-                "spearman_r": np.nan,
-                "mse": np.nan,
-                "rmse": np.nan,
-                "variance_ratio": np.nan,
-                "variance_calibration": np.nan,
-                "zero_inflation_recovery": np.nan,
-            })
+            results.append(
+                {
+                    "method": method_name,
+                    "input_layer": method_kwargs.get("layer", layer),
+                    "metric_space": np.nan,
+                    "pearson_r": np.nan,
+                    "spearman_r": np.nan,
+                    "mse": np.nan,
+                    "rmse": np.nan,
+                    "variance_ratio": np.nan,
+                    "variance_calibration": np.nan,
+                    "zero_inflation_recovery": np.nan,
+                }
+            )
 
     results_df = (
-        pd.DataFrame(results)
-        .sort_values("pearson_r", ascending=False, na_position="last")
-        .reset_index(drop=True)
+        pd.DataFrame(results).sort_values("pearson_r", ascending=False, na_position="last").reset_index(drop=True)
     )
 
     print("\n  ✓ Masking experiment complete")
     print("\n" + results_df.to_string(index=False))
     return results_df
-

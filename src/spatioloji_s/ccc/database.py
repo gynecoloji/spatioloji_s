@@ -22,21 +22,23 @@ These are stored as '|'-joined strings:
 Downstream expression scoring uses mean across subunits.
 Expression filtering requires ALL subunits to pass min_pct.
 """
+
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
 
-from dataclasses import dataclass, field
 from collections import Counter
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 from scipy.sparse import issparse
 
-
 # ── LR pair dataclass ─────────────────────────────────────────────────────────
+
 
 @dataclass
 class LRPair:
@@ -55,36 +57,37 @@ class LRPair:
     lr_type    : 'juxtacrine' | 'secreted' | 'ecm'
     annotation : original annotation string from CellChatDB
     """
-    lr_name    : str
-    ligand     : str
-    receptor   : str
-    pathway    : str
-    lr_type    : str
-    annotation : str = field(default="")
+
+    lr_name: str
+    ligand: str
+    receptor: str
+    pathway: str
+    lr_type: str
+    annotation: str = field(default="")
 
     # ── Ligand properties ─────────────────────────────────────────────────────
 
     @property
     def ligand_genes(self) -> list[str]:
         """Ligand subunits as a list (always a list, even for single gene)."""
-        return self.ligand.split('|')
+        return self.ligand.split("|")
 
     @property
     def ligand_is_complex(self) -> bool:
         """True if ligand is a multi-subunit complex."""
-        return '|' in self.ligand
+        return "|" in self.ligand
 
     # ── Receptor properties ───────────────────────────────────────────────────
 
     @property
     def receptor_genes(self) -> list[str]:
         """Receptor subunits as a list (always a list, even for single gene)."""
-        return self.receptor.split('|')
+        return self.receptor.split("|")
 
     @property
     def receptor_is_complex(self) -> bool:
         """True if receptor is a multi-subunit complex."""
-        return '|' in self.receptor
+        return "|" in self.receptor
 
     # ── Combined properties ───────────────────────────────────────────────────
 
@@ -104,10 +107,8 @@ class LRPair:
         return len(self.ligand_genes), len(self.receptor_genes)
 
     def __repr__(self) -> str:
-        l_str = (self.ligand if not self.ligand_is_complex
-                 else f"complex({self.ligand})")
-        r_str = (self.receptor if not self.receptor_is_complex
-                 else f"complex({self.receptor})")
+        l_str = self.ligand if not self.ligand_is_complex else f"complex({self.ligand})"
+        r_str = self.receptor if not self.receptor_is_complex else f"complex({self.receptor})"
         return (
             f"LRPair({self.lr_name!r}, "
             f"ligand={l_str!r}, receptor={r_str!r}, "
@@ -118,9 +119,9 @@ class LRPair:
 # ── Annotation → lr_type mapping ─────────────────────────────────────────────
 
 _ANNOTATION_TO_TYPE: dict[str, str] = {
-    "Secreted Signaling" : "secreted",
-    "Cell-Cell Contact"  : "juxtacrine",
-    "ECM-Receptor"       : "ecm",
+    "Secreted Signaling": "secreted",
+    "Cell-Cell Contact": "juxtacrine",
+    "ECM-Receptor": "ecm",
 }
 
 # ── Built-in curated subset ───────────────────────────────────────────────────
@@ -128,72 +129,63 @@ _ANNOTATION_TO_TYPE: dict[str, str] = {
 # Multi-subunit: use '|' separator
 
 _BUILTIN_RECORDS: list[tuple[str, str, str, str, str]] = [
-
     # Checkpoint / immune suppression — juxtacrine
-    ("CD274-PDCD1",      "CD274",        "PDCD1",           "PD-L1 signaling",    "juxtacrine"),
-    ("CD80-CTLA4",       "CD80",         "CTLA4",           "CD80 signaling",     "juxtacrine"),
-    ("CD86-CTLA4",       "CD86",         "CTLA4",           "CD86 signaling",     "juxtacrine"),
-    ("TIGIT-PVR",        "TIGIT",        "PVR",             "TIGIT signaling",    "juxtacrine"),
-    ("LGALS9-HAVCR2",    "LGALS9",       "HAVCR2",          "Galectin signaling", "juxtacrine"),
-    ("CD276-TMIGD2",     "CD276",        "TMIGD2",          "B7 signaling",       "juxtacrine"),
-
+    ("CD274-PDCD1", "CD274", "PDCD1", "PD-L1 signaling", "juxtacrine"),
+    ("CD80-CTLA4", "CD80", "CTLA4", "CD80 signaling", "juxtacrine"),
+    ("CD86-CTLA4", "CD86", "CTLA4", "CD86 signaling", "juxtacrine"),
+    ("TIGIT-PVR", "TIGIT", "PVR", "TIGIT signaling", "juxtacrine"),
+    ("LGALS9-HAVCR2", "LGALS9", "HAVCR2", "Galectin signaling", "juxtacrine"),
+    ("CD276-TMIGD2", "CD276", "TMIGD2", "B7 signaling", "juxtacrine"),
     # Notch — juxtacrine
-    ("DLL1-NOTCH1",      "DLL1",         "NOTCH1",          "Notch signaling",    "juxtacrine"),
-    ("DLL4-NOTCH1",      "DLL4",         "NOTCH1",          "Notch signaling",    "juxtacrine"),
-    ("JAG1-NOTCH1",      "JAG1",         "NOTCH1",          "Notch signaling",    "juxtacrine"),
-
+    ("DLL1-NOTCH1", "DLL1", "NOTCH1", "Notch signaling", "juxtacrine"),
+    ("DLL4-NOTCH1", "DLL4", "NOTCH1", "Notch signaling", "juxtacrine"),
+    ("JAG1-NOTCH1", "JAG1", "NOTCH1", "Notch signaling", "juxtacrine"),
     # Ephrin — juxtacrine
-    ("EFNA1-EPHA2",      "EFNA1",        "EPHA2",           "Ephrin signaling",   "juxtacrine"),
-    ("EFNB1-EPHB2",      "EFNB1",        "EPHB2",           "Ephrin signaling",   "juxtacrine"),
-
+    ("EFNA1-EPHA2", "EFNA1", "EPHA2", "Ephrin signaling", "juxtacrine"),
+    ("EFNB1-EPHB2", "EFNB1", "EPHB2", "Ephrin signaling", "juxtacrine"),
     # MHC — juxtacrine
-    ("HLA-A-CD8A",       "HLA-A",        "CD8A",            "MHC-I signaling",    "juxtacrine"),
-    ("HLA-DRA-CD4",      "HLA-DRA",      "CD4",             "MHC-II signaling",   "juxtacrine"),
-
+    ("HLA-A-CD8A", "HLA-A", "CD8A", "MHC-I signaling", "juxtacrine"),
+    ("HLA-DRA-CD4", "HLA-DRA", "CD4", "MHC-II signaling", "juxtacrine"),
     # Chemokines — secreted
-    ("CXCL12-CXCR4",     "CXCL12",       "CXCR4",           "CXCL12 signaling",   "secreted"),
-    ("CXCL10-CXCR3",     "CXCL10",       "CXCR3",           "CXCL10 signaling",   "secreted"),
-    ("CCL2-CCR2",         "CCL2",         "CCR2",            "CCL2 signaling",     "secreted"),
-    ("CCL5-CCR5",         "CCL5",         "CCR5",            "CCL5 signaling",     "secreted"),
-    ("CXCL8-CXCR1",      "CXCL8",        "CXCR1",           "IL8 signaling",      "secreted"),
-    ("CXCL1-CXCR2",      "CXCL1",        "CXCR2",           "CXCL1 signaling",    "secreted"),
-
+    ("CXCL12-CXCR4", "CXCL12", "CXCR4", "CXCL12 signaling", "secreted"),
+    ("CXCL10-CXCR3", "CXCL10", "CXCR3", "CXCL10 signaling", "secreted"),
+    ("CCL2-CCR2", "CCL2", "CCR2", "CCL2 signaling", "secreted"),
+    ("CCL5-CCR5", "CCL5", "CCR5", "CCL5 signaling", "secreted"),
+    ("CXCL8-CXCR1", "CXCL8", "CXCR1", "IL8 signaling", "secreted"),
+    ("CXCL1-CXCR2", "CXCL1", "CXCR2", "CXCL1 signaling", "secreted"),
     # Heterodimeric ligand complexes — secreted
-    ("CXCL5_PPBP-CXCR2", "CXCL5|PPBP",  "CXCR2",           "CXCL5 signaling",    "secreted"),
-    ("IFNA2_IFNB1-IFNAR", "IFNA2|IFNB1", "IFNAR1|IFNAR2",   "IFN signaling",      "secreted"),
-
+    ("CXCL5_PPBP-CXCR2", "CXCL5|PPBP", "CXCR2", "CXCL5 signaling", "secreted"),
+    ("IFNA2_IFNB1-IFNAR", "IFNA2|IFNB1", "IFNAR1|IFNAR2", "IFN signaling", "secreted"),
     # Growth factors — secreted
-    ("TGFB1-TGFBR1R2",   "TGFB1",        "TGFBR1|TGFBR2",  "TGF-beta signaling", "secreted"),
-    ("VEGFA-KDR",         "VEGFA",        "KDR",             "VEGF signaling",     "secreted"),
-    ("EGF-EGFR",          "EGF",          "EGFR",            "EGF signaling",      "secreted"),
-    ("HGF-MET",           "HGF",          "MET",             "HGF signaling",      "secreted"),
-    ("IL6-IL6R",          "IL6",          "IL6R",            "IL6 signaling",      "secreted"),
-    ("IL10-IL10RA",       "IL10",         "IL10RA|IL10RB",   "IL10 signaling",     "secreted"),
-    ("TNF-TNFRSF1A",      "TNF",          "TNFRSF1A",        "TNF signaling",      "secreted"),
-    ("IFNG-IFNGR",        "IFNG",         "IFNGR1|IFNGR2",   "IFN-gamma signaling","secreted"),
-
+    ("TGFB1-TGFBR1R2", "TGFB1", "TGFBR1|TGFBR2", "TGF-beta signaling", "secreted"),
+    ("VEGFA-KDR", "VEGFA", "KDR", "VEGF signaling", "secreted"),
+    ("EGF-EGFR", "EGF", "EGFR", "EGF signaling", "secreted"),
+    ("HGF-MET", "HGF", "MET", "HGF signaling", "secreted"),
+    ("IL6-IL6R", "IL6", "IL6R", "IL6 signaling", "secreted"),
+    ("IL10-IL10RA", "IL10", "IL10RA|IL10RB", "IL10 signaling", "secreted"),
+    ("TNF-TNFRSF1A", "TNF", "TNFRSF1A", "TNF signaling", "secreted"),
+    ("IFNG-IFNGR", "IFNG", "IFNGR1|IFNGR2", "IFN-gamma signaling", "secreted"),
     # Wnt — secreted
-    ("WNT5A-FZD1",        "WNT5A",        "FZD1",            "Wnt signaling",      "secreted"),
-    ("WNT2-FZD4",         "WNT2",         "FZD4",            "Wnt signaling",      "secreted"),
-
+    ("WNT5A-FZD1", "WNT5A", "FZD1", "Wnt signaling", "secreted"),
+    ("WNT2-FZD4", "WNT2", "FZD4", "Wnt signaling", "secreted"),
     # Angiopoietin — secreted
-    ("ANGPT1-TEK",        "ANGPT1",       "TEK",             "Angiopoietin",       "secreted"),
-    ("ANGPT2-TEK",        "ANGPT2",       "TEK",             "Angiopoietin",       "secreted"),
-
+    ("ANGPT1-TEK", "ANGPT1", "TEK", "Angiopoietin", "secreted"),
+    ("ANGPT2-TEK", "ANGPT2", "TEK", "Angiopoietin", "secreted"),
     # ECM — ecm
-    ("FN1-ITGB1",         "FN1",          "ITGB1",           "ECM-Integrin",       "ecm"),
-    ("COL1A1-ITGB1",      "COL1A1",       "ITGB1",           "ECM-Integrin",       "ecm"),
-    ("LAMB1-ITGB1",       "LAMB1",        "ITGB1",           "Laminin signaling",  "ecm"),
-    ("THBS1-CD36",        "THBS1",        "CD36",            "TSP signaling",      "ecm"),
-    ("SPP1-CD44",         "SPP1",         "CD44",            "OPN signaling",      "ecm"),
-    ("MMP9-CD44",         "MMP9",         "CD44",            "MMP signaling",      "ecm"),
+    ("FN1-ITGB1", "FN1", "ITGB1", "ECM-Integrin", "ecm"),
+    ("COL1A1-ITGB1", "COL1A1", "ITGB1", "ECM-Integrin", "ecm"),
+    ("LAMB1-ITGB1", "LAMB1", "ITGB1", "Laminin signaling", "ecm"),
+    ("THBS1-CD36", "THBS1", "CD36", "TSP signaling", "ecm"),
+    ("SPP1-CD44", "SPP1", "CD44", "OPN signaling", "ecm"),
+    ("MMP9-CD44", "MMP9", "CD44", "MMP signaling", "ecm"),
 ]
 
 
 # ── Public functions ──────────────────────────────────────────────────────────
 
+
 def load_lr_database(
-    source: str = 'builtin',
+    source: str = "builtin",
     lr_types: list[str] | None = None,
     custom_df: pd.DataFrame | None = None,
 ) -> list[LRPair]:
@@ -223,41 +215,39 @@ def load_lr_database(
     >>> pairs = load_lr_database()
     >>> pairs = load_lr_database(lr_types=['juxtacrine'])
     """
-    if source == 'builtin':
+    if source == "builtin":
         pairs = [
             LRPair(
-                lr_name  = rec[0],
-                ligand   = rec[1],
-                receptor = rec[2],
-                pathway  = rec[3],
-                lr_type  = rec[4],
+                lr_name=rec[0],
+                ligand=rec[1],
+                receptor=rec[2],
+                pathway=rec[3],
+                lr_type=rec[4],
             )
             for rec in _BUILTIN_RECORDS
         ]
 
-    elif source == 'custom':
+    elif source == "custom":
         if custom_df is None:
             raise ValueError("custom_df is required when source='custom'")
-        required = {'lr_name', 'ligand', 'receptor', 'pathway', 'lr_type'}
-        missing  = required - set(custom_df.columns)
+        required = {"lr_name", "ligand", "receptor", "pathway", "lr_type"}
+        missing = required - set(custom_df.columns)
         if missing:
             raise ValueError(f"custom_df missing columns: {missing}")
         pairs = [
             LRPair(
-                lr_name    = str(row['lr_name']),
-                ligand     = str(row['ligand']),
-                receptor   = str(row['receptor']),
-                pathway    = str(row['pathway']),
-                lr_type    = str(row['lr_type']),
-                annotation = str(row.get('annotation', '')),
+                lr_name=str(row["lr_name"]),
+                ligand=str(row["ligand"]),
+                receptor=str(row["receptor"]),
+                pathway=str(row["pathway"]),
+                lr_type=str(row["lr_type"]),
+                annotation=str(row.get("annotation", "")),
             )
             for _, row in custom_df.iterrows()
         ]
 
     else:
-        raise ValueError(
-            f"Unknown source: {source!r}. Use 'builtin' or 'custom'."
-        )
+        raise ValueError(f"Unknown source: {source!r}. Use 'builtin' or 'custom'.")
 
     pairs = _filter_by_type(pairs, lr_types)
     _print_summary(pairs, skipped=0, source_label=source)
@@ -295,48 +285,49 @@ def load_from_cellchatdb_csv(
     df = pd.read_csv(csv_path, index_col=0)
 
     required = {
-        'interaction_name', 'pathway_name',
-        'ligand.symbol', 'receptor.symbol', 'annotation',
+        "interaction_name",
+        "pathway_name",
+        "ligand.symbol",
+        "receptor.symbol",
+        "annotation",
     }
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(
-            f"CellChatDB CSV missing required columns: {missing}\n"
-            f"Available: {list(df.columns)}"
-        )
+        raise ValueError(f"CellChatDB CSV missing required columns: {missing}\nAvailable: {list(df.columns)}")
 
-    pairs:   list[LRPair] = []
-    skipped: int          = 0
+    pairs: list[LRPair] = []
+    skipped: int = 0
 
     for _, row in df.iterrows():
-
         # Map annotation → lr_type
-        annotation = str(row.get('annotation', '')).strip()
-        lr_type    = _ANNOTATION_TO_TYPE.get(annotation)
+        annotation = str(row.get("annotation", "")).strip()
+        lr_type = _ANNOTATION_TO_TYPE.get(annotation)
         if lr_type is None:
             skipped += 1
             continue
 
         # Parse ligand (may be complex)
-        ligand = _parse_gene_field(str(row['ligand.symbol']))
+        ligand = _parse_gene_field(str(row["ligand.symbol"]))
         if ligand is None:
             skipped += 1
             continue
 
         # Parse receptor (may be complex)
-        receptor = _parse_gene_field(str(row['receptor.symbol']))
+        receptor = _parse_gene_field(str(row["receptor.symbol"]))
         if receptor is None:
             skipped += 1
             continue
 
-        pairs.append(LRPair(
-            lr_name    = str(row['interaction_name']).strip(),
-            ligand     = ligand,
-            receptor   = receptor,
-            pathway    = str(row['pathway_name']).strip(),
-            lr_type    = lr_type,
-            annotation = annotation,
-        ))
+        pairs.append(
+            LRPair(
+                lr_name=str(row["interaction_name"]).strip(),
+                ligand=ligand,
+                receptor=receptor,
+                pathway=str(row["pathway_name"]).strip(),
+                lr_type=lr_type,
+                annotation=annotation,
+            )
+        )
 
     pairs = _filter_by_type(pairs, lr_types)
     _print_summary(pairs, skipped, csv_path)
@@ -345,9 +336,9 @@ def load_from_cellchatdb_csv(
 
 def filter_to_expressed(
     lr_pairs: list[LRPair],
-    sp: 'spatioloji',
+    sp: spatioloji,
     min_pct: float = 0.05,
-    layer: str | None = 'log_normalized',
+    layer: str | None = "log_normalized",
 ) -> list[LRPair]:
     """
     Filter LR pairs to those where ALL ligand subunits AND ALL
@@ -388,9 +379,9 @@ def filter_to_expressed(
         expr = expr.toarray()
 
     gene_names = np.array(sp.gene_index)
-    n_cells    = expr.shape[0]
-    gene_set   = set(gene_names)
-    gene2idx   = {g: i for i, g in enumerate(gene_names)}
+    n_cells = expr.shape[0]
+    gene_set = set(gene_names)
+    gene2idx = {g: i for i, g in enumerate(gene_names)}
 
     # Cache pct_expressed per gene — computed once per unique gene
     pct_cache: dict[str, float] = {}
@@ -411,21 +402,20 @@ def filter_to_expressed(
         """
         for g in genes:
             if g not in gene_set:
-                return False, 'not_in_panel'
+                return False, "not_in_panel"
             if _pct(g) < min_pct:
-                return False, 'low_pct'
-        return True, ''
+                return False, "low_pct"
+        return True, ""
 
-    kept:           list[LRPair] = []
-    n_not_in_panel: int          = 0
-    n_low_pct:      int          = 0
+    kept: list[LRPair] = []
+    n_not_in_panel: int = 0
+    n_low_pct: int = 0
 
     for pair in lr_pairs:
-
         # Check all ligand subunits
         passed, reason = _all_pass(pair.ligand_genes)
         if not passed:
-            if reason == 'not_in_panel':
+            if reason == "not_in_panel":
                 n_not_in_panel += 1
             else:
                 n_low_pct += 1
@@ -434,7 +424,7 @@ def filter_to_expressed(
         # Check all receptor subunits
         passed, reason = _all_pass(pair.receptor_genes)
         if not passed:
-            if reason == 'not_in_panel':
+            if reason == "not_in_panel":
                 n_not_in_panel += 1
             else:
                 n_low_pct += 1
@@ -442,10 +432,8 @@ def filter_to_expressed(
 
         kept.append(pair)
 
-    print(f"[CCC filter] {len(kept)} / {len(lr_pairs)} LR pairs pass "
-          f"(min_pct={min_pct:.0%})")
-    print(f"  Removed: {n_not_in_panel} not in gene panel, "
-          f"{n_low_pct} below min_pct")
+    print(f"[CCC filter] {len(kept)} / {len(lr_pairs)} LR pairs pass (min_pct={min_pct:.0%})")
+    print(f"  Removed: {n_not_in_panel} not in gene panel, {n_low_pct} below min_pct")
 
     return kept
 
@@ -461,24 +449,27 @@ def lr_pairs_to_dataframe(lr_pairs: list[LRPair]) -> pd.DataFrame:
                  annotation, ligand_is_complex, receptor_is_complex,
                  n_ligand_subunits, n_receptor_subunits
     """
-    return pd.DataFrame([
-        {
-            'lr_name'             : p.lr_name,
-            'ligand'              : p.ligand,
-            'receptor'            : p.receptor,
-            'pathway'             : p.pathway,
-            'lr_type'             : p.lr_type,
-            'annotation'          : p.annotation,
-            'ligand_is_complex'   : p.ligand_is_complex,
-            'receptor_is_complex' : p.receptor_is_complex,
-            'n_ligand_subunits'   : len(p.ligand_genes),
-            'n_receptor_subunits' : len(p.receptor_genes),
-        }
-        for p in lr_pairs
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "lr_name": p.lr_name,
+                "ligand": p.ligand,
+                "receptor": p.receptor,
+                "pathway": p.pathway,
+                "lr_type": p.lr_type,
+                "annotation": p.annotation,
+                "ligand_is_complex": p.ligand_is_complex,
+                "receptor_is_complex": p.receptor_is_complex,
+                "n_ligand_subunits": len(p.ligand_genes),
+                "n_receptor_subunits": len(p.receptor_genes),
+            }
+            for p in lr_pairs
+        ]
+    )
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
+
 
 def _parse_gene_field(raw: str) -> str | None:
     """
@@ -493,18 +484,14 @@ def _parse_gene_field(raw: str) -> str | None:
     Returns None if field is empty or unparseable.
     """
     raw = raw.strip()
-    if not raw or raw == 'nan':
+    if not raw or raw == "nan":
         return None
 
-    genes = [
-        g.strip()
-        for g in raw.replace(';', ',').split(',')
-        if g.strip() and g.strip() != 'nan'
-    ]
+    genes = [g.strip() for g in raw.replace(";", ",").split(",") if g.strip() and g.strip() != "nan"]
     if not genes:
         return None
 
-    return '|'.join(genes)
+    return "|".join(genes)
 
 
 def _filter_by_type(
@@ -514,8 +501,8 @@ def _filter_by_type(
     """Filter LRPair list by lr_type. No-op if lr_types is None."""
     if lr_types is None:
         return pairs
-    valid = {'juxtacrine', 'secreted', 'ecm'}
-    bad   = set(lr_types) - valid
+    valid = {"juxtacrine", "secreted", "ecm"}
+    bad = set(lr_types) - valid
     if bad:
         raise ValueError(f"Unknown lr_types: {bad}. Valid: {valid}")
     return [p for p in pairs if p.lr_type in lr_types]
@@ -527,17 +514,11 @@ def _print_summary(
     source_label: str,
 ) -> None:
     """Print loading summary with type and complex breakdown."""
-    print(f"[CCC database] Loaded {len(pairs)} LR pairs "
-          f"from {source_label}")
+    print(f"[CCC database] Loaded {len(pairs)} LR pairs from {source_label}")
     if skipped:
-        print(f"  Skipped {skipped} rows "
-              f"(unknown annotation or missing genes)")
+        print(f"  Skipped {skipped} rows (unknown annotation or missing genes)")
     if pairs:
         for t, n in sorted(Counter(p.lr_type for p in pairs).items()):
-            n_ligand_cx  = sum(1 for p in pairs
-                               if p.lr_type == t and p.ligand_is_complex)
-            n_receptor_cx = sum(1 for p in pairs
-                                if p.lr_type == t and p.receptor_is_complex)
-            print(f"  {t:12s}: {n:4d}  "
-                  f"(ligand complexes: {n_ligand_cx}, "
-                  f"receptor complexes: {n_receptor_cx})")
+            n_ligand_cx = sum(1 for p in pairs if p.lr_type == t and p.ligand_is_complex)
+            n_receptor_cx = sum(1 for p in pairs if p.lr_type == t and p.receptor_is_complex)
+            print(f"  {t:12s}: {n:4d}  (ligand complexes: {n_ligand_cx}, receptor complexes: {n_receptor_cx})")

@@ -83,7 +83,7 @@ def normalize_total(
     else:
         counts_per_cell = X.sum(axis=1)
 
-    print(f"  Counts per cell - mean: {counts_per_cell.mean():.0f}, " f"median: {np.median(counts_per_cell):.0f}")
+    print(f"  Counts per cell - mean: {counts_per_cell.mean():.0f}, median: {np.median(counts_per_cell):.0f}")
 
     # Exclude highly expressed genes if requested
     if exclude_highly_expressed:
@@ -99,7 +99,7 @@ def normalize_total(
 
         n_excluded = (~gene_subset).sum()
         if n_excluded > 0:
-            print(f"  Excluding {n_excluded} highly expressed genes (>{max_fraction*100:.1f}% of total)")
+            print(f"  Excluding {n_excluded} highly expressed genes (>{max_fraction * 100:.1f}% of total)")
 
             # Recalculate counts without highly expressed genes
             counts_per_cell = X[:, gene_subset].sum(axis=1)

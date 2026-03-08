@@ -314,7 +314,7 @@ def free_boundary_fraction(
         sp.cell_meta["total_contact_fraction"] = (1.0 - free_frac).values
         print("  ✓ Stored 'free_boundary_fraction' and 'total_contact_fraction'")
 
-    print(f"  ✓ Free boundary: mean={free_frac.mean():.3f}, " f"median={free_frac.median():.3f}")
+    print(f"  ✓ Free boundary: mean={free_frac.mean():.3f}, median={free_frac.median():.3f}")
     print(f"    Fully enclosed (< 0.05): {(free_frac < 0.05).sum()} cells")
     print(f"    Mostly exposed (> 0.80): {(free_frac > 0.80).sum()} cells")
 

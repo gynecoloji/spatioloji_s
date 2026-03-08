@@ -73,7 +73,7 @@ def _get_gene_expression(spatioloji_obj, gene_name: str, layer: str | None = Non
     Raises ValueError if the gene is missing.
     """
     if gene_name not in spatioloji_obj.gene_index:
-        raise ValueError(f"Gene '{gene_name}' not found in dataset " f"({spatioloji_obj.n_genes} genes available).")
+        raise ValueError(f"Gene '{gene_name}' not found in dataset ({spatioloji_obj.n_genes} genes available).")
     if layer is None:
         return spatioloji_obj.get_expression(gene_names=gene_name).flatten()
 
@@ -93,10 +93,10 @@ def _validate_and_filter_genes(spatioloji_obj, genes: list[str], verbose: bool =
     if missing and verbose:
         preview = missing[:10]
         suffix = "..." if len(missing) > 10 else ""
-        warnings.warn(f"{len(missing)} gene(s) not found and will be skipped: " f"{preview}{suffix}", stacklevel=2)
+        warnings.warn(f"{len(missing)} gene(s) not found and will be skipped: {preview}{suffix}", stacklevel=2)
     if not valid:
         raise ValueError(
-            "None of the specified genes were found in the dataset " f"({spatioloji_obj.n_genes} genes available)."
+            f"None of the specified genes were found in the dataset ({spatioloji_obj.n_genes} genes available)."
         )
     return valid
 
@@ -599,7 +599,7 @@ def _resolve_group_order(groups: pd.Series, group_order: list[str] | None) -> li
         if missing:
             warnings.warn(f"Groups not in data and will be skipped: {missing}", stacklevel=2)
         if not present:
-            raise ValueError(f"None of the groups in group_order exist. " f"Available: {sorted(available)}")
+            raise ValueError(f"None of the groups in group_order exist. Available: {sorted(available)}")
         return present
     return sorted(available)
 

@@ -182,7 +182,7 @@ class spatioloji:
             lazy_load=lazy_load_images,
             cache_size=image_cache_size,
         )
-        print(f"[7/11] Images: {self._image_handler.n_total} total, " f"{self._image_handler.n_loaded} loaded")
+        print(f"[7/11] Images: {self._image_handler.n_total} total, {self._image_handler.n_loaded} loaded")
 
         # STEP 8: Prepare FOV system
         self._fov_positions, self._fov_index = self._prepare_fov_system(fov_positions)
@@ -646,7 +646,7 @@ class spatioloji:
         print(f"  Cells:              {self._n_cells:,}")
         print(f"  Genes:              {self._n_genes:,}")
         print(f"  FOVs:               {len(self._fov_index)}")
-        print(f"  Images:             {self._image_handler.n_total} " f"({self._image_handler.n_loaded} loaded)")
+        print(f"  Images:             {self._image_handler.n_total} ({self._image_handler.n_loaded} loaded)")
         print(f"  Original Expression:         {'sparse' if self._expression.is_sparse else 'dense'}")
         print(f"  Has polygons:       {self._polygons is not None}")
         print(f"  Memory (approx):    {self._estimate_memory_usage():.1f} MB")
@@ -1482,19 +1482,19 @@ class spatioloji:
         if isinstance(data, np.ndarray):
             if data.shape != (self._n_cells, self._n_genes):
                 raise ValueError(
-                    f"Layer shape {data.shape} doesn't match " f"expression shape ({self._n_cells}, {self._n_genes})"
+                    f"Layer shape {data.shape} doesn't match expression shape ({self._n_cells}, {self._n_genes})"
                 )
         elif sparse.issparse(data):
             if data.shape != (self._n_cells, self._n_genes):
                 raise ValueError(
-                    f"Layer shape {data.shape} doesn't match " f"expression shape ({self._n_cells}, {self._n_genes})"
+                    f"Layer shape {data.shape} doesn't match expression shape ({self._n_cells}, {self._n_genes})"
                 )
         else:
             raise TypeError("Layer data must be numpy array or sparse matrix")
 
         # Check if exists
         if layer_name in self._layers and not overwrite:
-            raise ValueError(f"Layer '{layer_name}' already exists. " "Use overwrite=True to replace it.")
+            raise ValueError(f"Layer '{layer_name}' already exists. Use overwrite=True to replace it.")
 
         self._layers[layer_name] = data
         print(
@@ -1533,7 +1533,7 @@ class spatioloji:
             Expression matrix for this layer
         """
         if layer_name not in self._layers:
-            raise ValueError(f"Layer '{layer_name}' not found. " f"Available layers: {list(self._layers.keys())}")
+            raise ValueError(f"Layer '{layer_name}' not found. Available layers: {list(self._layers.keys())}")
 
         return self._layers[layer_name]
 

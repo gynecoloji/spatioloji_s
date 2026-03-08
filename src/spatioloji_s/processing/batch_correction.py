@@ -78,7 +78,7 @@ def combat(
     try:
         from combat.pycombat import pycombat
     except ImportError as err:
-        raise ImportError("ComBat requires pycombat package. " "Install with: pip install pycombat") from err
+        raise ImportError("ComBat requires pycombat package. Install with: pip install pycombat") from err
 
     print(f"\nComBat batch correction (batch_key='{batch_key}')")
 
@@ -162,7 +162,8 @@ def combat(
             "with uncorrected non-HVGs creates an inconsistent matrix. "
             "Use use_highly_variable=False for consistent correction, "
             "or use the output for HVG-only downstream analysis.",
-            UserWarning, stacklevel=2
+            UserWarning,
+            stacklevel=2,
         )
 
     if inplace:
@@ -176,7 +177,7 @@ def harmony(
     spatioloji_obj,
     batch_key: str,
     n_pcs: int = 50,
-    layer: str | None = "scaled",       # ✅ fixed: scaled instead of log_normalized
+    layer: str | None = "scaled",  # ✅ fixed: scaled instead of log_normalized
     use_highly_variable: bool = True,
     max_iter_harmony: int = 10,
     theta: float = 2.0,
@@ -255,10 +256,7 @@ def harmony(
     try:
         import harmonypy as hm
     except ImportError as err:
-        raise ImportError(
-            "Harmony requires harmonypy package. "
-            "Install with: pip install harmonypy"
-        ) from err
+        raise ImportError("Harmony requires harmonypy package. Install with: pip install harmonypy") from err
 
     print(f"\nHarmony integration (batch_key='{batch_key}', theta={theta})")
 
@@ -272,21 +270,15 @@ def harmony(
 
     # --- Always operate on PCA embedding ---
     # Use existing PCA if available, otherwise compute it
-    if hasattr(spatioloji_obj, "_embeddings") and \
-       "X_pca" in spatioloji_obj._embeddings:
+    if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
         X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
         print(f"  Using existing PCA ({n_pcs} PCs)")
     else:
         print("  PCA not found — computing first...")
         print(f"  (using layer='{layer}', use_highly_variable={use_highly_variable})")
         from .dimension_reduction import pca as run_pca
-        run_pca(
-            spatioloji_obj,
-            layer=layer,
-            use_highly_variable=use_highly_variable,
-            n_comps=n_pcs,
-            inplace=True
-        )
+
+        run_pca(spatioloji_obj, layer=layer, use_highly_variable=use_highly_variable, n_comps=n_pcs, inplace=True)
         X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
 
     # Prepare metadata DataFrame for Harmony
@@ -318,7 +310,7 @@ def harmony(
 
         # Add to cell_meta for easy access
         for i in range(X_corrected.shape[1]):
-            spatioloji_obj._cell_meta[f"PC_harmony{i+1}"] = X_corrected[:, i]
+            spatioloji_obj._cell_meta[f"PC_harmony{i + 1}"] = X_corrected[:, i]
 
         return None
     else:
@@ -645,8 +637,7 @@ def scvi_integrate(
             import scvi
         except ImportError as err:
             raise ImportError(
-                "scvi_integrate requires scvi-tools and anndata. "
-                "Install with: pip install scvi-tools anndata"
+                "scvi_integrate requires scvi-tools and anndata. Install with: pip install scvi-tools anndata"
             ) from err
 
         obs_df = spatioloji_obj.cell_meta.copy()
@@ -671,7 +662,7 @@ def scvi_integrate(
         spatioloji_obj._embeddings[output_key] = X_scvi
 
         for i in range(X_scvi.shape[1]):
-            spatioloji_obj._cell_meta[f"SCVI{i+1}"] = X_scvi[:, i]
+            spatioloji_obj._cell_meta[f"SCVI{i + 1}"] = X_scvi[:, i]
 
         return None
     else:
@@ -777,6 +768,7 @@ python {script_file}
 
         return np.load(output_file)
 
+
 def _run_seurat_integration_in_conda(
     X,
     batch,
@@ -826,7 +818,6 @@ def _run_seurat_integration_in_conda(
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
-
         # --- Save input data as CSV per batch ---
         input_files = []
         for batch_id in batches:
@@ -834,11 +825,7 @@ def _run_seurat_integration_in_conda(
             batch_X = X[mask, :]
             batch_cells = cell_names[mask]
 
-            df = pd.DataFrame(
-                batch_X,
-                index=batch_cells,
-                columns=gene_names
-            )
+            df = pd.DataFrame(batch_X, index=batch_cells, columns=gene_names)
             fpath = os.path.join(tmpdir, f"batch_{batch_id}.csv")
             df.to_csv(fpath)
             input_files.append((batch_id, fpath))
@@ -861,7 +848,7 @@ mat_{safe_name} <- t(as.matrix(mat_{safe_name}))  # genes x cells
 """)
 
         r_obj_list = "list(" + ", ".join(r_obj_names) + ")"
-        reduction_method = '"cca"' if method == 'cca' else '"rpca"'
+        reduction_method = '"cca"' if method == "cca" else '"rpca"'
 
         # For RPCA, need to run PCA on each object first
         rpca_pca_lines = ""
@@ -937,18 +924,14 @@ cat("Done!\\n")
 
         # --- Execute R script ---
         def run_cmd(cmd):
-            return subprocess.run(
-                cmd, capture_output=True, text=True, check=True
-            )
+            return subprocess.run(cmd, capture_output=True, text=True, check=True)
 
         print(f"    Executing R script ({method.upper()})...")
 
         if conda_env is not None:
             try:
                 # Method 1: conda run
-                result = run_cmd(
-                    ["conda", "run", "-n", conda_env, "Rscript", script_file]
-                )
+                result = run_cmd(["conda", "run", "-n", conda_env, "Rscript", script_file])
                 print(result.stdout)
             except (subprocess.CalledProcessError, FileNotFoundError) as e1:
                 try:
@@ -1128,7 +1111,7 @@ def cca_integrate(
         spatioloji_obj._embeddings[output_key] = X_corrected
 
         for i in range(X_corrected.shape[1]):
-            spatioloji_obj._cell_meta[f"CCA{i+1}"] = X_corrected[:, i]
+            spatioloji_obj._cell_meta[f"CCA{i + 1}"] = X_corrected[:, i]
 
         return None
     else:
@@ -1273,7 +1256,7 @@ def rpca_integrate(
         spatioloji_obj._embeddings[output_key] = X_corrected
 
         for i in range(X_corrected.shape[1]):
-            spatioloji_obj._cell_meta[f"RPCA{i+1}"] = X_corrected[:, i]
+            spatioloji_obj._cell_meta[f"RPCA{i + 1}"] = X_corrected[:, i]
 
         return None
     else:

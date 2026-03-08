@@ -103,7 +103,7 @@ def cell_density_map(
         sp.cell_meta["local_density"] = result["local_density"].values
         print("  ✓ Stored 'cell_density' and 'local_density' in cell_meta")
 
-    print(f"  ✓ Density: mean={result['local_density'].mean():.4f}, " f"max={result['local_density'].max():.4f}")
+    print(f"  ✓ Density: mean={result['local_density'].mean():.4f}, max={result['local_density'].max():.4f}")
 
     return result
 

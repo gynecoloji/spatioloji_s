@@ -306,7 +306,7 @@ def niche_identification(
 
     if len(valid_comp) < n_niches:
         raise ValueError(
-            f"Only {len(valid_comp)} cells with neighbors, " f"need at least {n_niches} for {n_niches} niches."
+            f"Only {len(valid_comp)} cells with neighbors, need at least {n_niches} for {n_niches} niches."
         )
 
     labels = pd.Series(np.nan, index=sp.cell_index, dtype=object)
@@ -332,7 +332,7 @@ def niche_identification(
             import anndata
             import scanpy as sc
         except ImportError as err:
-            raise ImportError("Leiden clustering requires scanpy. " "Install with: pip install scanpy") from err
+            raise ImportError("Leiden clustering requires scanpy. Install with: pip install scanpy") from err
 
         # Build AnnData from composition, run neighbors + leiden
         adata = anndata.AnnData(X=valid_comp.values)
@@ -401,7 +401,7 @@ def boundary_cells(
     >>> boundary_ids = sp.cell_index[boundaries].tolist()
     >>> sp_boundary = sp.subset_by_cells(boundary_ids)
     """
-    print(f"\n[Neighborhoods] Detecting boundary cells " f"(threshold={min_different_fraction})...")
+    print(f"\n[Neighborhoods] Detecting boundary cells (threshold={min_different_fraction})...")
 
     if group_col not in sp.cell_meta.columns:
         raise ValueError(f"'{group_col}' not found in cell_meta")
@@ -448,7 +448,7 @@ def boundary_cells(
     n_boundary = is_boundary.sum()
 
     print(f"  ✓ {n_boundary:,} boundary cells detected")
-    print(f"    Score distribution: mean={boundary_score.mean():.3f}, " f"median={boundary_score.median():.3f}")
+    print(f"    Score distribution: mean={boundary_score.mean():.3f}, median={boundary_score.median():.3f}")
 
     # Report boundary cells per type
     if n_boundary > 0:
@@ -525,7 +525,7 @@ def harmonize_niches(comp_dict: dict, n_niches: int = 5, method: str = "kmeans",
     print(f"  → {all_comp.shape[1]} cell types in composition space")
 
     if len(valid_comp) < n_niches:
-        raise ValueError(f"Only {len(valid_comp)} cells with neighbors across all FOVs, " f"need at least {n_niches}.")
+        raise ValueError(f"Only {len(valid_comp)} cells with neighbors across all FOVs, need at least {n_niches}.")
 
     # ── Step 2: Global clustering ─────────────────────────────────────────────
     labels = pd.Series(np.nan, index=all_comp.index, dtype=object)

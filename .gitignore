@@ -207,3 +207,7 @@ __marimo__/
 *.pickle
 *.pkl
 .csv
+
+# AI 
+.claude/
+CLAUDE.md

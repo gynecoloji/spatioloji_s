@@ -666,7 +666,7 @@ class spatioloji_qc:
             min_cells_threshold = min_cells if min_cells is not None else self.config.gene_min_cells
             if min_cells_threshold is None:
                 raise ValueError(
-                    "min_cells required for min_cells method. " "Provide via parameter or set config.gene_min_cells"
+                    "min_cells required for min_cells method. Provide via parameter or set config.gene_min_cells"
                 )
             n_cells_expressing = (expr[:, gene_mask] > 0).sum(axis=0)
             keep_genes_bool = n_cells_expressing > min_cells_threshold
@@ -963,7 +963,7 @@ class spatioloji_qc:
 
             for i, bar in enumerate(bars):
                 height = bar.get_height()
-                label = f'{int(height):,}\n({cd["pct_kept"]:.1f}%)' if i == 1 else f"{int(height):,}"
+                label = f"{int(height):,}\n({cd['pct_kept']:.1f}%)" if i == 1 else f"{int(height):,}"
                 axes[0].text(bar.get_x() + bar.get_width() / 2.0, height, label, ha="center", va="bottom")
 
         # Genes
@@ -981,7 +981,7 @@ class spatioloji_qc:
 
             for i, bar in enumerate(bars):
                 height = bar.get_height()
-                label = f'{int(height):,}\n({gd["pct_kept"]:.1f}%)' if i == 1 else f"{int(height):,}"
+                label = f"{int(height):,}\n({gd['pct_kept']:.1f}%)" if i == 1 else f"{int(height):,}"
                 axes[1].text(bar.get_x() + bar.get_width() / 2.0, height, label, ha="center", va="bottom")
 
         plt.tight_layout()

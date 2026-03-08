@@ -119,8 +119,8 @@ def pca(
     components = pca_model.components_
 
     print("  ✓ PCA complete")
-    print(f"    Variance explained by first 10 PCs: {variance_ratio[:10].sum()*100:.1f}%")
-    print(f"    Variance explained by all {n_comps_actual} PCs: {variance_ratio.sum()*100:.1f}%")
+    print(f"    Variance explained by first 10 PCs: {variance_ratio[:10].sum() * 100:.1f}%")
+    print(f"    Variance explained by all {n_comps_actual} PCs: {variance_ratio.sum() * 100:.1f}%")
 
     # Prepare results
     results = {"X_pca": X_pca, "variance": variance, "variance_ratio": variance_ratio, "components": components}
@@ -137,7 +137,7 @@ def pca(
         # Also add first few PCs to cell_meta for easy access
         n_pcs_to_add = min(50, n_comps_actual)
         for i in range(n_pcs_to_add):
-            spatioloji_obj._cell_meta[f"PC{i+1}"] = X_pca[:, i]
+            spatioloji_obj._cell_meta[f"PC{i + 1}"] = X_pca[:, i]
 
         return None
     else:
@@ -269,7 +269,7 @@ def tsne(
 
         # Add to cell_meta for easy access
         for i in range(n_components):
-            spatioloji_obj._cell_meta[f"tSNE{i+1}"] = X_tsne[:, i]
+            spatioloji_obj._cell_meta[f"tSNE{i + 1}"] = X_tsne[:, i]
 
         return None
     else:
@@ -349,7 +349,7 @@ def umap(
     try:
         import umap as umap_package
     except ImportError as err:
-        raise ImportError("UMAP requires umap-learn package. " "Install with: pip install umap-learn") from err
+        raise ImportError("UMAP requires umap-learn package. Install with: pip install umap-learn") from err
 
     print(f"\nUMAP (n_components={n_components}, n_neighbors={n_neighbors}, min_dist={min_dist})")
 
@@ -403,7 +403,7 @@ def umap(
 
         # Add to cell_meta for easy access
         for i in range(n_components):
-            spatioloji_obj._cell_meta[f"UMAP{i+1}"] = X_umap[:, i]
+            spatioloji_obj._cell_meta[f"UMAP{i + 1}"] = X_umap[:, i]
 
         return None
     else:
@@ -542,7 +542,7 @@ def diffusion_map(
 
         # Add to cell_meta
         for i in range(min(n_components, X_diffmap.shape[1])):
-            spatioloji_obj._cell_meta[f"DC{i+1}"] = X_diffmap[:, i]
+            spatioloji_obj._cell_meta[f"DC{i + 1}"] = X_diffmap[:, i]
 
         return None
     else:

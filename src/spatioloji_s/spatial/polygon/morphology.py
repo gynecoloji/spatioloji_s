@@ -66,7 +66,7 @@ def compute_morphology(
     if metrics is not None:
         invalid = set(metrics) - set(all_metrics)
         if invalid:
-            raise ValueError(f"Unknown metrics: {invalid}. " f"Available: {all_metrics}")
+            raise ValueError(f"Unknown metrics: {invalid}. Available: {all_metrics}")
         compute = metrics
     else:
         compute = all_metrics
@@ -199,7 +199,7 @@ def classify_morphology(
     # Check that morphology has been computed
     morph_cols = [c for c in sp.cell_meta.columns if c.startswith("morph_")]
     if not morph_cols:
-        raise ValueError("No morphology metrics found in cell_meta. " "Run compute_morphology(sp) first.")
+        raise ValueError("No morphology metrics found in cell_meta. Run compute_morphology(sp) first.")
 
     labels = pd.Series(index=sp.cell_index, dtype=object)
 

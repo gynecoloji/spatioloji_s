@@ -736,7 +736,7 @@ def validate_input_data(
     n_cells_meta = len(cell_meta)
 
     if n_cells_expr != n_cells_meta:
-        issues.append(f"Expression rows ({n_cells_expr}) != " f"cell metadata rows ({n_cells_meta})")
+        issues.append(f"Expression rows ({n_cells_expr}) != cell metadata rows ({n_cells_meta})")
         results["dimension_match"] = False
     else:
         results["dimension_match"] = True
@@ -938,7 +938,7 @@ def quick_summary(sp) -> None:
     print(f"Cells:              {summary['n_cells']:>12,}")
     print(f"Genes:              {summary['n_genes']:>12,}")
     print(f"FOVs:               {summary['n_fovs']:>12}")
-    print(f"Images:             {summary['n_images']:>12} " f"({summary['n_images_loaded']} loaded)")
+    print(f"Images:             {summary['n_images']:>12} ({summary['n_images_loaded']} loaded)")
     print("-" * 50)
     print(f"Avg cells/FOV:      {summary['avg_cells_per_fov']:>12.1f}")
     print(f"Expression format:  {'Sparse' if summary['is_sparse'] else 'Dense':>12}")

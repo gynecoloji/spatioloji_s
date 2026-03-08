@@ -87,7 +87,7 @@ def leiden_clustering(
         import leidenalg
     except ImportError as err:
         raise ImportError(
-            "Leiden clustering requires igraph and leidenalg. " "Install with: pip install igraph leidenalg"
+            "Leiden clustering requires igraph and leidenalg. Install with: pip install igraph leidenalg"
         ) from err
 
     print(f"\nLeiden clustering (resolution={resolution}, n_neighbors={n_neighbors})")
@@ -102,18 +102,16 @@ def leiden_clustering(
 
     # Apply PCA if requested
     if use_pca:
-        if hasattr(spatioloji_obj, '_embeddings') and 'X_pca' in spatioloji_obj._embeddings:
-            X_reduced = spatioloji_obj._embeddings['X_pca'][:, :n_pcs]
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X_reduced = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
             print(f"  Using stored PCA (first {n_pcs} PCs)")
         else:
             print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
             from sklearn.decomposition import PCA
-            pca_model = PCA(
-                n_components=min(n_pcs, X.shape[0], X.shape[1]),
-                random_state=random_state
-            )
+
+            pca_model = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
             X_reduced = pca_model.fit_transform(X)
-            print(f"    Variance explained: {pca_model.explained_variance_ratio_.sum()*100:.1f}%")
+            print(f"    Variance explained: {pca_model.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
         X_reduced = X
 
@@ -152,7 +150,7 @@ def leiden_clustering(
 
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
-    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
+    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, mean: {counts.mean():.1f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)
@@ -229,7 +227,7 @@ def kmeans_clustering(
         print(f"  Computing PCA (n_pcs={n_pcs})...")
         pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
         X_reduced = pca.fit_transform(X)
-        print(f"    Variance explained: {pca.explained_variance_ratio_.sum()*100:.1f}%")
+        print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
         X_reduced = X
 
@@ -241,7 +239,7 @@ def kmeans_clustering(
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
     print(f"  ✓ Clustered into {n_clusters} groups")
-    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
+    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, mean: {counts.mean():.1f}")
     print(f"    Inertia: {kmeans.inertia_:.2f}")
 
     if inplace:
@@ -318,7 +316,7 @@ def hierarchical_clustering(
         print(f"  Computing PCA (n_pcs={n_pcs})...")
         pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]))
         X_reduced = pca.fit_transform(X)
-        print(f"    Variance explained: {pca.explained_variance_ratio_.sum()*100:.1f}%")
+        print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
         X_reduced = X
 
@@ -337,7 +335,7 @@ def hierarchical_clustering(
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
     print(f"  ✓ Found {n_clusters_found} clusters")
-    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
+    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, mean: {counts.mean():.1f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)
@@ -409,7 +407,7 @@ def spatial_clustering(
         n_noise = (clusters == -1).sum()
 
         print(f"  ✓ Found {n_clusters} spatial clusters")
-        print(f"    Noise points: {n_noise} ({n_noise/len(clusters)*100:.1f}%)")
+        print(f"    Noise points: {n_noise} ({n_noise / len(clusters) * 100:.1f}%)")
 
     elif method == "kmeans":
         if n_clusters is None:
@@ -427,7 +425,7 @@ def spatial_clustering(
     # Calculate cluster sizes
     unique, counts = np.unique(clusters[clusters != -1], return_counts=True)
     if len(unique) > 0:
-        print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
+        print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, mean: {counts.mean():.1f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)
@@ -524,7 +522,7 @@ def spatially_constrained_clustering(
     X_combined = np.hstack([X_expr_norm * (1 - spatial_weight), X_spatial_norm * spatial_weight])
 
     print(f"  Combined feature space: {X_combined.shape[1]} dimensions")
-    print(f"    Expression: {X_expr_norm.shape[1]} dims × {1-spatial_weight:.2f} weight")
+    print(f"    Expression: {X_expr_norm.shape[1]} dims × {1 - spatial_weight:.2f} weight")
     print(f"    Spatial: {X_spatial_norm.shape[1]} dims × {spatial_weight:.2f} weight")
 
     # Run k-means on combined space
@@ -535,7 +533,7 @@ def spatially_constrained_clustering(
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
     print(f"  ✓ Found {n_clusters} clusters")
-    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, " f"mean: {counts.mean():.1f}")
+    print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, mean: {counts.mean():.1f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)

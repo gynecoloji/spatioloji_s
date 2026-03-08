@@ -224,7 +224,7 @@ def morans_i(
         zscore = (observed_I - perm_mean) / perm_std if perm_std > 0 else 0
         pvalue = (np.sum(np.abs(perm_Is - perm_mean) >= np.abs(observed_I - perm_mean)) + 1) / (n_permutations + 1)
 
-        print(f"  ✓ Global Moran's I ({label}{layer_str}): " f"I={observed_I:.4f}, z={zscore:.2f}, p={pvalue:.4f}")
+        print(f"  ✓ Global Moran's I ({label}{layer_str}): I={observed_I:.4f}, z={zscore:.2f}, p={pvalue:.4f}")
 
         return {"I": observed_I, "expected": expected_I, "zscore": zscore, "pvalue": pvalue}
 
@@ -413,10 +413,7 @@ def getis_ord_gi(
 
     n_hot = (spot_type == "hotspot").sum()
     n_cold = (spot_type == "coldspot").sum()
-    print(
-        f"  ✓ Getis-Ord Gi{'*' if star else ''} ({label}{layer_str}): "
-        f"{n_hot} hotspot cells, {n_cold} coldspot cells"
-    )
+    print(f"  ✓ Getis-Ord Gi{'*' if star else ''} ({label}{layer_str}): {n_hot} hotspot cells, {n_cold} coldspot cells")
 
     return result
 
@@ -550,7 +547,7 @@ def spatially_variable_genes(
     print(f"  ✓ {n_sig}/{n_genes} significant SVGs (FDR < {fdr_threshold})")
     print("    Top genes:")
     for gene_name, row in result.head(min(n_top, 10)).iterrows():
-        print(f"      {gene_name:>15s}: I={row['I']:.4f}, " f"z={row['zscore']:.1f}, FDR={row['fdr']:.1e}")
+        print(f"      {gene_name:>15s}: I={row['I']:.4f}, z={row['zscore']:.1f}, FDR={row['fdr']:.1e}")
 
     return result
 
