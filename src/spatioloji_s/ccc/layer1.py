@@ -65,8 +65,9 @@ def build_weight_matrices(
                  w[i→j] = free_boundary(j) × exp(-dist / σ_s)
                  Receiver exposure × distance decay.
     ecm        : ecm_graph (buffer graph, largest radius)
-                 w[i→j] = (1 - solidity(j)) × exp(-dist / σ_e)
-                 Morphologically irregular receivers capture more ECM signal.
+                 w[i→j] = contour_entropy_norm(j) × free_boundary(j) × exp(-dist / σ_e)
+                 contour_entropy_norm = H(j) / H_max, FOV-normalised to [0, 1].
+                 Receivers with complex, exposed membranes capture more ECM signal.
 
     σ for each type is estimated from the median edge distance of the
     corresponding graph — data-driven, no manual tuning required.
@@ -74,7 +75,8 @@ def build_weight_matrices(
     Parameters
     ----------
     sp : spatioloji
-        spatioloji object. Must have morph_solidity in sp.cell_meta.
+        spatioloji object. Must have morph_contour_entropy in sp.cell_meta
+        (run compute_morphology with store=True before calling run_ccc).
     contact_frac_df : pd.DataFrame
         Output of boundaries.contact_fraction().
         Columns: cell_a, cell_b, fraction_a, fraction_b.
@@ -96,10 +98,14 @@ def build_weight_matrices(
     n = len(cell_ids)
     id2idx = {cid: k for k, cid in enumerate(cell_ids)}
 
-    # ── Retrieve morph_solidity ───────────────────────────────────────────────
-    if "morph_solidity" not in sp.cell_meta.columns:
-        raise ValueError("morph_solidity not found in sp.cell_meta. Run compute_morphology(sp, store=True) first.")
-    solidity = pd.Series(sp.cell_meta["morph_solidity"].values, index=sp.cell_index)
+    # ── Retrieve morph_contour_entropy, FOV-normalise to [0, 1] ──────────────
+    if "morph_contour_entropy" not in sp.cell_meta.columns:
+        raise ValueError(
+            "morph_contour_entropy not found in sp.cell_meta. Run compute_morphology(sp, store=True) first."
+        )
+    ce_raw = pd.Series(sp.cell_meta["morph_contour_entropy"].values, index=sp.cell_index)
+    ce_max = ce_raw.max()
+    contour_entropy_norm = ce_raw / ce_max if ce_max > 0 else ce_raw.clip(lower=0.0)
 
     # ── Accumulators ─────────────────────────────────────────────────────────
     rows_j, cols_j, vals_j = [], [], []  # juxtacrine
@@ -182,14 +188,18 @@ def build_weight_matrices(
         ia_arr, ib_arr = ia_arr[valid], ib_arr[valid]
         d_arr = ecm_edges["distance"].values[valid]
         decay = np.exp(-d_arr / sigma_e)
-        sol_a = solidity.reindex(ca_arr[valid]).fillna(1.0).values
-        sol_b = solidity.reindex(cb_arr[valid]).fillna(1.0).values
+        ce_a = contour_entropy_norm.reindex(ca_arr[valid]).fillna(0.0).values
+        ce_b = contour_entropy_norm.reindex(cb_arr[valid]).fillna(0.0).values
+        fb_a_ecm = free_boundary_ser.reindex(ca_arr[valid]).fillna(1.0).values
+        fb_b_ecm = free_boundary_ser.reindex(cb_arr[valid]).fillna(1.0).values
         keep = decay > min_weight
         ia_arr, ib_arr = ia_arr[keep], ib_arr[keep]
-        decay, sol_a, sol_b = decay[keep], sol_a[keep], sol_b[keep]
+        decay = decay[keep]
+        ce_a, ce_b = ce_a[keep], ce_b[keep]
+        fb_a_ecm, fb_b_ecm = fb_a_ecm[keep], fb_b_ecm[keep]
         rows_e = np.concatenate([ia_arr, ib_arr])
         cols_e = np.concatenate([ib_arr, ia_arr])
-        vals_e = np.concatenate([(1.0 - sol_b) * decay, (1.0 - sol_a) * decay])
+        vals_e = np.concatenate([ce_b * fb_b_ecm * decay, ce_a * fb_a_ecm * decay])
         print(f"  ECM:      {keep.sum()}/{len(valid)} edges kept (min_weight={min_weight})")
 
     # ── Build sparse matrices ─────────────────────────────────────────────────

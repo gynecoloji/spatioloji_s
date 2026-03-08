@@ -61,9 +61,9 @@ def _build_geometry_arrays(
         fraction_b       : membrane fraction receiver→sender
         distance         : centroid distance between pair (pixels)
         d_norm           : distance / d_max  (in [0,1])
-        fb_a, fb_b       : free_boundary_fraction per cell (edge-aligned)
-        sol_a, sol_b     : morph_solidity per cell (edge-aligned)
-        decay            : exp(-distance / sigma)
+        fb_a, fb_b           : free_boundary_fraction per cell (edge-aligned)
+        ce_norm_a, ce_norm_b : FOV-normalised contour_entropy per cell (edge-aligned)
+        decay                : exp(-distance / sigma)
     """
     cell_ids = np.array(sp.cell_index)
     id2idx = {cid: k for k, cid in enumerate(cell_ids)}
@@ -83,10 +83,12 @@ def _build_geometry_arrays(
         sp.cell_meta.get("free_boundary_fraction", pd.Series(1.0, index=range(len(cell_ids)))).values,
         index=cell_ids,
     )
-    sol = pd.Series(
-        sp.cell_meta.get("morph_solidity", pd.Series(1.0, index=range(len(cell_ids)))).values,
+    ce_raw = pd.Series(
+        sp.cell_meta.get("morph_contour_entropy", pd.Series(0.0, index=range(len(cell_ids)))).values,
         index=cell_ids,
     )
+    ce_max = ce_raw.max()
+    ce_norm = ce_raw / ce_max if ce_max > 0 else ce_raw.clip(lower=0.0)
 
     # Build edge arrays from contact_frac_df
     ca_arr = contact_frac_df["cell_a"].values
@@ -120,8 +122,8 @@ def _build_geometry_arrays(
     # Cell-level arrays, edge-aligned
     fb_a = np.array([float(fb.get(c, 1.0)) for c in ca_arr], dtype=np.float32)
     fb_b = np.array([float(fb.get(c, 1.0)) for c in cb_arr], dtype=np.float32)
-    sol_a = np.array([float(sol.get(c, 1.0)) for c in ca_arr], dtype=np.float32)
-    sol_b = np.array([float(sol.get(c, 1.0)) for c in cb_arr], dtype=np.float32)
+    ce_norm_a = np.array([float(ce_norm.get(c, 0.0)) for c in ca_arr], dtype=np.float32)
+    ce_norm_b = np.array([float(ce_norm.get(c, 0.0)) for c in cb_arr], dtype=np.float32)
 
     return dict(
         ca=ca_arr,
@@ -135,8 +137,8 @@ def _build_geometry_arrays(
         decay=decay,
         fb_a=fb_a,
         fb_b=fb_b,
-        sol_a=sol_a,
-        sol_b=sol_b,
+        ce_norm_a=ce_norm_a,
+        ce_norm_b=ce_norm_b,
         n_cells=len(cell_ids),
         d_max=float(d_max),
     )
@@ -164,9 +166,9 @@ def _cost_matrix(
         → receiver shielding × distance
         → isolated receiver far away = high cost
 
-    ecm:        C = solidity_b × d_norm
-        → irregular (low solidity) receivers have more ECM surface
-        → compact round cell far away = high cost
+    ecm:        C = (1 - contour_entropy_norm_b × free_boundary_b) × d_norm
+        → receivers with complex, exposed membranes have low cost
+        → smooth or shielded receiver far away = high cost
     """
     ia, ib = geo["ia"], geo["ib"]
 
@@ -181,7 +183,7 @@ def _cost_matrix(
     elif sig_type == "secreted":
         cost = ((1.0 - geo["fb_b"][edge_ok]) * geo["d_norm"][edge_ok]).clip(0.0, 1.0)
     else:  # ecm
-        cost = (geo["sol_b"][edge_ok] * geo["d_norm"][edge_ok]).clip(0.0, 1.0)
+        cost = ((1.0 - geo["ce_norm_b"][edge_ok] * geo["fb_b"][edge_ok]) * geo["d_norm"][edge_ok]).clip(0.0, 1.0)
 
     return ia_ok, ib_ok, cost.astype(np.float32), edge_ok
 
@@ -199,7 +201,8 @@ def _geo_weight(
     ------------------
     juxtacrine: w = fraction_a × fraction_b  (mutual membrane commitment)
     secreted:   w = free_boundary_b × decay  (receiver exposure × distance decay)
-    ecm:        w = (1-solidity_b) × decay   (receiver ECM surface × decay)
+    ecm:        w = contour_entropy_norm_b × free_boundary_b × decay
+                    (receiver membrane complexity × exposure × distance decay)
 
     Returns (ia_ok, ib_ok, weight) in COO format.
     """
@@ -214,7 +217,7 @@ def _geo_weight(
     elif sig_type == "secreted":
         w = (geo["fb_b"][edge_ok] * geo["decay"][edge_ok]).astype(np.float32)
     else:  # ecm
-        w = ((1.0 - geo["sol_b"][edge_ok]) * geo["decay"][edge_ok]).astype(np.float32)
+        w = (geo["ce_norm_b"][edge_ok] * geo["fb_b"][edge_ok] * geo["decay"][edge_ok]).astype(np.float32)
 
     return ia_ok, ib_ok, w
 

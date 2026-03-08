@@ -20,6 +20,67 @@ import pandas as pd
 from .graph import _get_gdf
 
 
+def _curvature_entropy(geom, n_bins: int = 36) -> float:
+    """
+    Shannon entropy (bits) of the turning-angle distribution along the boundary.
+
+    At each polygon vertex i, the turning angle is the signed angle between the
+    incoming edge (i-1 → i) and the outgoing edge (i → i+1), computed as:
+        θ_i = arctan2(cross(v_in, v_out), dot(v_in, v_out))
+    Range: (-π, π].
+
+    The angles are binned into n_bins equal-width bins over [-π, π] and the
+    Shannon entropy of the resulting probability distribution is returned:
+        H = -Σ p_k × log2(p_k)   (bits, empty bins excluded)
+
+    Interpretation
+    --------------
+    High H : curvature varies widely → complex, irregular boundary
+             (protrusions, indentations, ruffled membrane)
+    Low H  : curvature is concentrated in a narrow range → smooth uniform
+             boundary (near-circle or smooth convex polygon)
+
+    Parameters
+    ----------
+    geom : shapely Polygon
+    n_bins : int
+        Number of histogram bins over [-π, π]. Default 36 (10° per bin).
+        Should be ≥ 8; for very small polygons (< 10 vertices) the result
+        is less reliable regardless of n_bins.
+
+    Returns
+    -------
+    float
+        Entropy in bits. Returns np.nan for degenerate polygons (< 3 vertices).
+    """
+    coords = np.array(geom.exterior.coords)
+    if np.allclose(coords[0], coords[-1]):
+        coords = coords[:-1]  # remove closing duplicate
+
+    n = len(coords)
+    if n < 3:
+        return np.nan
+
+    # Vectorised turning angles: no Python loop over vertices
+    # v_in[i]  = coords[i] - coords[i-1]  (incoming edge, wraps around)
+    # v_out[i] = coords[(i+1)%n] - coords[i]  (outgoing edge)
+    v_in = coords - np.roll(coords, 1, axis=0)
+    v_out = np.roll(coords, -1, axis=0) - coords
+
+    cross = v_in[:, 0] * v_out[:, 1] - v_in[:, 1] * v_out[:, 0]
+    dot = v_in[:, 0] * v_out[:, 0] + v_in[:, 1] * v_out[:, 1]
+    angles = np.arctan2(cross, dot)  # (n,) in (-π, π]
+
+    # Histogram over [-π, π]
+    counts, _ = np.histogram(angles, bins=n_bins, range=(-np.pi, np.pi))
+    total = counts.sum()
+    if total == 0:
+        return np.nan
+
+    probs = counts[counts > 0] / total
+    return float(-np.sum(probs * np.log2(probs)))
+
+
 def compute_morphology(
     sp: spatioloji, coord_type: str = "global", metrics: list[str] | None = None, store: bool = True
 ) -> pd.DataFrame:
@@ -34,6 +95,9 @@ def compute_morphology(
     - solidity: area / convex_hull_area (1.0 = no concavities)
     - compactness: sqrt(4 × area / π) / major_axis
     - convexity: convex_hull_perimeter / perimeter
+    - contour_entropy: Shannon entropy (bits) of turning-angle distribution
+                       along the boundary. High = complex irregular outline;
+                       low = smooth uniform boundary (e.g. near-circle).
 
     Parameters
     ----------
@@ -61,7 +125,16 @@ def compute_morphology(
     >>> sp.cell_meta['morph_circularity']
     """
 
-    all_metrics = ["area", "perimeter", "circularity", "elongation", "solidity", "compactness", "convexity"]
+    all_metrics = [
+        "area",
+        "perimeter",
+        "circularity",
+        "elongation",
+        "solidity",
+        "compactness",
+        "convexity",
+        "contour_entropy",
+    ]
 
     if metrics is not None:
         invalid = set(metrics) - set(all_metrics)
@@ -127,6 +200,9 @@ def compute_morphology(
             convex_perimeter = convex.length
             if poly_perimeter > 0:
                 results["convexity"][i] = convex_perimeter / poly_perimeter
+
+        if "contour_entropy" in compute:
+            results["contour_entropy"][i] = _curvature_entropy(geom)
 
     # Build DataFrame aligned to cell_index
     morph_df = pd.DataFrame(results, index=gdf.index)
