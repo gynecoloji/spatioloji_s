@@ -207,6 +207,7 @@ __marimo__/
 *.pickle
 *.pkl
 .csv
+.vscode/
 
 # AI 
 .claude/

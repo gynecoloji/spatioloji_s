@@ -3,19 +3,12 @@
 [![PyPI version](https://img.shields.io/pypi/v/spatioloji-s.svg)](https://pypi.org/project/spatioloji-s/)
 [![Documentation Status](https://readthedocs.org/projects/spatioloji_s/badge/?version=latest)](https://spatioloji_s.readthedocs.io/en/latest/?version=latest)
 
-**spatioloji_s** is a Python package for spatial transcriptomics analysis, purpose-built for image-based single-cell RNA sequencing data (e.g., CosMx, MERFISH, Xenium). It provides an integrated, computationally efficient workflow — from raw data loading through quality control, processing, and spatial analysis — all within a consistent, easy-to-use data structure.
+**spatioloji_s** is a Python package for spatial transcriptomics analysis, purpose-built for image-based single-cell RNA sequencing data (CosMx, MERFISH, Xenium). It provides an integrated workflow — from raw data loading through quality control, processing, spatial analysis, and polygon-native cell-cell communication — all within a consistent, polygon-aware data structure.
 
-image_based spatial RNA sequencing
-
-* PyPI package: https://pypi.org/project/spatioloji_s/
-* Free software: MIT License
-* Documentation: https://spatioloji_s.readthedocs.io.
-
-
-## Credits
-
-This package was created with [Cookiecutter](https://github.com/audreyfeldroy/cookiecutter) and the [audreyfeldroy/cookiecutter-pypackage](https://github.com/audreyfeldroy/cookiecutter-pypackage) project template.
-> 📦 GitHub: [gynecoloji/spatioloji_s](https://github.com/gynecoloji/spatioloji_s)
+* PyPI: https://pypi.org/project/spatioloji_s/
+* GitHub: https://github.com/gynecoloji/spatioloji_s
+* Documentation: https://spatioloji_s.readthedocs.io
+* License: MIT
 
 ---
 
@@ -23,9 +16,11 @@ This package was created with [Cookiecutter](https://github.com/audreyfeldroy/co
 
 - **Custom data structure** — A `spatioloji` object that unifies expression matrices, cell metadata, spatial coordinates, cell polygons, and FOV images under a single master cell index, ensuring automatic alignment across all components.
 - **Efficient memory handling** — Automatic sparse/dense matrix switching (`ExpressionMatrix`), and lazy-loading of FOV images with LRU caching (`ImageHandler`).
-- **Quality control** — Comprehensive QC metrics for cells, genes, and FOVs with diagnostic plots.
-- **Processing pipeline** — Normalization, feature selection, dimensionality reduction (PCA, UMAP, t-SNE), clustering (Leiden, Louvain, K-Means), batch correction (ComBat, Harmony, scVI), and imputation (MAGIC, scVI, ALRA, DCA, KNN).
-- **Spatial analysis** — Point-based and polygon-based spatial analysis including neighborhood enrichment, spatial statistics, Ripley's functions, and pattern analysis.
+- **Quality control** — Comprehensive QC metrics for cells, genes, and FOVs with diagnostic plots. Built-in NegProbe-aware gene filtering for CosMx/MERFISH.
+- **Processing pipeline** — Normalization, feature selection, dimensionality reduction (PCA, UMAP, t-SNE), clustering (Leiden, K-Means, hierarchical), batch correction (ComBat, Harmony, scVI), and imputation (MAGIC, ALRA, KNN, DCA, scVI).
+- **Spatial analysis** — Two complementary modes: centroid-based (fast, large datasets) and polygon-based (topologically accurate). Includes neighborhood enrichment, spatial autocorrelation, Ripley's K/L/G, and pattern analysis.
+- **Polygon morphology** — Cell shape metrics including area, circularity, elongation, solidity, convexity, compactness, and Shannon entropy of boundary curvature distribution.
+- **Cell-cell communication (CCC)** — A 3-layer polygon-native CCC framework: spatial discovery (Bivariate Moran's I), cell-pair scoring (Polygon OT + Message Passing), and pattern detection (Contrastive Scoring + NMF). No other CCC tool uses polygon contact geometry.
 - **Visualization** — Static and interactive spatial plots supporting both scatter (dot) and polygon (cell boundary) rendering, with flexible color customization.
 
 ---
@@ -36,10 +31,21 @@ This package was created with [Cookiecutter](https://github.com/audreyfeldroy/co
 pip install spatioloji-s
 ```
 
-For optional dependencies (e.g., MAGIC imputation):
+Requires Python >= 3.12.
+
+For optional extras:
 ```bash
-conda create -n spatioloji_magic python=3.10
-pip install magic-impute
+pip install "spatioloji-s[clustering]"   # Leiden clustering
+pip install "spatioloji-s[reduction]"    # UMAP
+pip install "spatioloji-s[batch]"        # Harmony, ComBat
+pip install "spatioloji-s[anndata]"      # AnnData/scanpy interop
+pip install "spatioloji-s[all]"          # Everything above
+```
+
+MAGIC imputation requires a separate conda environment:
+```bash
+conda create -n spatioloji_magic python=3.12
+pip install magic-impute spatioloji-s
 ```
 
 ---
@@ -51,11 +57,11 @@ import spatioloji_s as sj
 
 # Load from files
 sp = sj.spatioloji.from_files(
-    polygons_path    = "polygons.csv",
-    cell_meta_path   = "cell_metadata.csv",
-    expression_path  = "expression.npz",
+    polygons_path      = "polygons.csv",
+    cell_meta_path     = "cell_metadata.csv",
+    expression_path    = "expression.npz",
     fov_positions_path = "fov_positions.csv",
-    images_folder    = "images/"
+    images_folder      = "images/"
 )
 
 # Or load from a saved object
@@ -70,39 +76,48 @@ sj.data.utils.quick_summary(sp)
 ## Module Overview
 
 ```
-spatioloji/
+spatioloji_s/
 ├── data/               # Core data structure, QC, and utilities
-│   ├── spatioloji      # Main object class
-│   ├── spatioloji_qc   # Quality control pipeline
-│   └── ExpressionMatrix / ImageHandler / SpatialData
+│   ├── core.py             # spatioloji class (master cell index)
+│   ├── qc.py               # QC filtering, NegProbe-aware metrics
+│   ├── expression.py       # ExpressionMatrix (auto sparse/dense)
+│   ├── images.py           # ImageHandler (lazy load + LRU cache)
+│   └── config.py / utils.py
 │
-├── processing/         # Analysis pipeline
-│   ├── normalization       # Library size, log-normalization
-│   ├── feature_selection   # Highly variable genes
-│   ├── dimension_reduction # PCA, UMAP, t-SNE
-│   ├── clustering          # Leiden, Louvain, K-Means
-│   ├── batch_correction    # ComBat, Harmony
-│   └── imputation          # MAGIC
+├── processing/         # Single-cell processing pipeline
+│   ├── normalization.py        # total, log, scale, Pearson residuals
+│   ├── feature_selection.py    # highly variable genes
+│   ├── dimension_reduction.py  # PCA, UMAP, t-SNE, diffusion map
+│   ├── clustering.py           # Leiden, KMeans, hierarchical, spatial
+│   ├── batch_correction.py     # Harmony, ComBat, CCA, rPCA, scVI
+│   └── imputation.py           # MAGIC, ALRA, KNN-smooth, DCA, scVI
 │
-├── spatial/            # Spatial analysis
-│   ├── point/              # Centroid-based analysis
-│   │   ├── graph           # Spatial neighbor graphs (kNN, radius)
-│   │   ├── neighborhoods   # Cell-type neighborhood enrichment
-│   │   ├── statistics      # Spatial autocorrelation (Moran's I)
-│   │   ├── ripley          # Ripley's K/L/G functions
-│   │   └── patterns        # Spatial pattern detection
-│   └── polygon/            # Cell boundary-based analysis
-│       ├── graph           # Contact graph from polygon intersections
-│       ├── boundaries      # Boundary detection
-│       ├── morphology      # Cell shape metrics
-│       ├── neighborhoods   # Contact-based neighborhoods
-│       ├── statistics      # Polygon spatial statistics
-│       └── patterns        # Polygon pattern analysis
+├── spatial/            # Spatial analysis (two complementary modes)
+│   ├── point/              # Centroid-based (fast, large datasets)
+│   │   ├── graph.py            # KNN / radius neighbor graphs
+│   │   ├── neighborhoods.py    # Cell-type neighborhood enrichment
+│   │   ├── statistics.py       # Moran's I, spatial autocorrelation
+│   │   ├── ripley.py           # Ripley's K/L/G functions
+│   │   └── patterns.py         # Spatial pattern detection
+│   └── polygon/            # Polygon-based (accurate topology)
+│       ├── graph.py            # Contact graph (polygon intersection)
+│       ├── boundaries.py       # Contact/free-boundary fractions
+│       ├── morphology.py       # Shape metrics + contour entropy
+│       ├── neighborhoods.py    # Contact-aware neighborhoods
+│       ├── statistics.py       # Polygon spatial statistics
+│       └── patterns.py         # Polygon pattern analysis
+│
+├── ccc/                # Cell-Cell Communication (3-layer framework)
+│   ├── database.py         # LR pair loading (CellChatDB, builtin, custom)
+│   ├── layer1.py           # Discovery — Bivariate Moran's I + Spatial Lag
+│   ├── layer2.py           # Cell-pair scoring — Polygon OT + Message Passing
+│   ├── layer3.py           # Patterns — Contrastive Scoring + NMF
+│   └── run.py              # CCCConfig, run_ccc, run_ccc_multifov
 │
 └── visualization/      # Plotting
-    ├── basic_plots     # QC and expression plots
-    ├── spatial_plots   # FOV scatter and polygon plots
-    └── interactive_plots  # Interactive (Plotly-based) views
+    ├── basic_plots.py      # UMAP, PCA, heatmap, violin, dotplot
+    ├── plots.py            # Spatial maps (dot and polygon rendering)
+    └── interactive_plots.py
 ```
 
 ---
@@ -113,25 +128,50 @@ spatioloji/
 import spatioloji_s as sj
 
 # --- QC ---
-qc = sj.spatioloji_qc(sp)
+qc = sj.data.qc.spatioloji_qc(sp)
 qc.filter_cells()
 qc.filter_genes(method='percentile')
 qc.run_all(output_dir="my_qc_output/")
 
 # --- Processing ---
-sj.processing.normalize(sp)
-sj.processing.select_hvg(sp)
-sj.processing.pca(sp)
-sj.processing.umap(sp)
-sj.processing.leiden(sp)
+sj.processing.normalization.normalize_total(sp)
+sj.processing.normalization.log_transform(sp)
+sj.processing.feature_selection.highly_variable_genes(sp)
+sj.processing.dimension_reduction.pca(sp)
+sj.processing.dimension_reduction.umap(sp)
+sj.processing.clustering.leiden(sp)
 
 # --- Spatial ---
 sj.spatial.point.graph.build_knn_graph(sp, k=10)
 sj.spatial.point.neighborhoods.neighborhood_enrichment(sp)
 
+# --- Polygon morphology ---
+from spatioloji_s.spatial.polygon.morphology import compute_morphology
+morph = compute_morphology(sp, store=True)
+# Adds morph_area, morph_circularity, morph_solidity,
+#      morph_contour_entropy, ... to sp.cell_meta
+
+# --- Cell-Cell Communication ---
+from spatioloji_s.ccc import CCCConfig, run_ccc, summarize_ccc
+
+config = CCCConfig(
+    cell_type_col = 'cell_type',
+    layer         = 'log_normalized',
+    db_source     = 'cellchatdb',
+    db_csv_path   = 'CellChatDB.csv',
+    K             = 5,           # NMF programs (None = auto)
+)
+ccc_results = run_ccc(sp_fov, config)
+summarize_ccc(ccc_results)
+
+# Access results
+sig_pairs = ccc_results['significant_pairs']   # Layer 1
+scores     = ccc_results['scores']             # Layer 2
+programs   = ccc_results['programs']           # Layer 3
+
 # --- Visualization ---
-sj.visualization.spatial_plots.plot_fov(sp, fov=1, color_by='leiden')
-sj.visualization.spatial_plots.plot_polygons(sp, fov=1, color_by='cell_type')
+sj.visualization.plots.plot_fov(sp, fov=1, color_by='leiden')
+sj.visualization.plots.plot_polygons(sp, fov=1, color_by='cell_type')
 ```
 
 ---
@@ -140,54 +180,90 @@ sj.visualization.spatial_plots.plot_polygons(sp, fov=1, color_by='cell_type')
 
 The `spatioloji` object stores all data aligned to a **master cell index**:
 
-| Component | Description |
-|-----------|-------------|
-| `sp.expression` | `ExpressionMatrix` — sparse/dense gene × cell matrix |
-| `sp.cell_meta` | `pd.DataFrame` — per-cell metadata and annotations |
-| `sp.gene_meta` | `pd.DataFrame` — per-gene metadata (incl. NegProbe flags) |
-| `sp.spatial` | `SpatialData` — global x/y coordinates per cell |
-| `sp.polygons` | `GeoDataFrame` — cell boundary polygons |
-| `sp.images` | `ImageHandler` — lazy-loaded FOV images with LRU cache |
-| `sp.fov_positions` | `pd.DataFrame` — FOV global offsets |
-| `sp.embeddings` | `dict` — PCA, UMAP, t-SNE coordinates |
+| Component | Type | Description |
+|---|---|---|
+| `sp.expression` | `ExpressionMatrix` | Sparse/dense gene × cell matrix (auto-switched) |
+| `sp.cell_meta` | `pd.DataFrame` | Per-cell metadata, QC metrics, cluster labels |
+| `sp.gene_meta` | `pd.DataFrame` | Per-gene metadata (NegProbe flags, HVG status) |
+| `sp.spatial` | `SpatialData` | Global and local x/y coordinates per cell |
+| `sp.polygons` | `GeoDataFrame` | Cell boundary polygons (Shapely) |
+| `sp.images` | `ImageHandler` | Lazy-loaded FOV images with LRU cache |
+| `sp.fov_positions` | `pd.DataFrame` | FOV global offsets for stitching |
+| `sp.embeddings` | `dict` | PCA, UMAP, t-SNE, diffusion map coordinates |
+| `sp.layers` | `dict` | Named expression layers (raw, normalized, scaled) |
 
 ---
 
-## How spatioloji Compares
+## Cell-Cell Communication: 3-Layer Framework
 
-The table below benchmarks spatioloji against the most widely-used image-based spatial transcriptomics packages.
+The `ccc` module implements a polygon-native CCC framework that uses actual cell geometry — not centroid distances — at every step.
+
+### Why polygon geometry matters
+
+Existing CCC tools (CellChat, COMMOT, SpatialDM) use centroid distance as the spatial proxy. For juxtacrine signals, what physically matters is the **fraction of shared membrane**, not distance. For ECM signals, it is the **morphological complexity and membrane exposure** of the receiver cell. spatioloji_s computes these directly from polygon boundaries.
+
+### Layer 1 — Discovery
+
+Identifies which LR pairs show significant spatial coupling between cell types.
+
+- **Bivariate Moran's I**: tests whether high-ligand senders are non-randomly co-localized with high-receptor receivers, using polygon-geometry weight matrices
+- **Spatial lag regression**: estimates effect size (ρ) with confounders (library size, cell density, morphology), FDR-corrected
+- **Output**: ranked `(lr_pair, sender_type → receiver_type)` combinations with `layer1_score = |I_bivar| × |ρ|`
+
+### Layer 2 — Cell-Pair Scoring
+
+Scores every contacting cell pair for each significant LR pair.
+
+- **Polygon OT**: entropy-regularized optimal transport with geometry-specific cost matrices (contact fraction for juxtacrine; membrane exposure × distance for secreted; contour entropy × free boundary for ECM)
+- **Message passing**: `m[i,j] = √(L_i × R_j) × geo_weight[i,j]`
+- **Combined score**: geometric mean of normalized OT and MP scores per cell
+- **Hub detection**: top-percentile sender and receiver cells per cell type
+
+### Layer 3 — Pattern Detection
+
+- **Contrastive scoring**: two permutation null models (shuffle expression vs shuffle geometry) classify each LR pair as `SYNERGISTIC`, `EXPRESSION_DRIVEN`, `GEOMETRY_DRIVEN`, or `WEAK`
+- **NMF communication programs**: decomposes all LR pair scores into K recurring spatial programs, with polygon Laplacian regularization for spatial coherence
+- **Output**: per-cell sender/receiver loadings (A, B matrices) and per-LR-pair loadings (H matrix)
+
+### CCC vs other tools
+
+| Feature | CellChat | NicheNet | CellPhoneDB | SpatialDM | COMMOT | **spatioloji_s** |
+|---|---|---|---|---|---|---|
+| Single-cell resolution | Partial | No | No | Partial | Yes | Yes |
+| Spatial statistics (Moran's I) | No | No | No | Yes | No | Yes (Layer 1) |
+| Optimal transport scoring | No | No | No | No | Yes (centroid) | Yes (polygon) |
+| Polygon contact geometry | No | No | No | No | No | Yes |
+| Membrane complexity (contour entropy) | No | No | No | No | No | Yes |
+| Expression vs geometry decomposition | No | Partial | No | No | No | Yes (Layer 3) |
+| NMF communication programs | No | No | No | No | No | Yes (Layer 3) |
+| Multi-subunit LR complexes | Yes | Partial | Yes | Yes | Partial | Yes |
+| Multi-FOV / multi-sample | Yes | Yes | Yes | Partial | No | Yes |
+
+---
+
+## How spatioloji Compares (Spatial Tools)
 
 | Feature | **spatioloji** | Squidpy | Giotto | SpatialData (scverse) |
 |---|---|---|---|---|
 | **Primary language** | Python | Python | Python / R | Python |
 | **Data structure** | Custom (`spatioloji`) | AnnData | GiottoObject | SpatialData |
-| **AnnData dependency** | ✅ None (optional import) | ❌ Required | ❌ Required | ❌ Required |
-| **Image-based ST focus** | ✅ First-class | ⚠️ Partial | ⚠️ Partial | ✅ Yes |
-| **FOV image handling** | ✅ Lazy load + LRU cache | ❌ No | ❌ No | ✅ Yes |
-| **Master index consistency** | ✅ Auto-enforced | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual |
-| **Auto sparse/dense matrix** | ✅ Yes | ❌ No | ❌ No | ❌ No |
-| **Cell polygon analysis** | ✅ Full polygon module | ⚠️ Limited | ⚠️ Limited | ✅ Partial |
-| **Contact-based neighborhoods** | ✅ Polygon graph | ❌ No | ❌ No | ❌ No |
-| **Ripley's K/L/G** | ✅ Yes | ✅ Yes | ⚠️ Partial | ❌ No |
-| **Batch correction** | ✅ ComBat + Harmony | ⚠️ Via scanpy | ⚠️ Limited | ⚠️ Via scanpy |
-| **Imputation (MAGIC)** | ✅ Yes | ❌ No | ❌ No | ❌ No |
-| **NegProbe-aware QC** | ✅ Built-in | ❌ No | ❌ No | ❌ No |
-| **Interactive visualization** | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Polygon visualization** | ✅ Yes | ⚠️ Partial | ⚠️ Partial | ✅ Partial |
+| **AnnData dependency** | None (optional) | Required | Required | Required |
+| **Image-based ST focus** | First-class | Partial | Partial | Yes |
+| **FOV image handling** | Lazy load + LRU cache | No | No | Yes |
+| **Master index consistency** | Auto-enforced | Manual | Manual | Manual |
+| **Auto sparse/dense matrix** | Yes | No | No | No |
+| **Cell polygon analysis** | Full polygon module | Limited | Limited | Partial |
+| **Contact-based neighborhoods** | Polygon graph | No | No | No |
+| **Polygon shape metrics** | 8 metrics incl. contour entropy | No | No | No |
+| **3-layer CCC framework** | Yes | No | No | No |
+| **Ripley's K/L/G** | Yes | Yes | Partial | No |
+| **Batch correction** | ComBat + Harmony + scVI | Via scanpy | Limited | Via scanpy |
+| **Imputation** | MAGIC + ALRA + KNN + DCA | No | No | No |
+| **NegProbe-aware QC** | Built-in | No | No | No |
+| **Interactive visualization** | Yes | Yes | Yes | Yes |
+| **Polygon visualization** | Yes | Partial | Partial | Partial |
 
-> ✅ Fully supported · ⚠️ Partial/indirect support · ❌ Not supported
-
-### Key Design Advantages
-
-**1. No AnnData lock-in.** AnnData is a general-purpose format not designed around the multi-FOV, multi-image structure of image-based ST data. spatioloji's custom object natively represents FOV images, global/local coordinates, and polygon boundaries without workarounds.
-
-**2. Master index as single source of truth.** All data components (expression, metadata, coordinates, polygons) are automatically aligned and validated against one master cell index. Misalignment bugs — a common pain point in AnnData-based workflows — are caught immediately at load time.
-
-**3. Auto sparse/dense switching.** `ExpressionMatrix` automatically selects sparse or dense representation based on sparsity, with no user configuration needed. This directly reduces memory footprint for high-gene-count platforms like CosMx (1000+ genes).
-
-**4. Polygon-native spatial analysis.** Unlike centroid-only approaches, spatioloji builds spatial graphs from actual cell boundary contacts (via GeoDataFrame + polygon intersection), enabling physically meaningful neighborhood and interaction analysis.
-
-**5. Platform-aware QC.** Built-in handling of negative control probes (`NegProbe`) for gene filtering — a CosMx/MERFISH-specific requirement that generic tools ignore.
+> Fully supported / Partial/indirect support / Not supported
 
 ---
 
@@ -201,18 +277,26 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+> Package created with [Cookiecutter](https://github.com/audreyfeldroy/cookiecutter) and the [audreyfeldroy/cookiecutter-pypackage](https://github.com/audreyfeldroy/cookiecutter-pypackage) template.
+
+---
+
 ## TODO
 
 ### In Progress
-- [ ] Add exclusive supportive visualization methods for spatial analysis
-- [ ] Add interactive plot for simple visualization
+- [ ] Visualization methods for CCC results (Layer 1 Moran maps, Layer 2 hub plots, Layer 3 program plots)
+- [ ] Interactive spatial plots for CCC and morphology
 
 ### Planned
-- [ ] Add AI-supported integrated analysis for histology and gene expression
-- [ ] Support Xenium native file format loader
+- [ ] Xenium native file format loader
+- [ ] AI-supported integrated analysis for histology and gene expression
+- [ ] Spatially variable gene detection module
 
-### Done ✅
-- [x] Core spatioloji data structure
-- [x] QC pipeline with diagnostic plots
-- [x] Batch correction (ComBat, Harmony)
-- [x] Add spatially variable gene detection
+### Done
+- [x] Core `spatioloji` data structure with master cell index
+- [x] QC pipeline with NegProbe-aware gene filtering
+- [x] Batch correction (ComBat, Harmony, scVI, CCA, rPCA)
+- [x] Imputation (MAGIC, ALRA, KNN-smooth, DCA, scVI)
+- [x] Polygon morphology (8 shape metrics including contour entropy)
+- [x] 3-layer CCC framework (Moran + Polygon OT + Contrastive NMF)
+- [x] Multi-FOV CCC with cross-FOV secreted/ECM graph support
