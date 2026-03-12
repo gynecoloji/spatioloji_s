@@ -9,7 +9,7 @@ from .config import ConsistencyError, ImageMetadata, SpatialData, SpatiolojiConf
 from .core import spatioloji
 from .expression import ExpressionMatrix
 from .images import ImageHandler, load_fov_positions_from_images
-from .qc import QCConfig, spatioloji_qc
+from .qc import QCConfig, XeniumQCConfig, spatioloji_qc, xenium_qc
 from .utils import export_to_csv_bundle
 
 __all__ = [
@@ -25,6 +25,8 @@ __all__ = [
     # QC
     "spatioloji_qc",
     "QCConfig",
+    "xenium_qc",
+    "XeniumQCConfig",
     # Utilities
     "export_to_csv_bundle",
     "load_fov_positions_from_images",

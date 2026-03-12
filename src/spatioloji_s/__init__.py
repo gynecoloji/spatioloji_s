@@ -10,12 +10,12 @@ from . import (
     ccc,
     data,
     processing,
-    spatial,  # <-- ADD THIS LINE
+    spatial,
     visualization,
 )
 from .data.config import SpatialData, SpatiolojiConfig
 from .data.core import spatioloji
-from .data.qc import QCConfig, spatioloji_qc
+from .data.qc import QCConfig, XeniumQCConfig, spatioloji_qc, xenium_qc
 
 __version__ = "0.1.0"
 
@@ -26,6 +26,8 @@ __all__ = [
     "SpatialData",
     "spatioloji_qc",
     "QCConfig",
+    "xenium_qc",
+    "XeniumQCConfig",
     # Submodules
     "data",
     "processing",

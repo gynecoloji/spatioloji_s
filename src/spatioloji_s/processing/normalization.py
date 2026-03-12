@@ -1,14 +1,113 @@
 """
 normalization.py - Normalization methods for spatial transcriptomics data
 
-Provides various normalization strategies optimized for spatioloji objects.
+Big-data design principles applied throughout
+=============================================
+  Sparse-native          normalize_total and log_transform operate directly on
+                         sparse matrix structures (CSR) without materialising a
+                         dense copy.  Zeros are never touched.
+  Chunked computation    Dense operations are processed in cell_chunk_size ×
+                         chunk_genes tiles so peak extra-RAM is bounded to
+                         one tile rather than the full matrix.
+  Memory-mapped output   scale() and normalize_pearson_residuals() accept an
+                         ``out`` argument (file path or pre-allocated array /
+                         memmap) so the dense result can live on disk.
+  float32 dense layers   Dense output layers use float32 (4 bytes/element vs 8),
+                         halving RAM without loss of biological precision.
+  No unnecessary copies  In-place ufuncs (np.log1p(..., out=...)), view-based
+                         slicing, and astype(..., copy=False) used throughout.
 """
 
+from __future__ import annotations
+
+import math
+import os
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
 from scipy import sparse
 from sklearn.preprocessing import RobustScaler, StandardScaler
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_X(spatioloji_obj, layer: str | None):
+    """Return the expression matrix without unnecessary copies.
+
+    For *None* (main expression), returns the sparse matrix if the expression
+    is already sparse, or the dense array if it is dense — never converts
+    between formats.  For a named *layer*, returns whatever was stored.
+    """
+    if layer is None:
+        if spatioloji_obj.expression.is_sparse:
+            return spatioloji_obj.expression.get_sparse()
+        return spatioloji_obj.expression.get_dense()
+    return spatioloji_obj.get_layer(layer)
+
+
+def _alloc_out(
+    shape: tuple[int, int],
+    dtype,
+    out,
+) -> np.ndarray:
+    """Allocate or validate the output array.
+
+    Parameters
+    ----------
+    shape : tuple[int, int]
+        Required shape.
+    dtype : numpy dtype
+        Required element type.
+    out : None | np.ndarray | str | Path
+        * None  → allocate a regular in-memory array.
+        * str / Path → create a memory-mapped file at that path (mode ``w+``).
+        * ndarray / memmap → validate shape/dtype and return as-is.
+
+    Returns
+    -------
+    np.ndarray
+        Pre-allocated (possibly memory-mapped) output array.
+    """
+    if out is None:
+        return np.empty(shape, dtype=dtype)
+    if isinstance(out, (str, Path)):
+        return np.memmap(str(out), dtype=dtype, mode="w+", shape=shape)
+    if isinstance(out, np.ndarray):
+        if out.shape != shape:
+            raise ValueError(f"`out` shape {out.shape} does not match expected {shape}")
+        return out
+    raise TypeError(f"Unsupported type for `out`: {type(out)}")
+
+
+def _n_workers(n_jobs: int) -> int:
+    """Resolve *n_jobs* to a concrete positive thread count.
+
+    Parameters
+    ----------
+    n_jobs : int
+        Number of parallel workers.  ``1`` → serial.  ``-1`` → all cores.
+        Negative values follow sklearn convention: ``os.cpu_count() + 1 + n_jobs``.
+
+    Returns
+    -------
+    int
+        Positive number of worker threads.
+    """
+    if n_jobs == 0:
+        raise ValueError("n_jobs cannot be 0")
+    if n_jobs < 0:
+        return max(1, (os.cpu_count() or 1) + 1 + n_jobs)
+    return n_jobs
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 def normalize_total(
@@ -20,108 +119,125 @@ def normalize_total(
     max_fraction: float = 0.05,
     inplace: bool = False,
     copy: bool = False,
+    cell_chunk_size: int = 50_000,
+    n_jobs: int = 1,
 ):
     """
-    Normalize counts per cell (library size normalization).
+    Normalize counts per cell (library-size normalization).
 
-    Each cell is normalized to have the same total count (library size).
-    This is typically followed by log1p transformation.
+    Each cell is scaled so that its total counts equal *target_sum*.
+    For sparse input the operation is performed entirely on the sparse
+    structure — no dense matrix is ever created.  For dense input, cells are
+    processed in *cell_chunk_size* batches to bound peak RAM.
 
     Parameters
     ----------
     spatioloji_obj : spatioloji
-        Spatioloji object with expression data
+        Spatioloji object with expression data.
     target_sum : float, optional
-        Target sum for each cell, by default 1e4
+        Target count sum per cell, by default 1e4.
     layer : str, optional
-        Which layer to normalize. If None, uses main expression matrix
+        Layer to normalize.  None uses the main expression matrix.
     output_layer : str, optional
-        Name for output layer, by default 'normalized_counts'
+        Name for the output layer, by default ``'normalized_counts'``.
     exclude_highly_expressed : bool, optional
-        Exclude highly expressed genes from normalization, by default False
+        Exclude genes that make up more than *max_fraction* of total counts
+        from the library-size denominator, by default False.
     max_fraction : float, optional
-        If exclude_highly_expressed=True, exclude genes that make up more
-        than max_fraction of total counts, by default 0.05
+        Per-gene fraction threshold for exclusion, by default 0.05.
     inplace : bool, optional
-        Modify the spatioloji object in place (adds layer), by default False
+        Add the output layer to the object in place, by default False.
     copy : bool, optional
-        Return a copy of spatioloji object, by default False
+        Return a deep copy with the output layer added, by default False.
+    cell_chunk_size : int, optional
+        Cells processed per chunk in the dense path, by default 50 000.
+        Has no effect on the sparse path.
+    n_jobs : int, optional
+        Number of parallel worker threads for the dense path, by default 1.
+        ``-1`` uses all available CPU cores.  Has no effect on the sparse path.
 
     Returns
     -------
-    spatioloji or None
-        If copy=True, returns new spatioloji object with normalized layer
-        If inplace=True, returns None (modifies object in place)
-        Otherwise returns normalized expression matrix
+    spatioloji, sparse matrix, np.ndarray, or None
+        Depends on *copy* / *inplace* flags.
 
     Examples
     --------
-    >>> # Normalize and add as layer
-    >>> sp.processing.normalize_total(sp, target_sum=1e4, inplace=True)
-    >>>
-    >>> # Get normalized matrix without modifying object
-    >>> norm_expr = sp.processing.normalize_total(sp, target_sum=1e4)
-    >>>
-    >>> # Create new object with normalized data
-    >>> sp_norm = sp.processing.normalize_total(sp, target_sum=1e4, copy=True)
+    >>> sj.processing.normalize_total(sp, target_sum=1e4, inplace=True)
+    >>> sj.processing.normalize_total(sp, target_sum=1e4, n_jobs=-1, inplace=True)
     """
-    # Get expression data
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-        is_sparse = spatioloji_obj.expression.is_sparse
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        is_sparse = sparse.issparse(X)
-        if is_sparse:
-            X = X.toarray()
+    X = _get_X(spatioloji_obj, layer)
+    n_cells, n_genes = X.shape
 
     print(f"\nNormalizing expression to target sum: {target_sum:,.0f}")
 
-    # Calculate counts per cell
-    if is_sparse and sparse.issparse(X):
-        counts_per_cell = np.array(X.sum(axis=1)).flatten()
+    if sparse.issparse(X):
+        # ── Sparse path (O(nnz), no dense materialization) ──────────────────
+        X_csr = X.tocsr()
+        X_csr.eliminate_zeros()
+
+        row_sums = np.asarray(X_csr.sum(axis=1)).ravel()
+        print(f"  Counts per cell — mean: {row_sums.mean():.0f}, median: {np.median(row_sums):.0f}")
+
+        if exclude_highly_expressed:
+            col_sums = np.asarray(X_csr.sum(axis=0)).ravel()
+            gene_fractions = col_sums / max(float(col_sums.sum()), 1.0)
+            gene_mask = gene_fractions < max_fraction
+            n_excl = int((~gene_mask).sum())
+            if n_excl:
+                print(f"  Excluding {n_excl} highly expressed genes (>{max_fraction * 100:.1f}% of total)")
+                row_sums = np.asarray(X_csr[:, gene_mask].sum(axis=1)).ravel()
+
+        scale_factors = np.where(row_sums > 0, target_sum / row_sums, 0.0)
+
+        # Row-scale without densifying: multiply broadcasts (n_cells, 1) across rows
+        X_norm = X_csr.multiply(scale_factors[:, np.newaxis]).tocsr()
+        X_norm.data = X_norm.data.astype(np.float32, copy=False)
+
     else:
-        counts_per_cell = X.sum(axis=1)
+        # ── Dense chunked path ───────────────────────────────────────────────
+        # Pass 1 — compute row sums in chunks (O(n_cells) extra RAM)
+        row_sums = np.empty(n_cells, dtype=np.float64)
+        for s in range(0, n_cells, cell_chunk_size):
+            e = min(s + cell_chunk_size, n_cells)
+            row_sums[s:e] = X[s:e, :].sum(axis=1)
 
-    print(f"  Counts per cell - mean: {counts_per_cell.mean():.0f}, median: {np.median(counts_per_cell):.0f}")
+        print(f"  Counts per cell — mean: {row_sums.mean():.0f}, median: {np.median(row_sums):.0f}")
 
-    # Exclude highly expressed genes if requested
-    if exclude_highly_expressed:
-        gene_subset = np.ones(X.shape[1], dtype=bool)
+        if exclude_highly_expressed:
+            col_sums = np.zeros(n_genes, dtype=np.float64)
+            for s in range(0, n_cells, cell_chunk_size):
+                e = min(s + cell_chunk_size, n_cells)
+                col_sums += X[s:e, :].sum(axis=0)
+            gene_fractions = col_sums / max(float(col_sums.sum()), 1.0)
+            gene_mask = gene_fractions < max_fraction
+            n_excl = int((~gene_mask).sum())
+            if n_excl:
+                print(f"  Excluding {n_excl} highly expressed genes (>{max_fraction * 100:.1f}% of total)")
+                for s in range(0, n_cells, cell_chunk_size):
+                    e = min(s + cell_chunk_size, n_cells)
+                    row_sums[s:e] = X[s:e, :][:, gene_mask].sum(axis=1)
 
-        # Calculate fraction of counts per gene across all cells
-        counts_per_gene = X.sum(axis=0)
-        if sparse.issparse(counts_per_gene):
-            counts_per_gene = np.array(counts_per_gene).flatten()
+        scale_factors = np.where(row_sums > 0, target_sum / row_sums, 0.0).astype(np.float32)
 
-        gene_fractions = counts_per_gene / counts_per_gene.sum()
-        gene_subset = gene_fractions < max_fraction
+        # Pass 2 — apply scale factors in chunks; output is float32
+        X_norm = np.empty((n_cells, n_genes), dtype=np.float32)
 
-        n_excluded = (~gene_subset).sum()
-        if n_excluded > 0:
-            print(f"  Excluding {n_excluded} highly expressed genes (>{max_fraction * 100:.1f}% of total)")
+        def _norm_chunk(s):
+            e = min(s + cell_chunk_size, n_cells)
+            chunk = X[s:e, :].astype(np.float32, copy=False)
+            X_norm[s:e, :] = chunk * scale_factors[s:e, np.newaxis]
 
-            # Recalculate counts without highly expressed genes
-            counts_per_cell = X[:, gene_subset].sum(axis=1)
-            if sparse.issparse(counts_per_cell):
-                counts_per_cell = np.array(counts_per_cell).flatten()
+        starts = list(range(0, n_cells, cell_chunk_size))
+        if n_jobs == 1 or len(starts) <= 1:
+            for s in starts:
+                _norm_chunk(s)
+        else:
+            with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
+                list(ex.map(_norm_chunk, starts))
 
-    # Normalize
-    counts_per_cell_nonzero = counts_per_cell.copy()
-    counts_per_cell_nonzero[counts_per_cell_nonzero == 0] = 1  # Avoid division by zero
+    print(f"  ✓ Normalized {n_cells:,} cells × {n_genes:,} genes")
 
-    scaling_factors = target_sum / counts_per_cell_nonzero
-
-    # Apply normalization
-    if is_sparse and sparse.issparse(X):
-        # For sparse matrices, multiply by scaling factors
-        X_norm = X.multiply(scaling_factors[:, np.newaxis])
-    else:
-        X_norm = X * scaling_factors[:, np.newaxis]
-
-    print(f"  ✓ Normalized {X.shape[0]:,} cells × {X.shape[1]:,} genes")
-
-    # Return based on mode
     if copy:
         import copy as copy_module
 
@@ -143,65 +259,92 @@ def log_transform(
     offset: float = 1.0,
     inplace: bool = False,
     copy: bool = False,
+    cell_chunk_size: int = 50_000,
+    n_jobs: int = 1,
 ):
     """
     Apply log transformation to expression data.
 
-    Typically applied after library size normalization.
-    Uses log1p (log(x + 1)) by default to handle zeros.
+    For the default log1p case (``base=None``, ``offset=1.0``), the
+    transformation is applied directly to the stored non-zero values of a
+    sparse matrix — the zeros are untouched and the output is sparse.
+    For all other parameter combinations, a chunked dense path is used.
 
     Parameters
     ----------
     spatioloji_obj : spatioloji
-        Spatioloji object with expression data
+        Spatioloji object with expression data.
     layer : str, optional
-        Which layer to transform. If None, uses main expression matrix
+        Layer to transform.  None uses the main expression matrix.
     output_layer : str, optional
-        Name for output layer, by default 'log_normalized'
+        Name for the output layer, by default ``'log_normalized'``.
     base : float, optional
-        Logarithm base. If None, uses natural log (np.log1p)
+        Logarithm base.  None means natural log (uses ``np.log1p`` internally).
     offset : float, optional
-        Offset added before log, by default 1.0 (for log1p)
+        Offset added before taking the log, by default 1.0.
     inplace : bool, optional
-        Modify the spatioloji object in place, by default False
+        Add the output layer to the object in place, by default False.
     copy : bool, optional
-        Return a copy of spatioloji object, by default False
+        Return a deep copy with the output layer added, by default False.
+    cell_chunk_size : int, optional
+        Cells processed per chunk in the dense path, by default 50 000.
+    n_jobs : int, optional
+        Number of parallel worker threads for the dense path, by default 1.
+        ``-1`` uses all available CPU cores.  Has no effect on the sparse log1p path.
 
     Returns
     -------
-    spatioloji, np.ndarray, or None
-        Depends on copy/inplace parameters
+    spatioloji, sparse matrix, np.ndarray, or None
+        Depends on *copy* / *inplace* flags.
 
     Examples
     --------
-    >>> # Log transform normalized counts
-    >>> sp.processing.normalize_total(sp, inplace=True)
-    >>> sp.processing.log_transform(sp, layer='normalized_counts', inplace=True)
-    >>>
-    >>> # Combine normalization and log in one step
-    >>> norm = sp.processing.normalize_total(sp)
-    >>> log_norm = sp.processing.log_transform(sp, layer='normalized_counts')
+    >>> sj.processing.log_transform(sp, layer='normalized_counts', inplace=True)
+    >>> sj.processing.log_transform(sp, layer='normalized_counts', n_jobs=-1, inplace=True)
     """
-    # Get expression data
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
+    X = _get_X(spatioloji_obj, layer)
+    n_cells, n_genes = X.shape
 
+    use_log1p = (base is None and offset == 1.0)
     print(f"\nApplying log transformation (base={'e' if base is None else base})")
 
-    # Apply transformation
-    if base is None:
-        # Use natural log (log1p)
-        X_log = np.log1p(X) if offset == 1.0 else np.log(X + offset)
+    if sparse.issparse(X) and use_log1p:
+        # ── Sparse path: log1p(0)=0, so sparsity structure is preserved ─────
+        # Copy only the sparse arrays (data / indices / indptr), not the full dense shape
+        X_log = X.copy()
+        np.log1p(X_log.data, out=X_log.data)   # in-place on stored nonzeros only
+        X_log = X_log.tocsr()
+
     else:
-        X_log = np.log(X + offset) / np.log(base)
+        # ── Dense chunked path ────────────────────────────────────────────────
+        if sparse.issparse(X):
+            # Non-log1p transform: zeros become log(offset) ≠ 0 → must densify
+            X = X.toarray()
+        _log_base = None if base is None else float(np.log(base))
+        X_log = np.empty((n_cells, n_genes), dtype=np.float32)
 
-    print(f"  ✓ Transformed {X.shape[0]:,} cells × {X.shape[1]:,} genes")
+        def _log_chunk(s):
+            e = min(s + cell_chunk_size, n_cells)
+            chunk = X[s:e, :].astype(np.float32, copy=False)
+            if use_log1p:
+                np.log1p(chunk, out=chunk)
+            elif base is None:
+                np.log(chunk + offset, out=chunk)
+            else:
+                np.log(chunk + offset, out=chunk)
+                chunk /= _log_base           # change-of-base; no extra array
+            X_log[s:e, :] = chunk
 
-    # Return based on mode
+        starts = list(range(0, n_cells, cell_chunk_size))
+        if n_jobs == 1 or len(starts) <= 1:
+            for s in starts:
+                _log_chunk(s)
+        else:
+            with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
+                list(ex.map(_log_chunk, starts))
+
+    print(f"  ✓ Transformed {n_cells:,} cells × {n_genes:,} genes")
+
     if copy:
         import copy as copy_module
 
@@ -224,76 +367,183 @@ def scale(
     zero_center: bool = True,
     inplace: bool = False,
     copy: bool = False,
+    chunk_genes: int = 500,
+    cell_chunk_size: int = 50_000,
+    out=None,
+    n_jobs: int = 1,
 ):
     """
     Scale expression data (z-score normalization per gene).
 
-    Centers and scales each gene to unit variance. Useful for PCA and
-    other dimensional reduction techniques.
+    Centers and scales each gene to unit variance.  Designed to avoid the
+    peak RAM spike that sklearn's ``fit_transform`` produces:
+
+    * Per-gene statistics are computed in a single pass (O(n_genes) RAM).
+    * When ``zero_center=False`` and input is sparse, the output is sparse
+      (column-wise division by std; zeros remain zero).
+    * Otherwise the dense output is written gene-chunk by gene-chunk
+      (``chunk_genes``) into a pre-allocated **float32** array, optionally
+      backed by a memory-mapped file (``out``).
 
     Parameters
     ----------
     spatioloji_obj : spatioloji
-        Spatioloji object with expression data
+        Spatioloji object with expression data.
     layer : str, optional
-        Which layer to scale. If None, uses main expression matrix
+        Layer to scale.  None uses the main expression matrix.
     output_layer : str, optional
-        Name for output layer, by default 'scaled'
+        Name for the output layer, by default ``'scaled'``.
     max_value : float, optional
-        Clip values to [-max_value, max_value], by default 10.0
-        Set to None to disable clipping
+        Clip values to ``[-max_value, max_value]``, by default 10.0.
+        Set to None to disable clipping.
     method : {'standard', 'robust'}, optional
-        Scaling method:
-        - 'standard': (X - mean) / std
-        - 'robust': (X - median) / IQR (robust to outliers)
+        Scaling method: ``'standard'`` → (X − mean) / std;
+        ``'robust'`` → (X − median) / IQR.
     zero_center : bool, optional
-        Center data to zero mean, by default True
+        Subtract per-gene mean (standard) / median (robust), by default True.
+        Set to False to preserve sparsity when input is sparse.
     inplace : bool, optional
-        Modify the spatioloji object in place, by default False
+        Add the output layer to the object in place, by default False.
     copy : bool, optional
-        Return a copy of spatioloji object, by default False
+        Return a deep copy with the output layer added, by default False.
+    chunk_genes : int, optional
+        Genes processed per chunk, by default 500.
+    cell_chunk_size : int, optional
+        Cells processed per chunk when computing robust statistics,
+        by default 50 000.  Has no effect for the standard method.
+    out : None | str | Path | np.ndarray, optional
+        Output destination.  Accepts a file path (creates a memory-mapped
+        file), a pre-allocated ndarray / memmap, or None (in-memory).
+        Ignored for the sparse output path (``zero_center=False``).
+    n_jobs : int, optional
+        Number of parallel worker threads for the dense path gene-chunk loops,
+        by default 1.  ``-1`` uses all available CPU cores.
 
     Returns
     -------
-    spatioloji, np.ndarray, or None
-        Depends on copy/inplace parameters
+    spatioloji, sparse matrix, np.ndarray, or None
+        Depends on *copy* / *inplace* flags.
 
     Examples
     --------
-    >>> # Standard scaling
-    >>> sp.processing.scale(sp, layer='log_normalized', inplace=True)
+    >>> # In-memory, standard scaling
+    >>> sj.processing.scale(sp, layer='log_normalized', inplace=True)
     >>>
-    >>> # Robust scaling (better for data with outliers)
-    >>> sp.processing.scale(sp, method='robust', inplace=True)
+    >>> # Write the scaled layer directly to disk (avoids holding it in RAM)
+    >>> sj.processing.scale(sp, layer='log_normalized',
+    ...                     out='/tmp/scaled.npy', inplace=True)
+    >>>
+    >>> # Multi-threaded gene-chunk scaling
+    >>> sj.processing.scale(sp, layer='log_normalized', n_jobs=-1, inplace=True)
     """
-    # Get expression data
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
+    if method not in ("standard", "robust"):
+        raise ValueError(f"Unknown scaling method: {method}. Use 'standard' or 'robust'.")
+
+    X = _get_X(spatioloji_obj, layer)
+    n_cells, n_genes = X.shape
 
     print(f"\nScaling expression data (method: {method})")
 
-    # Apply scaling
-    if method == "standard":
-        scaler = StandardScaler(with_mean=zero_center, with_std=True)
-    elif method == "robust":
-        scaler = RobustScaler(with_centering=zero_center, with_scaling=True)
+    # ── Sparse path: zero_center=False preserves sparsity ───────────────────
+    if sparse.issparse(X) and not zero_center:
+        X_csc = X.tocsc()
+        X_csc.eliminate_zeros()
+
+        if method == "standard":
+            # Compute per-gene std from sparse column sums
+            # E[X] and E[X^2] from nnz values only (zeros contribute 0 to both)
+            n = float(n_cells)
+            col_sum  = np.asarray(X_csc.sum(axis=0)).ravel()
+            col_sum2 = np.asarray(X_csc.power(2).sum(axis=0)).ravel()
+            gene_mean = col_sum / n
+            gene_var  = col_sum2 / n - gene_mean ** 2
+            gene_std  = np.sqrt(np.maximum(gene_var, 0.0)).astype(np.float32)
+            gene_std[gene_std == 0] = 1.0
+        else:  # robust
+            gene_std = np.empty(n_genes, dtype=np.float32)
+            for s in range(0, n_genes, chunk_genes):
+                e = min(s + chunk_genes, n_genes)
+                col_dense = np.asarray(X_csc[:, s:e].todense())
+                q75 = np.percentile(col_dense, 75, axis=0)
+                q25 = np.percentile(col_dense, 25, axis=0)
+                iqr = (q75 - q25).astype(np.float32)
+                iqr[iqr == 0] = 1.0
+                gene_std[s:e] = iqr
+
+        # Column-scale the sparse matrix (scale each gene column)
+        inv_scale = sparse.diags(1.0 / gene_std.astype(np.float64))
+        X_scaled = (X_csc @ inv_scale).tocsr()
+        X_scaled.data = X_scaled.data.astype(np.float32, copy=False)
+
+        if max_value is not None:
+            X_scaled.data = np.clip(X_scaled.data, -max_value, max_value)
+            print(f"  Clipped stored values to [{-max_value}, {max_value}]")
+
+        print(f"  ✓ Scaled {n_cells:,} cells × {n_genes:,} genes (sparse output)")
+
     else:
-        raise ValueError(f"Unknown scaling method: {method}")
+        # ── Dense chunked path ────────────────────────────────────────────────
+        # Memory model:
+        #   X          → input (already in RAM; may be sparse or dense)
+        #   X_scaled   → float32 output, optionally memory-mapped
+        #   per-gene statistics → shape (n_genes,), negligible
+        #   one tile   → n_cells × chunk_genes × float32 per iteration
+        if sparse.issparse(X):
+            X = X.toarray()   # must densify: centering fills all zeros
 
-    X_scaled = scaler.fit_transform(X)
+        # Step 1 — per-gene statistics (no n_cells × n_genes temporaries)
+        if method == "standard":
+            gene_center = X.mean(axis=0).astype(np.float32)
+            gene_scale  = X.std(axis=0, ddof=1).astype(np.float32)
+            gene_scale[gene_scale == 0] = 1.0
+        else:  # robust — chunk over genes to bound median sort memory
+            gene_center = np.empty(n_genes, dtype=np.float32)
+            gene_scale  = np.empty(n_genes, dtype=np.float32)
 
-    # Clip values if requested
-    if max_value is not None:
-        X_scaled = np.clip(X_scaled, -max_value, max_value)
-        print(f"  Clipped values to [{-max_value}, {max_value}]")
+            def _robust_stats_chunk(s):
+                e = min(s + chunk_genes, n_genes)
+                col_chunk = X[:, s:e]
+                gene_center[s:e] = np.median(col_chunk, axis=0)
+                q75 = np.percentile(col_chunk, 75, axis=0).astype(np.float32)
+                q25 = np.percentile(col_chunk, 25, axis=0).astype(np.float32)
+                iqr = q75 - q25
+                iqr[iqr == 0] = 1.0
+                gene_scale[s:e] = iqr
 
-    print(f"  ✓ Scaled {X.shape[0]:,} cells × {X.shape[1]:,} genes")
+            gene_starts = list(range(0, n_genes, chunk_genes))
+            if n_jobs == 1 or len(gene_starts) <= 1:
+                for s in gene_starts:
+                    _robust_stats_chunk(s)
+            else:
+                with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
+                    list(ex.map(_robust_stats_chunk, gene_starts))
 
-    # Return based on mode
+        # Step 2 — allocate output (memory-mapped if out is a path)
+        X_scaled = _alloc_out((n_cells, n_genes), np.float32, out)
+
+        # Step 3 — apply gene-chunk by gene-chunk
+        def _scale_chunk(s):
+            e = min(s + chunk_genes, n_genes)
+            tile = X[:, s:e].astype(np.float32)   # explicit copy for in-place ops
+            if zero_center:
+                tile -= gene_center[s:e]
+            tile /= gene_scale[s:e]
+            if max_value is not None:
+                np.clip(tile, -max_value, max_value, out=tile)
+            X_scaled[:, s:e] = tile
+
+        gene_starts = list(range(0, n_genes, chunk_genes))
+        if n_jobs == 1 or len(gene_starts) <= 1:
+            for s in gene_starts:
+                _scale_chunk(s)
+        else:
+            with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
+                list(ex.map(_scale_chunk, gene_starts))
+
+        if max_value is not None:
+            print(f"  Clipped values to [{-max_value}, {max_value}]")
+        print(f"  ✓ Scaled {n_cells:,} cells × {n_genes:,} genes")
+
     if copy:
         import copy as copy_module
 
@@ -317,74 +567,97 @@ def scale_by_batch_normalization(
     zero_center: bool = True,
     inplace: bool = False,
     copy: bool = False,
+    chunk_genes: int = 500,
 ):
     """
     Scale expression separately within each batch.
 
     Useful when you want to standardize expression per gene while preserving
-    batch-local distributions (e.g., FOV, slide, sample).
+    batch-local distributions (e.g., FOV, slide, sample).  Each batch is
+    processed with chunked gene-wise statistics to avoid large temporaries.
 
     Parameters
     ----------
     spatioloji_obj : spatioloji
-        Spatioloji object with expression data
+        Spatioloji object with expression data.
     batch_key : str
-        Column in `cell_meta` indicating batches (e.g. 'fov', 'slide', 'sample_id')
+        Column in ``cell_meta`` indicating batches (e.g. ``'fov'``, ``'sample_id'``).
     layer : str, optional
-        Which layer to scale, by default 'log_normalized'
+        Layer to scale, by default ``'log_normalized'``.
     output_layer : str, optional
-        Name for output layer, by default 'batch_scaled'
+        Name for the output layer, by default ``'batch_scaled'``.
     method : {'standard', 'robust'}, optional
-        Scaling method within each batch
+        Scaling method within each batch.
     max_value : float, optional
-        Clip values to [-max_value, max_value], by default 10.0
+        Clip values to ``[-max_value, max_value]``, by default 10.0.
     zero_center : bool, optional
-        Center data before scaling, by default True
+        Center data before scaling, by default True.
     inplace : bool, optional
-        Add output layer to object in place, by default False
+        Add the output layer to the object in place, by default False.
     copy : bool, optional
-        Return deep copy with added layer, by default False
+        Return a deep copy with the output layer added, by default False.
+    chunk_genes : int, optional
+        Genes processed per chunk per batch, by default 500.
 
     Returns
     -------
     spatioloji, np.ndarray, or None
-        Depends on `copy` and `inplace` parameters
+        Depends on *copy* / *inplace* flags.
     """
     if batch_key not in spatioloji_obj.cell_meta.columns:
         raise ValueError(f"Column '{batch_key}' not found in cell_meta")
 
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
+    X = _get_X(spatioloji_obj, layer)
+    if sparse.issparse(X):
+        X = X.toarray()   # batch-wise centering; dense output unavoidable
 
+    n_cells, n_genes = X.shape
     batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
     batches = np.unique(batch)
 
     print(f"\nBatch-wise scaling (batch_key='{batch_key}', method={method})")
     print(f"  Found {len(batches)} batches")
 
-    X_scaled = np.zeros_like(X)
+    # Pre-allocate float32 output (no sklearn copy)
+    X_scaled = np.empty((n_cells, n_genes), dtype=np.float32)
 
     for batch_id in batches:
-        batch_mask = batch == batch_id
+        mask = batch == batch_id
+        B = X[mask, :]                      # view into the batch rows
+        n_b = int(mask.sum())
 
+        # Per-gene statistics for this batch
         if method == "standard":
-            scaler = StandardScaler(with_mean=zero_center, with_std=True)
-        elif method == "robust":
-            scaler = RobustScaler(with_centering=zero_center, with_scaling=True)
-        else:
-            raise ValueError(f"Unknown scaling method: {method}")
+            g_center = B.mean(axis=0).astype(np.float32)
+            g_scale  = B.std(axis=0, ddof=1 if n_b > 1 else 0).astype(np.float32)
+            g_scale[g_scale == 0] = 1.0
+        else:  # robust — chunk by gene
+            g_center = np.empty(n_genes, dtype=np.float32)
+            g_scale  = np.empty(n_genes, dtype=np.float32)
+            for s in range(0, n_genes, chunk_genes):
+                e = min(s + chunk_genes, n_genes)
+                col_chunk = B[:, s:e]
+                g_center[s:e] = np.median(col_chunk, axis=0)
+                q75 = np.percentile(col_chunk, 75, axis=0).astype(np.float32)
+                q25 = np.percentile(col_chunk, 25, axis=0).astype(np.float32)
+                iqr = q75 - q25
+                iqr[iqr == 0] = 1.0
+                g_scale[s:e] = iqr
 
-        X_scaled[batch_mask, :] = scaler.fit_transform(X[batch_mask, :])
+        # Apply per gene-chunk into the pre-allocated output
+        for s in range(0, n_genes, chunk_genes):
+            e = min(s + chunk_genes, n_genes)
+            tile = B[:, s:e].astype(np.float32)
+            if zero_center:
+                tile -= g_center[s:e]
+            tile /= g_scale[s:e]
+            if max_value is not None:
+                np.clip(tile, -max_value, max_value, out=tile)
+            X_scaled[np.ix_(np.where(mask)[0], np.arange(s, e))] = tile
 
     if max_value is not None:
-        X_scaled = np.clip(X_scaled, -max_value, max_value)
         print(f"  Clipped values to [{-max_value}, {max_value}]")
-
-    print(f"  ✓ Scaled {X.shape[0]:,} cells × {X.shape[1]:,} genes across batches")
+    print(f"  ✓ Scaled {n_cells:,} cells × {n_genes:,} genes across {len(batches)} batches")
 
     if copy:
         import copy as copy_module
@@ -407,77 +680,115 @@ def normalize_pearson_residuals(
     clip: float | None = None,
     inplace: bool = False,
     copy: bool = False,
+    cell_chunk_size: int = 50_000,
+    out=None,
 ):
     """
     Normalize using Pearson residuals (analytic method).
 
-    Normalizes counts using a negative binomial model without fitting,
-    following the analytical approach from Lause et al. (2021) Genome Biology.
+    Normalizes counts under a negative-binomial model without fitting,
+    following Lause *et al.* (2021) *Genome Biology*.
+
+    Library sizes and per-gene means are derived from the sparse structure
+    in a single pass (O(nnz)).  Residuals are computed and written
+    cell-chunk by cell-chunk into a pre-allocated **float32** output
+    (optionally memory-mapped) so peak extra-RAM equals one cell chunk.
 
     Parameters
     ----------
     spatioloji_obj : spatioloji
-        Spatioloji object with raw counts
+        Spatioloji object with raw counts.
     layer : str, optional
-        Which layer to use. If None, uses main expression matrix
+        Layer to use.  None uses the main expression matrix.
     output_layer : str, optional
-        Name for output layer, by default 'pearson_residuals'
+        Name for the output layer, by default ``'pearson_residuals'``.
     theta : float, optional
-        Overdispersion parameter for negative binomial, by default 100.0
+        Overdispersion parameter for the NB model, by default 100.0.
     clip : float, optional
-        Clip residuals to [-clip, clip], by default None (uses sqrt(n))
+        Clip residuals to ``[-clip, clip]``.  None uses ``sqrt(n_cells)``.
     inplace : bool, optional
-        Modify the spatioloji object in place, by default False
+        Add the output layer to the object in place, by default False.
     copy : bool, optional
-        Return a copy of spatioloji object, by default False
+        Return a deep copy with the output layer added, by default False.
+    cell_chunk_size : int, optional
+        Cells processed per chunk, by default 50 000.
+    out : None | str | Path | np.ndarray, optional
+        Output destination — file path (memory-mapped), pre-allocated array,
+        or None (regular in-memory float32 array).
 
     Returns
     -------
     spatioloji, np.ndarray, or None
-        Depends on copy/inplace parameters
+        Depends on *copy* / *inplace* flags.
 
     References
     ----------
     Lause, J., Berens, P. & Kobak, D. Analytic Pearson residuals for
-    normalization of single-cell RNA-seq UMI data. Genome Biol 22, 258 (2021).
+    normalization of single-cell RNA-seq UMI data. *Genome Biol* 22, 258 (2021).
 
     Examples
     --------
-    >>> # Normalize raw counts using Pearson residuals
-    >>> sp.processing.normalize_pearson_residuals(sp, inplace=True)
+    >>> sj.processing.normalize_pearson_residuals(sp, inplace=True)
+    >>> # Write directly to disk to avoid holding residuals in RAM
+    >>> sj.processing.normalize_pearson_residuals(sp, out='/tmp/pr.npy',
+    ...                                            inplace=True)
     """
-    # Get raw counts
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
+    X = _get_X(spatioloji_obj, layer)
+    n_cells, n_genes = X.shape
 
+    clip_val = clip if clip is not None else math.sqrt(n_cells)
     print(f"\nNormalizing using Pearson residuals (theta={theta})")
 
-    # Calculate library sizes
-    lib_size = X.sum(axis=1, keepdims=True)
+    # ── Sparse-native statistics (O(nnz), no dense copy) ────────────────────
+    if sparse.issparse(X):
+        X_csr = X.tocsr()
+        X_csr.eliminate_zeros()
+        lib_size  = np.asarray(X_csr.sum(axis=1)).ravel().astype(np.float64)    # (n_cells,)
+        gene_sums = np.asarray(X_csr.sum(axis=0)).ravel().astype(np.float64)    # (n_genes,)
+    else:
+        # Dense path: compute sums in chunks to avoid a transient copy
+        lib_size  = np.empty(n_cells, dtype=np.float64)
+        gene_sums = np.zeros(n_genes, dtype=np.float64)
+        for s in range(0, n_cells, cell_chunk_size):
+            e = min(s + cell_chunk_size, n_cells)
+            chunk = X[s:e, :]
+            lib_size[s:e]  = chunk.sum(axis=1)
+            gene_sums     += chunk.sum(axis=0)
 
-    # Calculate gene means
-    gene_means = X.mean(axis=0, keepdims=True)
+    mean_lib   = float(lib_size.mean())
+    gene_means = gene_sums / n_cells                          # shape (n_genes,)
 
-    # Calculate expected counts under NB model
-    mu = lib_size * gene_means / lib_size.mean()
+    # ── Allocate float32 output (optionally memory-mapped) ──────────────────
+    residuals = _alloc_out((n_cells, n_genes), np.float32, out)
 
-    # Calculate Pearson residuals
-    residuals = (X - mu) / np.sqrt(mu + mu**2 / theta)
+    # ── Compute residuals cell-chunk by cell-chunk ───────────────────────────
+    gene_means_f32 = gene_means.astype(np.float32)
+    theta_f32      = np.float32(theta)
 
-    # Clip if requested
-    if clip is None:
-        clip = np.sqrt(X.shape[0])
+    for s in range(0, n_cells, cell_chunk_size):
+        e = min(s + cell_chunk_size, n_cells)
 
-    residuals = np.clip(residuals, -clip, clip)
+        # Dense slice for this batch (the only large transient allocation)
+        if sparse.issparse(X):
+            X_chunk = X_csr[s:e, :].toarray().astype(np.float32)
+        else:
+            X_chunk = X[s:e, :].astype(np.float32, copy=False)
 
-    print(f"  Clipped residuals to [{-clip:.2f}, {clip:.2f}]")
-    print(f"  ✓ Calculated residuals for {X.shape[0]:,} cells × {X.shape[1]:,} genes")
+        # mu_chunk: shape (n_chunk, n_genes) — broadcast lib_size over genes
+        lib_chunk = lib_size[s:e].astype(np.float32)
+        mu_chunk  = lib_chunk[:, np.newaxis] * gene_means_f32[np.newaxis, :] / np.float32(mean_lib)
 
-    # Return based on mode
+        # Pearson residual: (X - mu) / sqrt(mu + mu^2 / theta)
+        denom  = np.sqrt(mu_chunk + mu_chunk ** 2 / theta_f32)
+        denom[denom == 0] = 1.0
+        r_chunk = (X_chunk - mu_chunk) / denom
+        np.clip(r_chunk, -clip_val, clip_val, out=r_chunk)
+
+        residuals[s:e, :] = r_chunk
+
+    print(f"  Clipped residuals to [{-clip_val:.2f}, {clip_val:.2f}]")
+    print(f"  ✓ Calculated residuals for {n_cells:,} cells × {n_genes:,} genes")
+
     if copy:
         import copy as copy_module
 
@@ -499,63 +810,65 @@ def normalize_standard_workflow(
     scale: bool = False,
     output_layer: str = "normalized",
     inplace: bool = True,
+    cell_chunk_size: int = 50_000,
 ):
     """
     Apply standard normalization workflow.
 
-    Performs: library size normalization → log transformation → (optional) scaling
-
-    This is the most common normalization workflow for scRNA-seq data.
+    Performs: library-size normalization → log1p → (optional) scaling.
+    All steps propagate *cell_chunk_size* for chunked / big-data operation.
 
     Parameters
     ----------
     spatioloji_obj : spatioloji
-        Spatioloji object with raw counts
+        Spatioloji object with raw counts.
     target_sum : float, optional
-        Target sum for library size normalization, by default 1e4
+        Target sum for library-size normalization, by default 1e4.
     log_transform : bool, optional
-        Apply log1p transformation, by default True
+        Apply log1p transformation, by default True.
     scale : bool, optional
-        Apply z-score scaling, by default False
+        Apply z-score scaling, by default False.
     output_layer : str, optional
-        Name for final output layer, by default 'normalized'
+        Name for the final output layer, by default ``'normalized'``.
     inplace : bool, optional
-        Modify the spatioloji object in place, by default True
+        Modify the spatioloji object in place, by default True.
+    cell_chunk_size : int, optional
+        Cells processed per chunk at each step, by default 50 000.
 
     Returns
     -------
     None or np.ndarray
-        If inplace=True, returns None. Otherwise returns normalized matrix.
+        None if inplace=True, otherwise the normalized matrix.
 
     Examples
     --------
-    >>> # Standard workflow (library size + log)
-    >>> sp.processing.normalize_standard_workflow(sp)
-    >>>
-    >>> # With scaling (for PCA/clustering)
-    >>> sp.processing.normalize_standard_workflow(sp, scale=True)
+    >>> sj.processing.normalize_standard_workflow(sp)
+    >>> sj.processing.normalize_standard_workflow(sp, scale=True)
     """
     print("\n" + "=" * 70)
     print("Standard Normalization Workflow")
     print("=" * 70)
 
-    # Step 1: Library size normalization
-    print("\nStep 1: Library size normalization")
-    X_norm = normalize_total(spatioloji_obj, target_sum=target_sum, output_layer="temp_counts")
+    print("\nStep 1: Library-size normalization")
+    X_norm = normalize_total(
+        spatioloji_obj, target_sum=target_sum,
+        cell_chunk_size=cell_chunk_size,
+    )
 
-    # Step 2: Log transformation
     if log_transform:
         print("\nStep 2: Log transformation")
-        spatioloji_obj.add_layer("temp_counts", X_norm, overwrite=True)
-        X_norm = log_transform(spatioloji_obj, layer="temp_counts", output_layer="temp_log")
-        spatioloji_obj.remove_layer("temp_counts")
+        spatioloji_obj.add_layer("_temp_norm", X_norm, overwrite=True)
+        X_norm = globals()["log_transform"](
+            spatioloji_obj, layer="_temp_norm",
+            cell_chunk_size=cell_chunk_size,
+        )
+        spatioloji_obj.remove_layer("_temp_norm")
 
-    # Step 3: Scaling (optional)
     if scale:
         print("\nStep 3: Scaling")
-        spatioloji_obj.add_layer("temp_log", X_norm, overwrite=True)
-        X_norm = scale(spatioloji_obj, layer="temp_log", output_layer="temp_scaled")
-        spatioloji_obj.remove_layer("temp_log")
+        spatioloji_obj.add_layer("_temp_log", X_norm, overwrite=True)
+        X_norm = globals()["scale"](spatioloji_obj, layer="_temp_log")
+        spatioloji_obj.remove_layer("_temp_log")
 
     print("\n" + "=" * 70)
     print("✓ Normalization complete")
@@ -564,5 +877,4 @@ def normalize_standard_workflow(
     if inplace:
         spatioloji_obj.add_layer(output_layer, X_norm, overwrite=True)
         return None
-    else:
-        return X_norm
+    return X_norm

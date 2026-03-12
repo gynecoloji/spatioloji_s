@@ -2,13 +2,15 @@
 visualization/__init__.py - Visualization subpackage for spatioloji
 
 Provides static plotting methods for expression data, embeddings,
-and spatial maps.
+spatial maps, and spatial analysis results.
 
 Usage
 -----
     import spatioloji as sj
     sj.visualization.plot_umap(sp)
     sj.visualization.plot_global_dots(sp, gene="EPCAM")
+    sj.visualization.plot_neighborhood_enrichment(result)
+    sj.visualization.plot_ripley(ripley_result)
 """
 
 from .basic_plots import (
@@ -22,6 +24,22 @@ from .basic_plots import (
     plot_umap_grid,
     plot_violin,
 )
+from .interactive_plots import (
+    iplot_dotplot,
+    iplot_global_dots,
+    iplot_global_dots_gene,
+    iplot_global_polygon,
+    iplot_global_polygon_gene,
+    iplot_heatmap,
+    iplot_local_dots,
+    iplot_local_dots_gene,
+    iplot_local_polygon,
+    iplot_local_polygon_gene,
+    iplot_pca,
+    iplot_umap,
+    iplot_umap_grid,
+    iplot_violin,
+)
 from .plots import (
     plot_global_dots,
     plot_global_dots_gene,
@@ -32,6 +50,45 @@ from .plots import (
     plot_local_polygon,
     plot_local_polygon_gene,
     stitch_fov_images,
+)
+from .point_plots import (
+    plot_co_occurrence,
+    plot_degree_distribution,
+    plot_getis_ord_map,
+    plot_morans_i_map,
+    plot_morans_scatter,
+    plot_nearest_neighbor_distances,
+    plot_neighborhood_composition,
+    plot_neighborhood_diversity,
+    plot_neighborhood_enrichment,
+    plot_niche_signatures,
+    plot_niches,
+    plot_permutation_test,
+    plot_proximity_score,
+    plot_ripley,
+    plot_ripley_multi,
+    plot_spatial_graph,
+    plot_spatially_variable_genes,
+)
+from .polygon_plots import (
+    plot_boundary_cells_map,
+    plot_boundary_enrichment,
+    plot_contact_degree_distribution,
+    plot_contact_permutation,
+    plot_contact_summary,
+    plot_density_map,
+    plot_free_boundary_map,
+    plot_morphology_association,
+    plot_morphology_class_map,
+    plot_morphology_correlation,
+    plot_morphology_distribution,
+    plot_morphology_map,
+    plot_polygon_graph,
+    plot_polygon_hotspot_map,
+    plot_polygon_neighborhood_composition,
+    plot_polygon_neighborhood_enrichment,
+    plot_polygon_niches,
+    plot_spatial_autocorrelation,
 )
 
 __all__ = [
@@ -45,7 +102,7 @@ __all__ = [
     "plot_umap_by_gene",
     "plot_umap_grid",
     "plot_violin",
-    # plots
+    # plots (spatial maps)
     "plot_global_dots",
     "plot_global_dots_gene",
     "plot_global_polygon",
@@ -55,4 +112,56 @@ __all__ = [
     "plot_local_polygon",
     "plot_local_polygon_gene",
     "stitch_fov_images",
+    # point-based spatial analysis
+    "plot_spatial_graph",
+    "plot_degree_distribution",
+    "plot_neighborhood_enrichment",
+    "plot_neighborhood_composition",
+    "plot_neighborhood_diversity",
+    "plot_niches",
+    "plot_niche_signatures",
+    "plot_morans_i_map",
+    "plot_morans_scatter",
+    "plot_spatially_variable_genes",
+    "plot_co_occurrence",
+    "plot_ripley",
+    "plot_ripley_multi",
+    "plot_getis_ord_map",
+    "plot_nearest_neighbor_distances",
+    "plot_proximity_score",
+    "plot_permutation_test",
+    # interactive plots
+    "iplot_umap",
+    "iplot_pca",
+    "iplot_umap_grid",
+    "iplot_violin",
+    "iplot_heatmap",
+    "iplot_dotplot",
+    "iplot_global_dots",
+    "iplot_local_dots",
+    "iplot_global_dots_gene",
+    "iplot_local_dots_gene",
+    "iplot_global_polygon",
+    "iplot_local_polygon",
+    "iplot_global_polygon_gene",
+    "iplot_local_polygon_gene",
+    # polygon-based spatial analysis
+    "plot_polygon_graph",
+    "plot_contact_degree_distribution",
+    "plot_polygon_neighborhood_enrichment",
+    "plot_polygon_neighborhood_composition",
+    "plot_polygon_niches",
+    "plot_morphology_distribution",
+    "plot_morphology_map",
+    "plot_morphology_class_map",
+    "plot_morphology_correlation",
+    "plot_morphology_association",
+    "plot_contact_permutation",
+    "plot_contact_summary",
+    "plot_boundary_enrichment",
+    "plot_boundary_cells_map",
+    "plot_free_boundary_map",
+    "plot_density_map",
+    "plot_polygon_hotspot_map",
+    "plot_spatial_autocorrelation",
 ]

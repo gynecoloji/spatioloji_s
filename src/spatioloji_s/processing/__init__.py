@@ -24,10 +24,12 @@ from .batch_correction import (
     scvi_integrate,
 )
 from .clustering import (
+    assess_clustering_quality,
     find_optimal_clusters,
     hierarchical_clustering,
     kmeans_clustering,
     leiden_clustering,
+    leiden_resolution_sweep,
     spatial_clustering,
     spatially_constrained_clustering,
 )
@@ -39,6 +41,7 @@ from .dimension_reduction import (
     umap,
 )
 from .feature_selection import (
+    compare_hvg_methods,
     highly_variable_genes,
     select_genes_by_pattern,
 )
@@ -68,6 +71,7 @@ __all__ = [
     "normalize_standard_workflow",
     # Feature selection
     "highly_variable_genes",
+    "compare_hvg_methods",
     "select_genes_by_pattern",
     # Dimensionality reduction
     "pca",
@@ -82,6 +86,8 @@ __all__ = [
     "spatial_clustering",
     "spatially_constrained_clustering",
     "find_optimal_clusters",
+    "assess_clustering_quality",
+    "leiden_resolution_sweep",
     # Batch correction
     "combat",
     "harmony",

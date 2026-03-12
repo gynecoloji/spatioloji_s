@@ -14,16 +14,136 @@ from scipy import sparse
 from sklearn.cluster import DBSCAN, AgglomerativeClustering, KMeans
 from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
+import igraph as ig
+
+
+def _compute_umap_connectivities(
+    knn_distances: np.ndarray,
+    knn_indices: np.ndarray,
+) -> "sparse.csr_matrix":
+    """Build UMAP fuzzy-simplicial-set edge weights.
+
+    For each cell *i* we estimate a local bandwidth σ_i via binary search so
+    that the sum of fuzzy membership strengths over its k neighbours equals
+    log₂(k).  The directed weights are then symmetrised with the fuzzy union
+    (W = A + Aᵀ − A ⊙ Aᵀ), matching the UMAP paper (McInnes et al. 2018).
+
+    Parameters
+    ----------
+    knn_distances : np.ndarray, shape (n_cells, k)
+        Distances to the k nearest neighbours (self excluded, nearest first).
+    knn_indices : np.ndarray, shape (n_cells, k)
+        Global cell indices of the k nearest neighbours.
+
+    Returns
+    -------
+    scipy.sparse.csr_matrix
+        Symmetric (n_cells × n_cells) weight matrix with values in [0, 1].
+    """
+    n_cells, k = knn_distances.shape
+    target = float(np.log2(k))
+
+    # ρ_i — distance to the 1st nearest neighbour (shifts the origin)
+    rho = knn_distances[:, 0].astype(np.float64)
+
+    # Binary search for σ_i: Σ_j exp(−max(d_ij − ρ_i, 0) / σ_i) = log₂(k)
+    sigma = np.ones(n_cells, dtype=np.float64)
+    for i in range(n_cells):
+        shifted = np.maximum(knn_distances[i].astype(np.float64) - rho[i], 0.0)
+        lo, hi, mid = 0.0, np.inf, 1.0
+        for _ in range(64):
+            psum = float(np.sum(np.exp(-shifted / mid)))
+            if abs(psum - target) < 1e-5:
+                break
+            if psum > target:
+                hi = mid
+                mid = (lo + mid) / 2.0
+            else:
+                lo = mid
+                mid = (mid * 2.0) if np.isinf(hi) else ((lo + hi) / 2.0)
+        sigma[i] = max(mid, 1e-8)
+
+    # Vectorised directed weight matrix A: w_ij = exp(−max(d_ij−ρ_i,0) / σ_i)
+    shifted_all = np.maximum(knn_distances.astype(np.float64) - rho[:, np.newaxis], 0.0)
+    weights = np.exp(-shifted_all / sigma[:, np.newaxis]).astype(np.float32)
+
+    row_idx = np.repeat(np.arange(n_cells, dtype=np.int32), k)
+    col_idx = knn_indices.ravel().astype(np.int32)
+    A = sparse.csr_matrix((weights.ravel(), (row_idx, col_idx)), shape=(n_cells, n_cells))
+
+    # Fuzzy union symmetrisation: W = A + Aᵀ − A ⊙ Aᵀ
+    At = A.T.tocsr()
+    W = A + At - A.multiply(At)
+    return W
+
+
+def _build_leiden_graph(
+    X_reduced: np.ndarray,
+    n_neighbors: int,
+    graph_method: str,
+) -> tuple["ig.Graph", np.ndarray, np.ndarray]:
+    """Build the weighted igraph used by Leiden, using the chosen connectivity method.
+
+    Parameters
+    ----------
+    X_reduced : np.ndarray
+        Cell × feature matrix (PCA space or raw features).
+    n_neighbors : int
+        Number of nearest neighbours (self excluded).
+    graph_method : {'umap', 'simple'}
+        ``'umap'``   — UMAP fuzzy simplicial set weights (McInnes et al. 2018).
+        ``'simple'`` — inverse-distance weights: 1 / (1 + d).
+
+    Returns
+    -------
+    g : ig.Graph
+        Undirected igraph with ``weight`` edge attribute.
+    knn_distances : np.ndarray
+        Raw k-NN distances (self excluded).
+    knn_indices : np.ndarray
+        k-NN indices (self excluded).
+    """
+    try:
+        import igraph as ig
+    except ImportError as err:
+        raise ImportError("igraph is required. Install with: pip install igraph leidenalg") from err
+
+    n_cells = X_reduced.shape[0]
+
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors + 1, metric="euclidean").fit(X_reduced)
+    knn_distances_full, knn_indices_full = nbrs.kneighbors(X_reduced)
+    # Drop self (index 0)
+    knn_distances = knn_distances_full[:, 1:]
+    knn_indices = knn_indices_full[:, 1:]
+
+    if graph_method == "umap":
+        W = _compute_umap_connectivities(knn_distances, knn_indices)
+        W = W.tocoo()
+        # Keep only upper triangle to avoid duplicate undirected edges
+        mask = W.row < W.col
+        edges = list(zip(W.row[mask].tolist(), W.col[mask].tolist()))
+        weights = W.data[mask].tolist()
+    else:  # simple
+        edges, weights = [], []
+        for i in range(n_cells):
+            for j, dist in zip(knn_indices[i], knn_distances[i]):
+                edges.append((i, int(j)))
+                weights.append(float(1.0 / (1.0 + dist)))
+
+    g = ig.Graph(n=n_cells, edges=edges, directed=False)
+    g.es["weight"] = weights
+    return g, knn_distances, knn_indices
 
 
 def leiden_clustering(
     spatioloji_obj,
     layer: str | None = "normalized",
-    use_highly_variable: bool = True,  # NEW PARAMETER
+    use_highly_variable: bool = True,
     resolution: float = 1.0,
     n_neighbors: int = 15,
     n_pcs: int = 50,
     use_pca: bool = True,
+    graph_method: Literal["umap", "simple"] = "umap",
     random_state: int = 42,
     output_column: str = "leiden",
     inplace: bool = True,
@@ -32,30 +152,73 @@ def leiden_clustering(
     Leiden clustering for single-cell data.
 
     Graph-based clustering using the Leiden algorithm (improved Louvain).
-    Requires `leidenalg` package.
+    The cell graph can be built with UMAP-style fuzzy simplicial set weights
+    (default) or simple inverse-distance weights.
 
     Parameters
     ----------
     spatioloji_obj : spatioloji
-        Spatioloji object with expression data
+        Spatioloji object with expression data.
     layer : str, optional
-        Which expression layer to use, by default 'normalized'
+        Which expression layer to use, by default ``'normalized'``.
     use_highly_variable : bool, optional
-        Use only highly variable genes if available, by default True
-        Requires running highly_variable_genes() first
+        Use only highly variable genes if available, by default True.
+        Requires running ``highly_variable_genes()`` first.
     resolution : float, optional
-        Resolution parameter (higher = more clusters), by default 1.0
-    ...
+        Resolution parameter (higher = more clusters), by default 1.0.
+    n_neighbors : int, optional
+        Number of nearest neighbours for the cell graph, by default 15.
+    n_pcs : int, optional
+        Number of PCs to use when ``use_pca=True``, by default 50.
+    use_pca : bool, optional
+        Reduce to PCA space before building the graph, by default True.
+        Stored ``X_pca`` embeddings are reused if available.
+    graph_method : {'umap', 'simple'}, optional
+        Edge-weight method, by default ``'umap'``.
+
+        - ``'umap'`` — UMAP fuzzy simplicial set weights.  For each cell *i* a
+          local bandwidth σ_i is estimated via binary search so that the fuzzy
+          membership strengths sum to log₂(k).  The directed graph is then
+          symmetrised with the fuzzy union (W = A + Aᵀ − A ⊙ Aᵀ), giving edge
+          weights in [0, 1] that reflect local connectivity strength.
+        - ``'simple'`` — inverse-distance weights: ``1 / (1 + d)``.
+
+    random_state : int, optional
+        Random seed, by default 42.
+    output_column : str, optional
+        Column name for cluster labels, by default ``'leiden'``.
+    inplace : bool, optional
+        Add cluster labels to cell_meta, by default True.
+
+    Returns
+    -------
+    np.ndarray or None
+        Cluster labels if ``inplace=False``, otherwise None.
+
+    Raises
+    ------
+    ImportError
+        If ``igraph`` or ``leidenalg`` are not installed.
 
     Examples
     --------
-    >>> # Standard workflow with HVG selection
-    >>> sp.processing.highly_variable_genes(sp, layer='normalized_counts')
-    >>> sp.processing.leiden_clustering(sp, use_highly_variable=True)
+    >>> # Standard workflow — UMAP connectivities (default)
+    >>> sj.processing.highly_variable_genes(sp, layer='log_normalized')
+    >>> sj.processing.leiden_clustering(sp, layer='scaled', resolution=0.5)
+    >>>
+    >>> # Simple inverse-distance weights
+    >>> sj.processing.leiden_clustering(sp, graph_method='simple', resolution=1.0)
     """
-    print(f"\nLeiden clustering (resolution={resolution}, n_neighbors={n_neighbors})")
+    try:
+        import leidenalg
+    except ImportError as err:
+        raise ImportError(
+            "Leiden clustering requires igraph and leidenalg. Install with: pip install igraph leidenalg"
+        ) from err
 
-    # Get expression data
+    print(f"\nLeiden clustering (resolution={resolution}, n_neighbors={n_neighbors}, graph={graph_method})")
+
+    # ── Get expression data ───────────────────────────────────────────────────
     if layer is None:
         X = spatioloji_obj.expression.get_dense()
     else:
@@ -63,7 +226,7 @@ def leiden_clustering(
         if sparse.issparse(X):
             X = X.toarray()
 
-    # SUBSET TO HVGs if requested
+    # ── Subset to HVGs ────────────────────────────────────────────────────────
     if use_highly_variable:
         if "highly_variable" not in spatioloji_obj.gene_meta.columns:
             warnings.warn(
@@ -74,66 +237,31 @@ def leiden_clustering(
             )
         else:
             hvg_mask = spatioloji_obj.gene_meta["highly_variable"].values
-            n_hvg = hvg_mask.sum()
-
+            n_hvg = int(hvg_mask.sum())
             if n_hvg == 0:
                 warnings.warn("No highly variable genes found. Using all genes.", stacklevel=2)
             else:
                 X = X[:, hvg_mask]
                 print(f"  Using {n_hvg} highly variable genes (out of {hvg_mask.shape[0]} total)")
 
-    try:
-        import igraph as ig
-        import leidenalg
-    except ImportError as err:
-        raise ImportError(
-            "Leiden clustering requires igraph and leidenalg. Install with: pip install igraph leidenalg"
-        ) from err
-
-    print(f"\nLeiden clustering (resolution={resolution}, n_neighbors={n_neighbors})")
-
-    # Get expression data
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
-
-    # Apply PCA if requested
+    # ── PCA ───────────────────────────────────────────────────────────────────
     if use_pca:
         if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
-            X_reduced = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
+            X_reduced = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
             print(f"  Using stored PCA (first {n_pcs} PCs)")
         else:
             print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
-            from sklearn.decomposition import PCA
-
             pca_model = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
             X_reduced = pca_model.fit_transform(X)
             print(f"    Variance explained: {pca_model.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
         X_reduced = X
 
-    # Build k-NN graph
-    print("  Building k-NN graph...")
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors, metric="euclidean").fit(X_reduced)
-    knn_distances, knn_indices = nbrs.kneighbors(X_reduced)
+    # ── Build cell graph ──────────────────────────────────────────────────────
+    print(f"  Building {graph_method} connectivity graph...")
+    g, _, _ = _build_leiden_graph(X_reduced, n_neighbors, graph_method)
 
-    # Create igraph
-    n_cells = X.shape[0]
-    edges = []
-    weights = []
-
-    for i in range(n_cells):
-        for j, dist in zip(knn_indices[i][1:], knn_distances[i][1:], strict=True):  # Skip self
-            edges.append((i, j))
-            weights.append(1.0 / (1.0 + dist))  # Convert distance to weight
-
-    g = ig.Graph(n=n_cells, edges=edges, directed=False)
-    g.es["weight"] = weights
-
-    # Run Leiden
+    # ── Leiden ────────────────────────────────────────────────────────────────
     print("  Running Leiden algorithm...")
     partition = leidenalg.find_partition(
         g,
@@ -145,11 +273,9 @@ def leiden_clustering(
 
     clusters = np.array(partition.membership)
     n_clusters = len(np.unique(clusters))
+    _, counts = np.unique(clusters, return_counts=True)
 
     print(f"  ✓ Found {n_clusters} clusters")
-
-    # Calculate cluster sizes
-    unique, counts = np.unique(clusters, return_counts=True)
     print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, mean: {counts.mean():.1f}")
 
     if inplace:
@@ -545,47 +671,53 @@ def spatially_constrained_clustering(
 def find_optimal_clusters(
     spatioloji_obj,
     layer: str | None = "normalized",
-    method: Literal["elbow", "silhouette", "gap"] = "silhouette",
+    method: Literal["elbow", "silhouette", "gap", "davies_bouldin", "calinski_harabasz", "all"] = "silhouette",
     k_range: tuple[int, int] = (2, 20),
     n_pcs: int = 50,
     use_pca: bool = True,
+    sample_size: int | None = 5000,
     random_state: int = 42,
 ) -> dict[str, int | list[float]]:
     """
-    Find optimal number of clusters.
+    Find optimal number of clusters using one or all quality metrics.
 
-    Uses elbow method, silhouette score, or gap statistic.
+    Sweeps k-means over a range of k values and evaluates clustering quality
+    using the specified metric(s). The ``'all'`` method combines silhouette,
+    Davies-Bouldin, and Calinski-Harabasz scores into a consensus ranking.
 
-    Parameters
-    ----------
-    spatioloji_obj : spatioloji
-        Spatioloji object with expression data
-    layer : str, optional
-        Which expression layer to use, by default 'normalized'
-    method : {'elbow', 'silhouette', 'gap'}, optional
-        Method for finding optimal k, by default 'silhouette'
-    k_range : tuple, optional
-        Range of k values to test (min, max), by default (2, 20)
-    n_pcs : int, optional
-        Number of PCs to use if use_pca=True, by default 50
-    use_pca : bool, optional
-        Whether to use PCA, by default True
-    random_state : int, optional
-        Random seed, by default 42
+    Args:
+        spatioloji_obj: Spatioloji object with expression data.
+        layer: Expression layer to use, by default 'normalized'.
+        method: Scoring method. One of:
+            - ``'elbow'`` — within-cluster inertia (K-Means only).
+            - ``'silhouette'`` — mean silhouette score (higher = better).
+            - ``'gap'`` — gap statistic vs. random reference (higher = better).
+            - ``'davies_bouldin'`` — ratio of scatter to separation (lower = better).
+            - ``'calinski_harabasz'`` — variance ratio criterion (higher = better).
+            - ``'all'`` — runs silhouette + davies_bouldin + calinski_harabasz and
+              returns a normalized consensus score plus individual scores.
+        k_range: (min_k, max_k) range to evaluate, by default (2, 20).
+        n_pcs: Number of PCs to use when use_pca=True, by default 50.
+        use_pca: Whether to reduce to PCA space before clustering, by default True.
+        sample_size: Max cells to use for silhouette computation (subsamples if
+            n_cells > sample_size). Set to None to use all cells. By default 5000.
+        random_state: Random seed, by default 42.
 
-    Returns
-    -------
-    dict
-        Dictionary with 'optimal_k' and 'scores' for each k
+    Returns:
+        dict with keys:
+            - ``optimal_k`` (int): Recommended number of clusters.
+            - ``k_values`` (list[int]): All k values tested.
+            - ``scores`` (list[float]): Primary score per k (method-dependent).
+            - ``method`` (str): Method used.
+            - When method='all': also includes ``silhouette_scores``,
+              ``davies_bouldin_scores``, ``calinski_harabasz_scores``,
+              ``optimal_k_silhouette``, ``optimal_k_davies_bouldin``,
+              ``optimal_k_calinski_harabasz``.
 
-    Examples
-    --------
-    >>> # Find optimal k using silhouette score
-    >>> result = sp.processing.find_optimal_clusters(sp, method='silhouette')
-    >>> print(f"Optimal k: {result['optimal_k']}")
-    >>>
-    >>> # Then cluster with optimal k
-    >>> sp.processing.kmeans_clustering(sp, n_clusters=result['optimal_k'])
+    Example:
+        >>> result = find_optimal_clusters(sp, method='all', k_range=(2, 15))
+        >>> print(f"Consensus optimal k: {result['optimal_k']}")
+        >>> kmeans_clustering(sp, n_clusters=result['optimal_k'])
     """
     print(f"\nFinding optimal number of clusters (method={method})")
     print(f"  Testing k from {k_range[0]} to {k_range[1]}")
@@ -623,20 +755,25 @@ def find_optimal_clusters(
         optimal_k = k_values[np.argmax(distances)]
 
     elif method == "silhouette":
-        # Silhouette score
         from sklearn.metrics import silhouette_score
 
         for k in k_values:
             kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
             labels = kmeans.fit_predict(X_reduced)
-            score = silhouette_score(X_reduced, labels)
+            X_sil = X_reduced
+            if sample_size is not None and X_reduced.shape[0] > sample_size:
+                rng = np.random.default_rng(random_state)
+                idx = rng.choice(X_reduced.shape[0], size=sample_size, replace=False)
+                X_sil, labels_sil = X_reduced[idx], labels[idx]
+            else:
+                X_sil, labels_sil = X_reduced, labels
+            score = silhouette_score(X_sil, labels_sil)
             scores.append(score)
-            print(f"    k={k}: silhouette={score:.3f}")
+            print(f"    k={k}: silhouette={score:.4f}")
 
-        optimal_k = k_values[np.argmax(scores)]
+        optimal_k = list(k_values)[np.argmax(scores)]
 
     elif method == "gap":
-        # Gap statistic
         print("  Computing gap statistic (this may take a while)...")
 
         def compute_inertia(X, k):
@@ -644,30 +781,358 @@ def find_optimal_clusters(
             kmeans.fit(X)
             return kmeans.inertia_
 
-        n_refs = 10  # Number of reference datasets
+        n_refs = 10
         gaps = []
 
         for k in k_values:
-            # Observed inertia
             ref_inertias = []
             obs_inertia = compute_inertia(X_reduced, k)
-
-            # Reference inertias
             for _ in range(n_refs):
-                # Generate random reference data
                 X_ref = np.random.uniform(X_reduced.min(axis=0), X_reduced.max(axis=0), size=X_reduced.shape)
                 ref_inertias.append(compute_inertia(X_ref, k))
-
             gap = np.log(np.mean(ref_inertias)) - np.log(obs_inertia)
             gaps.append(gap)
-            print(f"    k={k}: gap={gap:.3f}")
+            print(f"    k={k}: gap={gap:.4f}")
 
         scores = gaps
-        optimal_k = k_values[np.argmax(gaps)]
+        optimal_k = list(k_values)[np.argmax(gaps)]
+
+    elif method == "davies_bouldin":
+        from sklearn.metrics import davies_bouldin_score
+
+        for k in k_values:
+            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+            labels = kmeans.fit_predict(X_reduced)
+            score = davies_bouldin_score(X_reduced, labels)
+            scores.append(score)
+            print(f"    k={k}: davies_bouldin={score:.4f}")
+
+        optimal_k = list(k_values)[np.argmin(scores)]  # lower is better
+
+    elif method == "calinski_harabasz":
+        from sklearn.metrics import calinski_harabasz_score
+
+        for k in k_values:
+            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+            labels = kmeans.fit_predict(X_reduced)
+            score = calinski_harabasz_score(X_reduced, labels)
+            scores.append(score)
+            print(f"    k={k}: calinski_harabasz={score:.2f}")
+
+        optimal_k = list(k_values)[np.argmax(scores)]
+
+    elif method == "all":
+        from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, silhouette_score
+
+        sil_scores, db_scores, ch_scores = [], [], []
+        print("  Running silhouette + Davies-Bouldin + Calinski-Harabasz...")
+
+        for k in k_values:
+            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+            labels = kmeans.fit_predict(X_reduced)
+
+            if sample_size is not None and X_reduced.shape[0] > sample_size:
+                rng = np.random.default_rng(random_state)
+                idx = rng.choice(X_reduced.shape[0], size=sample_size, replace=False)
+                sil = silhouette_score(X_reduced[idx], labels[idx])
+            else:
+                sil = silhouette_score(X_reduced, labels)
+
+            db = davies_bouldin_score(X_reduced, labels)
+            ch = calinski_harabasz_score(X_reduced, labels)
+
+            sil_scores.append(sil)
+            db_scores.append(db)
+            ch_scores.append(ch)
+            print(f"    k={k}: silhouette={sil:.4f}  davies_bouldin={db:.4f}  calinski_harabasz={ch:.2f}")
+
+        # Normalize each to [0,1]; invert DB so higher = better for all
+        def _norm(arr):
+            a = np.array(arr, dtype=float)
+            rng_val = a.max() - a.min()
+            return (a - a.min()) / (rng_val + 1e-12)
+
+        sil_norm = _norm(sil_scores)
+        db_norm = 1.0 - _norm(db_scores)  # invert: lower DB is better
+        ch_norm = _norm(ch_scores)
+        consensus = (sil_norm + db_norm + ch_norm) / 3.0
+
+        k_list = list(k_values)
+        optimal_k = k_list[int(np.argmax(consensus))]
+        scores = consensus.tolist()
+
+        print("\n  Per-metric optimal k:")
+        print(f"    silhouette:         k={k_list[int(np.argmax(sil_scores))]}")
+        print(f"    davies_bouldin:     k={k_list[int(np.argmin(db_scores))]}")
+        print(f"    calinski_harabasz:  k={k_list[int(np.argmax(ch_scores))]}")
+        print(f"  Consensus optimal k: {optimal_k}")
+
+        return {
+            "optimal_k": optimal_k,
+            "k_values": k_list,
+            "scores": scores,
+            "method": "all",
+            "silhouette_scores": sil_scores,
+            "davies_bouldin_scores": db_scores,
+            "calinski_harabasz_scores": ch_scores,
+            "optimal_k_silhouette": k_list[int(np.argmax(sil_scores))],
+            "optimal_k_davies_bouldin": k_list[int(np.argmin(db_scores))],
+            "optimal_k_calinski_harabasz": k_list[int(np.argmax(ch_scores))],
+        }
 
     else:
-        raise ValueError(f"Unknown method: {method}")
+        raise ValueError(
+            f"Unknown method: {method!r}. Choose from: elbow, silhouette, gap, davies_bouldin, calinski_harabasz, all"
+        )
 
     print(f"\n  ✓ Optimal k: {optimal_k}")
 
     return {"optimal_k": optimal_k, "k_values": list(k_values), "scores": scores, "method": method}
+
+
+def assess_clustering_quality(
+    spatioloji_obj,
+    cluster_col: str,
+    layer: str | None = "normalized",
+    n_pcs: int = 50,
+    use_pca: bool = True,
+    sample_size: int | None = 5000,
+    random_state: int = 42,
+) -> dict[str, float]:
+    """
+    Evaluate the quality of an existing clustering result.
+
+    Computes silhouette score, Davies-Bouldin index, and Calinski-Harabasz index
+    for cluster labels already stored in ``spatioloji_obj.cell_meta``. Uses stored
+    PCA embeddings when available to avoid redundant computation.
+
+    Args:
+        spatioloji_obj: Spatioloji object with expression data and cluster labels.
+        cluster_col: Column in ``cell_meta`` containing cluster labels to evaluate.
+        layer: Expression layer to use if PCA must be recomputed, by default 'normalized'.
+        n_pcs: Number of PCs to use, by default 50.
+        use_pca: Whether to project to PCA space before scoring, by default True.
+        sample_size: Max cells for silhouette computation (subsampled if exceeded).
+            Set to None to use all cells. By default 5000.
+        random_state: Random seed for subsampling, by default 42.
+
+    Returns:
+        dict with keys:
+            - ``n_clusters`` (int): Number of unique clusters found.
+            - ``silhouette`` (float): Mean silhouette score [-1, 1]; higher = better.
+            - ``davies_bouldin`` (float): Davies-Bouldin index; lower = better.
+            - ``calinski_harabasz`` (float): Calinski-Harabasz index; higher = better.
+            - ``cluster_sizes`` (dict): {cluster_label: cell_count}.
+
+    Raises:
+        ValueError: If ``cluster_col`` is not found in ``cell_meta``.
+
+    Example:
+        >>> leiden_clustering(sp, resolution=0.5)
+        >>> metrics = assess_clustering_quality(sp, cluster_col='leiden')
+        >>> print(metrics)
+    """
+    from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, silhouette_score
+
+    if cluster_col not in spatioloji_obj.cell_meta.columns:
+        raise ValueError(f"Cluster column '{cluster_col}' not found in cell_meta.")
+
+    labels = np.asarray(spatioloji_obj.cell_meta[cluster_col])
+    # Encode non-numeric labels (including categorical)
+    if not np.issubdtype(labels.dtype, np.integer):
+        _, labels = np.unique(labels, return_inverse=True)
+    labels = labels.astype(int)
+
+    n_clusters = len(np.unique(labels))
+    if n_clusters < 2:
+        raise ValueError(f"Need at least 2 clusters to compute quality metrics, found {n_clusters}.")
+
+    # Get feature matrix
+    if use_pca:
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
+        else:
+            if layer is None:
+                X_raw = spatioloji_obj.expression.get_dense()
+            else:
+                X_raw = spatioloji_obj.get_layer(layer)
+                if sparse.issparse(X_raw):
+                    X_raw = X_raw.toarray()
+            pca = PCA(n_components=min(n_pcs, X_raw.shape[0], X_raw.shape[1]), random_state=random_state)
+            X = pca.fit_transform(X_raw)
+    else:
+        if layer is None:
+            X = spatioloji_obj.expression.get_dense()
+        else:
+            X = spatioloji_obj.get_layer(layer)
+            if sparse.issparse(X):
+                X = X.toarray()
+
+    # Subsample for silhouette if needed
+    if sample_size is not None and X.shape[0] > sample_size:
+        rng = np.random.default_rng(random_state)
+        idx = rng.choice(X.shape[0], size=sample_size, replace=False)
+        X_sil, labels_sil = X[idx], labels[idx]
+    else:
+        X_sil, labels_sil = X, labels
+
+    sil = float(silhouette_score(X_sil, labels_sil))
+    db = float(davies_bouldin_score(X, labels))
+    ch = float(calinski_harabasz_score(X, labels))
+
+    unique_labels, counts = np.unique(spatioloji_obj.cell_meta[cluster_col].values, return_counts=True)
+    cluster_sizes = dict(zip(unique_labels.tolist(), counts.tolist(), strict=False))
+
+    metrics = {
+        "n_clusters": n_clusters,
+        "silhouette": sil,
+        "davies_bouldin": db,
+        "calinski_harabasz": ch,
+        "cluster_sizes": cluster_sizes,
+    }
+
+    print(f"\nClustering quality for '{cluster_col}' ({n_clusters} clusters):")
+    print(f"  Silhouette score:        {sil:+.4f}  (higher = better, max 1.0)")
+    print(f"  Davies-Bouldin index:    {db:.4f}   (lower = better, min 0.0)")
+    print(f"  Calinski-Harabasz index: {ch:.2f}  (higher = better)")
+    sizes = list(cluster_sizes.values())
+    print(f"  Cluster sizes - min: {min(sizes)}, max: {max(sizes)}, mean: {np.mean(sizes):.1f}")
+
+    return metrics
+
+
+def leiden_resolution_sweep(
+    spatioloji_obj,
+    resolutions: list[float] | None = None,
+    n_runs: int = 5,
+    layer: str | None = "normalized",
+    use_highly_variable: bool = True,
+    n_pcs: int = 50,
+    n_neighbors: int = 15,
+    graph_method: Literal["umap", "simple"] = "umap",
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """
+    Sweep Leiden resolution parameter and report stability and quality metrics.
+
+    For each resolution, runs Leiden ``n_runs`` times with different seeds and
+    measures cluster stability (mean pairwise ARI), modularity, and the number
+    of clusters found. Use the resulting DataFrame to pick a resolution in a
+    stable plateau with the desired granularity.
+
+    Args:
+        spatioloji_obj: Spatioloji object with expression data.
+        resolutions: List of resolution values to test. Defaults to
+            ``[0.1, 0.2, ..., 2.0]`` if None.
+        n_runs: Number of Leiden runs per resolution for stability estimation,
+            by default 5.
+        layer: Expression layer to use, by default 'normalized'.
+        use_highly_variable: Use only highly variable genes if available, by default True.
+        n_pcs: Number of PCs to use, by default 50.
+        n_neighbors: k for the k-NN graph, by default 15.
+        graph_method: Edge-weight method — ``'umap'`` (default, fuzzy simplicial
+            set) or ``'simple'`` (inverse-distance).  See :func:`leiden_clustering`
+            for details.
+        random_state: Base random seed (seeds used are random_state, random_state+1, …),
+            by default 42.
+
+    Returns:
+        pd.DataFrame with columns:
+            - ``resolution``: Resolution parameter.
+            - ``n_clusters_mean``: Mean number of clusters across runs.
+            - ``n_clusters_min`` / ``n_clusters_max``: Range of cluster counts.
+            - ``mean_ari``: Mean pairwise ARI across all run pairs (stability).
+            - ``std_ari``: Std of pairwise ARIs.
+            - ``modularity_mean``: Mean igraph modularity across runs.
+
+    Raises:
+        ImportError: If ``igraph`` or ``leidenalg`` are not installed.
+
+    Example:
+        >>> df = leiden_resolution_sweep(sp, resolutions=[0.2, 0.4, 0.6, 0.8, 1.0])
+        >>> print(df)
+        >>> # Pick resolution with high mean_ari and desired n_clusters
+        >>> leiden_clustering(sp, resolution=0.6)
+    """
+    try:
+        import igraph as ig
+        import leidenalg
+    except ImportError as err:
+        raise ImportError(
+            "leiden_resolution_sweep requires igraph and leidenalg. Install with: pip install igraph leidenalg"
+        ) from err
+
+    from sklearn.metrics import adjusted_rand_score
+
+    if resolutions is None:
+        resolutions = [round(r, 1) for r in np.arange(0.1, 2.1, 0.1)]
+
+    # --- Build feature matrix once ---
+    if layer is None:
+        X = spatioloji_obj.expression.get_dense()
+    else:
+        X = spatioloji_obj.get_layer(layer)
+        if sparse.issparse(X):
+            X = X.toarray()
+
+    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+        hvg_mask = spatioloji_obj.gene_meta["highly_variable"].values
+        if hvg_mask.sum() > 0:
+            X = X[:, hvg_mask]
+
+    if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+        X_reduced = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
+    else:
+        pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
+        X_reduced = pca.fit_transform(X)
+
+    # --- Build cell graph once (shared across all resolutions) ---
+    print(f"  Building {graph_method} connectivity graph...")
+    g, _, _ = _build_leiden_graph(X_reduced, n_neighbors, graph_method)
+
+    print(f"\nLeiden resolution sweep ({len(resolutions)} resolutions × {n_runs} runs each, graph={graph_method})")
+    print(f"  {'Resolution':>10}  {'n_clusters':>10}  {'mean_ARI':>9}  {'modularity':>10}")
+    print("  " + "-" * 46)
+
+    rows = []
+    for res in resolutions:
+        memberships = []
+        modularities = []
+        n_clusters_list = []
+
+        for run in range(n_runs):
+            partition = leidenalg.find_partition(
+                g,
+                leidenalg.RBConfigurationVertexPartition,
+                weights="weight",
+                resolution_parameter=res,
+                seed=random_state + run,
+            )
+            mem = np.array(partition.membership)
+            memberships.append(mem)
+            n_clusters_list.append(int(mem.max()) + 1)
+            modularities.append(g.modularity(mem.tolist()))
+
+        # Pairwise ARI across all run pairs
+        ari_vals = [
+            adjusted_rand_score(memberships[i], memberships[j]) for i in range(n_runs) for j in range(i + 1, n_runs)
+        ]
+        mean_ari = float(np.mean(ari_vals)) if ari_vals else 1.0
+        std_ari = float(np.std(ari_vals)) if ari_vals else 0.0
+
+        row = {
+            "resolution": res,
+            "n_clusters_mean": float(np.mean(n_clusters_list)),
+            "n_clusters_min": int(min(n_clusters_list)),
+            "n_clusters_max": int(max(n_clusters_list)),
+            "mean_ari": mean_ari,
+            "std_ari": std_ari,
+            "modularity_mean": float(np.mean(modularities)),
+        }
+        rows.append(row)
+        print(f"  {res:>10.2f}  {row['n_clusters_mean']:>10.1f}  {mean_ari:>9.4f}  {row['modularity_mean']:>10.4f}")
+
+    df = pd.DataFrame(rows)
+    best_res = df.loc[df["mean_ari"].idxmax(), "resolution"]
+    print(f"\n  Most stable resolution: {best_res:.2f}  (mean ARI={df['mean_ari'].max():.4f})")
+    return df
