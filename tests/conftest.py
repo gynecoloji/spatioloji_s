@@ -247,3 +247,53 @@ def sp_sparse():
         cell_metadata=cell_meta,
         spatial_coords=spatial,
     )
+
+
+# ===========================================================================
+# Fixture 4: DEG-specific object (two cell types with known signal)
+# ===========================================================================
+
+
+@pytest.fixture
+def sp_deg():
+    """500-cell × 50-gene spatioloji with two clearly separated cell types.
+
+    TypeA (cells 0–249): high expression in genes 0–24 (mean += 8).
+    TypeB (cells 250–499): high expression in genes 25–49 (mean += 8).
+    TypeA cells are in x_global [0, 500]; TypeB in [500, 1000] (for spatial tests).
+    Replicate labels: rep1 (first 125 of each type), rep2 (last 125 of each type).
+    """
+    np.random.seed(42)
+    n_cells, n_genes, n_fg = 500, 50, 250
+
+    expr = np.random.poisson(1.0, (n_cells, n_genes)).astype(float)
+    expr[:n_fg, :25] += np.random.poisson(8.0, (n_fg, 25))
+    expr[n_fg:, 25:] += np.random.poisson(8.0, (n_fg, 25))
+
+    cell_ids = [f"cell_{i}" for i in range(n_cells)]
+    gene_names = [f"gene_{i}" for i in range(n_genes)]
+
+    cell_meta = pd.DataFrame(
+        {
+            "cell_type": ["TypeA"] * n_fg + ["TypeB"] * n_fg,
+            "replicate": ["rep1"] * 125 + ["rep2"] * 125 + ["rep1"] * 125 + ["rep2"] * 125,
+        },
+        index=cell_ids,
+    )
+
+    spatial = {
+        "x_global": np.concatenate(
+            [np.random.uniform(0, 500, n_fg), np.random.uniform(500, 1000, n_fg)]
+        ),
+        "y_global": np.random.uniform(0, 1000, n_cells),
+        "x_local": np.random.uniform(0, 500, n_cells),
+        "y_local": np.random.uniform(0, 500, n_cells),
+    }
+
+    return spatioloji(
+        expression=expr,
+        cell_ids=cell_ids,
+        gene_names=gene_names,
+        cell_metadata=cell_meta,
+        spatial_coords=spatial,
+    )
