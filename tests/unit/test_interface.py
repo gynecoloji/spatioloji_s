@@ -125,7 +125,8 @@ class TestPolygonGraphMethod:
         """With buffer_distance=50, cells near x=500 should be interface."""
         g = build_buffer_graph(sp_interface, buffer_distance=50)
         result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB")
+                                    region_a="TypeA", region_b="TypeB",
+                                    min_interface_cells=1)
         n_a = (result.cell_labels == "region_a_interface").sum()
         n_b = (result.cell_labels == "region_b_interface").sum()
         assert n_a > 0, "Should detect TypeA interface cells"

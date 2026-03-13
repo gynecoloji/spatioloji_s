@@ -292,24 +292,12 @@ def _graph_method(
     if not seg_rows:
         warnings.warn("All interface segments dropped by min_interface_cells filter.",
                       UserWarning, stacklevel=3)
-        segs = gpd.GeoDataFrame(
-            {"segment_id": pd.Series(dtype=int), "length": pd.Series(dtype=float),
-             "tortuosity": pd.Series(dtype=float),
-             "n_cells_a": pd.Series(dtype=int), "n_cells_b": pd.Series(dtype=int)},
-            geometry=[],
-        )
-        return InterfaceResult(
-            cell_labels=cell_labels, contour=None, segments=segs,
-            summary={"total_length": 0.0, "n_segments": 0, "mean_tortuosity": 0.0,
-                     "n_interface_a": int((cell_labels == "region_a_interface").sum()),
-                     "n_interface_b": int((cell_labels == "region_b_interface").sum())},
-            region_a=a_list if len(a_list) > 1 else a_list[0],
-            region_b=b_list if len(b_list) > 1 else b_list[0],
-            method="graph",
-        )
+        # Reset interface labels back to interior since no segments survived
+        cell_labels[cell_labels == "region_a_interface"] = "interior_a"
+        cell_labels[cell_labels == "region_b_interface"] = "interior_b"
+        return _empty_result(sp, a_list, b_list, group_col, "graph")
 
     segments = gpd.GeoDataFrame(seg_rows, geometry="geometry")
-    segments.set_crs(epsg=None, inplace=True) if hasattr(segments, "set_crs") else None
 
     all_geoms = []
     for _, row in segments.iterrows():
