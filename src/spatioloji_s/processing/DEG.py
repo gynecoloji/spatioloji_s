@@ -331,6 +331,188 @@ def _ttest_backend(
     }
 
 
+def _mast_one_gene(
+    x_fg: np.ndarray,
+    x_bg: np.ndarray,
+    cdr_fg: np.ndarray,
+    cdr_bg: np.ndarray,
+) -> float:
+    """Fit the MAST-inspired two-part hurdle model for a single gene.
+
+    Args:
+        x_fg: Expression values for fg cells, shape (n_fg,).
+        x_bg: Expression values for bg cells, shape (n_bg,).
+        cdr_fg: Cellular detection rate per fg cell (fraction of all genes > 0).
+        cdr_bg: Cellular detection rate per bg cell.
+
+    Returns:
+        Combined p-value (Fisher's method). NaN if fitting fails.
+    """
+    try:
+        import statsmodels.api as sm
+        from scipy.stats import combine_pvalues
+    except ImportError:
+        raise ImportError("MAST requires statsmodels. Install with: pip install spatioloji_s[deg]")
+
+    x = np.concatenate([x_fg, x_bg]).astype(np.float64)
+    cdr = np.concatenate([cdr_fg, cdr_bg]).astype(np.float64)
+    group = np.array([1.0] * len(x_fg) + [0.0] * len(x_bg))
+
+    # --- Discrete component: logistic regression on expressed/not-expressed ---
+    y_disc = (x > 0).astype(np.float64)
+    if y_disc.sum() == 0 or y_disc.sum() == len(y_disc):
+        p_disc = np.nan
+    else:
+        X_disc = sm.add_constant(np.column_stack([group, cdr]))
+        try:
+            res_disc = sm.Logit(y_disc, X_disc).fit(disp=False, maxiter=100)
+            p_disc = float(res_disc.pvalues[1])
+        except Exception:
+            p_disc = np.nan
+
+    # --- Continuous component: OLS on expressed cells only ---
+    expr_mask = x > 0
+    p_cont = np.nan
+    fg_expr = (x_fg > 0).sum()
+    bg_expr = (x_bg > 0).sum()
+    if expr_mask.sum() >= 5 and fg_expr >= 2 and bg_expr >= 2:
+        y_cont = x[expr_mask]
+        X_cont = sm.add_constant(np.column_stack([group[expr_mask], cdr[expr_mask]]))
+        try:
+            res_cont = sm.OLS(y_cont, X_cont).fit()
+            p_cont = float(res_cont.pvalues[1])
+        except Exception:
+            p_cont = np.nan
+
+    # --- Combine via Fisher's method ---
+    valid_pvals = [p for p in [p_disc, p_cont] if not np.isnan(p)]
+    if not valid_pvals:
+        return np.nan
+    if len(valid_pvals) == 1:
+        return valid_pvals[0]
+    _, combined = combine_pvalues(valid_pvals, method="fisher")
+    return float(combined)
+
+
+def _mast_backend(
+    X_fg: np.ndarray,
+    X_bg: np.ndarray,
+    cdr_fg: np.ndarray,
+    cdr_bg: np.ndarray,
+    n_jobs: int = 1,
+    **_kwargs,
+) -> dict[str, np.ndarray]:
+    """MAST-inspired hurdle model backend.
+
+    Fits a two-part logistic + OLS model per gene with CDR as covariate.
+    P-values from the two components are combined via Fisher's method.
+    This is a Python approximation of MAST, not a faithful port.
+
+    Args:
+        X_fg: Foreground expression, shape (n_fg, chunk_genes).
+        X_bg: Background expression, shape (n_bg, chunk_genes).
+        cdr_fg: Cellular detection rate per fg cell, shape (n_fg,).
+        cdr_bg: Cellular detection rate per bg cell, shape (n_bg,).
+        n_jobs: Worker threads for per-gene fitting.
+
+    Returns:
+        Dict with keys ``pval``, ``mean_fg``, ``mean_bg``, ``pct_fg``, ``pct_bg``.
+    """
+    chunk_genes = X_fg.shape[1]
+    mean_fg = X_fg.mean(axis=0).astype(np.float64)
+    mean_bg = X_bg.mean(axis=0).astype(np.float64)
+    pct_fg = (X_fg > 0).mean(axis=0).astype(np.float64)
+    pct_bg = (X_bg > 0).mean(axis=0).astype(np.float64)
+    pvals = np.empty(chunk_genes, dtype=np.float64)
+
+    def _fit(j: int) -> float:
+        return _mast_one_gene(X_fg[:, j], X_bg[:, j], cdr_fg, cdr_bg)
+
+    if n_jobs == 1:
+        for j in range(chunk_genes):
+            pvals[j] = _fit(j)
+    else:
+        with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
+            pvals[:] = list(ex.map(_fit, range(chunk_genes)))
+
+    return {
+        "pval": pvals,
+        "mean_fg": mean_fg,
+        "mean_bg": mean_bg,
+        "pct_fg": pct_fg,
+        "pct_bg": pct_bg,
+    }
+
+
+def _nb_glm_one_gene(x_fg: np.ndarray, x_bg: np.ndarray) -> float:
+    """Fit a negative-binomial GLM for a single gene.
+
+    Args:
+        x_fg: Raw count values for fg cells, shape (n_fg,).
+        x_bg: Raw count values for bg cells, shape (n_bg,).
+
+    Returns:
+        Two-sided p-value for the group coefficient. NaN on convergence failure.
+    """
+    try:
+        import statsmodels.api as sm
+    except ImportError:
+        raise ImportError("NB-GLM requires statsmodels. Install with: pip install spatioloji_s[deg]")
+
+    y = np.concatenate([x_fg, x_bg]).astype(np.float64)
+    group = np.array([1.0] * len(x_fg) + [0.0] * len(x_bg))
+    X = sm.add_constant(group)
+
+    try:
+        res = sm.GLM(y, X, family=sm.families.NegativeBinomial()).fit(disp=False, maxiter=100)
+        return float(res.pvalues[1])
+    except Exception:
+        return np.nan
+
+
+def _nb_glm_backend(
+    X_fg: np.ndarray,
+    X_bg: np.ndarray,
+    n_jobs: int = 1,
+    **_kwargs,
+) -> dict[str, np.ndarray]:
+    """Negative-binomial GLM backend, per gene.
+
+    Args:
+        X_fg: Foreground expression, shape (n_fg, chunk_genes). Dense float32.
+        X_bg: Background expression, shape (n_bg, chunk_genes). Dense float32.
+        n_jobs: Worker threads for per-gene model fitting.
+
+    Returns:
+        Dict with keys ``pval``, ``mean_fg``, ``mean_bg``, ``pct_fg``, ``pct_bg``.
+        Genes where the GLM fails to converge return NaN in ``pval``.
+    """
+    chunk_genes = X_fg.shape[1]
+    mean_fg = X_fg.mean(axis=0).astype(np.float64)
+    mean_bg = X_bg.mean(axis=0).astype(np.float64)
+    pct_fg = (X_fg > 0).mean(axis=0).astype(np.float64)
+    pct_bg = (X_bg > 0).mean(axis=0).astype(np.float64)
+    pvals = np.empty(chunk_genes, dtype=np.float64)
+
+    def _fit(j: int) -> float:
+        return _nb_glm_one_gene(X_fg[:, j], X_bg[:, j])
+
+    if n_jobs == 1:
+        for j in range(chunk_genes):
+            pvals[j] = _fit(j)
+    else:
+        with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
+            pvals[:] = list(ex.map(_fit, range(chunk_genes)))
+
+    return {
+        "pval": pvals,
+        "mean_fg": mean_fg,
+        "mean_bg": mean_bg,
+        "pct_fg": pct_fg,
+        "pct_bg": pct_bg,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -338,10 +520,11 @@ def _ttest_backend(
 _VALID_METHODS = frozenset({"wilcoxon", "ttest", "mast", "nb_glm", "deseq2"})
 
 # Populated incrementally as backends are implemented.
-# Finalized to the full four-method definition after all backends exist.
 _BACKEND_MAP: dict = {
     "wilcoxon": _wilcoxon_backend,
     "ttest": _ttest_backend,
+    "mast": _mast_backend,
+    "nb_glm": _nb_glm_backend,
 }
 
 

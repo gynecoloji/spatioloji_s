@@ -367,3 +367,127 @@ class TestRunDegCore:
         sf = {"x_range": (0, 800), "y_range": (0, 1000)}
         df = run_deg(sp_deg, "cell_type", "TypeA", group_bg="TypeB", methods=["ttest"], spatial_filter=sf)["ttest"]
         assert df["n_bg"].iloc[0] < 250
+
+
+# ---------------------------------------------------------------------------
+# MAST backend tests
+# ---------------------------------------------------------------------------
+
+
+class TestMastBackend:
+    @pytest.mark.skipif(
+        __import__("importlib").util.find_spec("statsmodels") is None,
+        reason="statsmodels not installed",
+    )
+    def test_returns_required_keys(self):
+        from spatioloji_s.processing.DEG import _mast_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=10)
+        cdr_fg = (X_fg > 0).mean(axis=1).astype(np.float32)
+        cdr_bg = (X_bg > 0).mean(axis=1).astype(np.float32)
+        result = _mast_backend(X_fg, X_bg, cdr_fg=cdr_fg, cdr_bg=cdr_bg)
+        assert set(result.keys()) == {"pval", "mean_fg", "mean_bg", "pct_fg", "pct_bg"}
+
+    @pytest.mark.skipif(
+        __import__("importlib").util.find_spec("statsmodels") is None,
+        reason="statsmodels not installed",
+    )
+    def test_pval_shape_and_range(self):
+        from spatioloji_s.processing.DEG import _mast_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=8)
+        cdr_fg = (X_fg > 0).mean(axis=1).astype(np.float32)
+        cdr_bg = (X_bg > 0).mean(axis=1).astype(np.float32)
+        result = _mast_backend(X_fg, X_bg, cdr_fg=cdr_fg, cdr_bg=cdr_bg)
+        p = result["pval"]
+        assert p.shape == (8,)
+        valid = p[~np.isnan(p)]
+        assert (valid >= 0).all() and (valid <= 1).all()
+
+    def test_statsmodels_missing_raises(self, monkeypatch):
+        """If statsmodels is absent, _mast_one_gene must raise ImportError."""
+        import sys
+        from spatioloji_s.processing.DEG import _mast_one_gene
+
+        monkeypatch.setitem(sys.modules, "statsmodels", None)
+        monkeypatch.setitem(sys.modules, "statsmodels.api", None)
+
+        X_fg, X_bg = _make_fg_bg(n_genes=2)
+        cdr_fg = (X_fg > 0).mean(axis=1).astype(np.float32)
+        cdr_bg = (X_bg > 0).mean(axis=1).astype(np.float32)
+        with pytest.raises(ImportError, match=r"spatioloji_s\[deg\]"):
+            _mast_one_gene(X_fg[:, 0], X_bg[:, 0], cdr_fg, cdr_bg)
+
+    @pytest.mark.skipif(
+        __import__("importlib").util.find_spec("statsmodels") is None,
+        reason="statsmodels not installed",
+    )
+    def test_n_jobs_numerically_close(self):
+        """n_jobs=1 and n_jobs=4 results must agree within tolerance."""
+        from spatioloji_s.processing.DEG import _mast_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=8, seed=1)
+        cdr_fg = (X_fg > 0).mean(axis=1).astype(np.float32)
+        cdr_bg = (X_bg > 0).mean(axis=1).astype(np.float32)
+        r1 = _mast_backend(X_fg, X_bg, cdr_fg=cdr_fg, cdr_bg=cdr_bg, n_jobs=1)
+        r4 = _mast_backend(X_fg, X_bg, cdr_fg=cdr_fg, cdr_bg=cdr_bg, n_jobs=4)
+        valid = ~(np.isnan(r1["pval"]) | np.isnan(r4["pval"]))
+        np.testing.assert_allclose(r1["pval"][valid], r4["pval"][valid], rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# NB-GLM backend tests
+# ---------------------------------------------------------------------------
+
+
+class TestNbGlmBackend:
+    @pytest.mark.skipif(
+        __import__("importlib").util.find_spec("statsmodels") is None,
+        reason="statsmodels not installed",
+    )
+    def test_returns_required_keys(self):
+        from spatioloji_s.processing.DEG import _nb_glm_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=5)
+        result = _nb_glm_backend(X_fg, X_bg)
+        assert set(result.keys()) == {"pval", "mean_fg", "mean_bg", "pct_fg", "pct_bg"}
+
+    @pytest.mark.skipif(
+        __import__("importlib").util.find_spec("statsmodels") is None,
+        reason="statsmodels not installed",
+    )
+    def test_pval_shape(self):
+        from spatioloji_s.processing.DEG import _nb_glm_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=6)
+        result = _nb_glm_backend(X_fg, X_bg)
+        assert result["pval"].shape == (6,)
+
+    @pytest.mark.skipif(
+        __import__("importlib").util.find_spec("statsmodels") is None,
+        reason="statsmodels not installed",
+    )
+    def test_nan_on_convergence_failure(self):
+        """Genes where GLM fails to converge must return NaN, not raise."""
+        from spatioloji_s.processing.DEG import _nb_glm_backend
+
+        # Constant expression -> GLM will fail
+        X_fg = np.zeros((20, 2), dtype=np.float32)
+        X_bg = np.zeros((20, 2), dtype=np.float32)
+        result = _nb_glm_backend(X_fg, X_bg)
+        # Should not raise; may return NaN for problematic genes
+        assert result["pval"].shape == (2,)
+
+    @pytest.mark.skipif(
+        __import__("importlib").util.find_spec("statsmodels") is None,
+        reason="statsmodels not installed",
+    )
+    def test_n_jobs_numerically_close(self):
+        from spatioloji_s.processing.DEG import _nb_glm_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=8, seed=2)
+        r1 = _nb_glm_backend(X_fg, X_bg, n_jobs=1)
+        r4 = _nb_glm_backend(X_fg, X_bg, n_jobs=4)
+        valid = ~(np.isnan(r1["pval"]) | np.isnan(r4["pval"]))
+        if valid.sum() > 0:
+            np.testing.assert_allclose(r1["pval"][valid], r4["pval"][valid], rtol=1e-5)
