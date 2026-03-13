@@ -190,3 +190,90 @@ class TestBuildResultDf:
         df = _build_result_df(gene_names, stats, padj, n_fg=10, n_bg=10)
         expected_log2fc = np.log2((4.0 + 1e-9) / (1.0 + 1e-9))
         np.testing.assert_allclose(df["log2fc"].values[0], expected_log2fc, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Backend tests — synthetic data with known signal
+# ---------------------------------------------------------------------------
+
+
+def _make_fg_bg(n_fg=250, n_bg=250, n_genes=50, seed=0):
+    """Synthetic fg/bg dense float32 arrays with known upregulation in fg genes 0-24."""
+    rng = np.random.default_rng(seed)
+    X_fg = rng.poisson(1.0, (n_fg, n_genes)).astype(np.float32)
+    n_up = min(25, n_genes)
+    X_fg[:, :n_up] += rng.poisson(8.0, (n_fg, n_up)).astype(np.float32)
+    X_bg = rng.poisson(1.0, (n_bg, n_genes)).astype(np.float32)
+    return X_fg, X_bg
+
+
+class TestWilcoxonBackend:
+    def test_returns_required_keys(self):
+        from spatioloji_s.processing.DEG import _wilcoxon_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=10)
+        result = _wilcoxon_backend(X_fg, X_bg)
+        assert set(result.keys()) == {"pval", "mean_fg", "mean_bg", "pct_fg", "pct_bg"}
+
+    def test_pval_shape(self):
+        from spatioloji_s.processing.DEG import _wilcoxon_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=15)
+        result = _wilcoxon_backend(X_fg, X_bg)
+        assert result["pval"].shape == (15,)
+
+    def test_pval_in_range(self):
+        from spatioloji_s.processing.DEG import _wilcoxon_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=10)
+        result = _wilcoxon_backend(X_fg, X_bg)
+        assert (result["pval"] >= 0).all() and (result["pval"] <= 1).all()
+
+    def test_detects_upregulated_genes(self):
+        """Genes 0-24 (upregulated in fg) should have very small p-values."""
+        from spatioloji_s.processing.DEG import _wilcoxon_backend
+
+        X_fg, X_bg = _make_fg_bg(n_fg=250, n_bg=250, n_genes=50)
+        result = _wilcoxon_backend(X_fg, X_bg)
+        assert result["pval"][:25].max() < 0.05
+        assert result["mean_fg"][:25].mean() > result["mean_fg"][25:].mean()
+
+    def test_n_jobs_identical_results(self):
+        """n_jobs=1 and n_jobs=4 must produce identical results."""
+        from spatioloji_s.processing.DEG import _wilcoxon_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=20)
+        r1 = _wilcoxon_backend(X_fg, X_bg, n_jobs=1)
+        r4 = _wilcoxon_backend(X_fg, X_bg, n_jobs=4)
+        np.testing.assert_array_equal(r1["pval"], r4["pval"])
+
+
+class TestTtestBackend:
+    def test_returns_required_keys(self):
+        from spatioloji_s.processing.DEG import _ttest_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=10)
+        result = _ttest_backend(X_fg, X_bg)
+        assert set(result.keys()) == {"pval", "mean_fg", "mean_bg", "pct_fg", "pct_bg"}
+
+    def test_pval_shape(self):
+        from spatioloji_s.processing.DEG import _ttest_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=15)
+        assert _ttest_backend(X_fg, X_bg)["pval"].shape == (15,)
+
+    def test_detects_upregulated_genes(self):
+        from spatioloji_s.processing.DEG import _ttest_backend
+
+        X_fg, X_bg = _make_fg_bg(n_fg=250, n_bg=250, n_genes=50)
+        result = _ttest_backend(X_fg, X_bg)
+        assert result["pval"][:25].max() < 0.05
+
+    def test_n_jobs_ignored_but_identical(self):
+        """t-test is fully vectorized; n_jobs is accepted but results are identical."""
+        from spatioloji_s.processing.DEG import _ttest_backend
+
+        X_fg, X_bg = _make_fg_bg(n_genes=20)
+        r1 = _ttest_backend(X_fg, X_bg, n_jobs=1)
+        r4 = _ttest_backend(X_fg, X_bg, n_jobs=4)
+        np.testing.assert_array_equal(r1["pval"], r4["pval"])

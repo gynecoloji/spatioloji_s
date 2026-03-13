@@ -246,3 +246,86 @@ def _build_result_df(
         }
     )
     return df.sort_values("padj", na_position="last").reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Backend functions
+# ---------------------------------------------------------------------------
+
+
+def _wilcoxon_backend(
+    X_fg: np.ndarray,
+    X_bg: np.ndarray,
+    n_jobs: int = 1,
+    **_kwargs,
+) -> dict[str, np.ndarray]:
+    """Per-gene Mann-Whitney U test (Wilcoxon rank-sum).
+
+    Args:
+        X_fg: Foreground expression, shape (n_fg, chunk_genes). Dense float32.
+        X_bg: Background expression, shape (n_bg, chunk_genes). Dense float32.
+        n_jobs: Worker threads for parallelism across genes in this chunk.
+
+    Returns:
+        Dict with keys ``pval``, ``mean_fg``, ``mean_bg``, ``pct_fg``, ``pct_bg``.
+    """
+    from scipy.stats import mannwhitneyu
+
+    chunk_genes = X_fg.shape[1]
+    mean_fg = X_fg.mean(axis=0)
+    mean_bg = X_bg.mean(axis=0)
+    pct_fg = (X_fg > 0).mean(axis=0)
+    pct_bg = (X_bg > 0).mean(axis=0)
+    pvals = np.empty(chunk_genes, dtype=np.float64)
+
+    def _test_gene(j: int) -> float:
+        try:
+            _, p = mannwhitneyu(X_fg[:, j], X_bg[:, j], alternative="two-sided")
+        except Exception:
+            p = np.nan
+        return p
+
+    if n_jobs == 1:
+        for j in range(chunk_genes):
+            pvals[j] = _test_gene(j)
+    else:
+        with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
+            for j, p in zip(range(chunk_genes), ex.map(_test_gene, range(chunk_genes))):
+                pvals[j] = p
+
+    return {
+        "pval": pvals,
+        "mean_fg": mean_fg.astype(np.float64),
+        "mean_bg": mean_bg.astype(np.float64),
+        "pct_fg": pct_fg.astype(np.float64),
+        "pct_bg": pct_bg.astype(np.float64),
+    }
+
+
+def _ttest_backend(
+    X_fg: np.ndarray,
+    X_bg: np.ndarray,
+    n_jobs: int = 1,
+    **_kwargs,
+) -> dict[str, np.ndarray]:
+    """Welch's t-test, fully vectorized across genes via scipy axis=0.
+
+    Args:
+        X_fg: Foreground expression, shape (n_fg, chunk_genes). Dense float32.
+        X_bg: Background expression, shape (n_bg, chunk_genes). Dense float32.
+        n_jobs: Accepted for API consistency; ignored (vectorized path).
+
+    Returns:
+        Dict with keys ``pval``, ``mean_fg``, ``mean_bg``, ``pct_fg``, ``pct_bg``.
+    """
+    from scipy.stats import ttest_ind
+
+    _, pvals = ttest_ind(X_fg, X_bg, axis=0, equal_var=False)
+
+    return {
+        "pval": np.asarray(pvals, dtype=np.float64),
+        "mean_fg": X_fg.mean(axis=0).astype(np.float64),
+        "mean_bg": X_bg.mean(axis=0).astype(np.float64),
+        "pct_fg": (X_fg > 0).mean(axis=0).astype(np.float64),
+        "pct_bg": (X_bg > 0).mean(axis=0).astype(np.float64),
+    }
