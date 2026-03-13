@@ -12,7 +12,6 @@ import pandas as pd
 from scipy import sparse
 from scipy.sparse.csgraph import connected_components
 from shapely.geometry import LineString, MultiLineString
-from shapely.ops import unary_union
 
 from spatioloji_s.spatial._interface_types import InterfaceResult
 

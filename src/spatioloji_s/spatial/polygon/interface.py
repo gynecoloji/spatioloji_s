@@ -544,7 +544,7 @@ def _density_method(
 
     # Build segments
     seg_rows = []
-    for idx, line in enumerate(contour_lines):
+    for _idx, line in enumerate(contour_lines):
         # Count interface cells near this specific contour line
         n_ca, n_cb = 0, 0
         for i, cid in enumerate(cell_ids):

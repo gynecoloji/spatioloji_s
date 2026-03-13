@@ -61,8 +61,8 @@ class TestInterfaceResult:
         assert len(result.segments) == 1
 
 
-from spatioloji_s.spatial.polygon.graph import build_buffer_graph, build_contact_graph
-from spatioloji_s.spatial.polygon.interface import identify_interface
+from spatioloji_s.spatial.polygon.graph import build_buffer_graph, build_contact_graph  # noqa: E402
+from spatioloji_s.spatial.polygon.interface import identify_interface  # noqa: E402
 
 
 class TestPolygonValidation:
@@ -218,8 +218,8 @@ class TestPolygonDensityMethod:
                                method="density", distance_threshold=30.0)
 
 
-from spatioloji_s.spatial.point.graph import build_knn_graph
-from spatioloji_s.spatial.point.interface import (
+from spatioloji_s.spatial.point.graph import build_knn_graph  # noqa: E402
+from spatioloji_s.spatial.point.interface import (  # noqa: E402
     identify_interface as point_identify_interface,
 )
 
@@ -261,7 +261,7 @@ class TestPointGraphMethod:
                                      method="graph")
 
 
-from spatioloji_s.visualization.polygon_plots import (
+from spatioloji_s.visualization.polygon_plots import (  # noqa: E402
     plot_interface_map,
     plot_interface_metrics,
 )
@@ -338,3 +338,46 @@ class TestPlotInterfaceMetrics:
         fig = plot_interface_metrics(empty, show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
+
+
+class TestIntegration:
+    """End-to-end integration tests."""
+
+    def test_polygon_full_pipeline(self, sp_interface):
+        """Full pipeline: build graph -> identify interface -> plot."""
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB",
+                                    store=True)
+        assert "interface_label" in sp_interface.cell_meta.columns
+        assert result.summary["n_segments"] >= 0
+
+        fig = plot_interface_map(sp_interface, result, show=False)
+        assert isinstance(fig, plt.Figure)
+        plt.close("all")
+
+        if result.summary["n_segments"] > 0:
+            fig2 = plot_interface_metrics(result, metric="length", show=False)
+            assert isinstance(fig2, plt.Figure)
+            plt.close("all")
+
+    def test_point_full_pipeline(self, sp_interface):
+        """Full pipeline with point-based graph."""
+        g = build_knn_graph(sp_interface, k=10)
+        result = point_identify_interface(sp_interface, g,
+                                          group_col="cell_type",
+                                          region_a="TypeA", region_b="TypeB",
+                                          store=True)
+        assert "interface_label" in sp_interface.cell_meta.columns
+        assert isinstance(result, InterfaceResult)
+
+    def test_imports_from_top_level(self):
+        """Verify imports work from package top-level paths."""
+        from spatioloji_s.spatial.point import identify_interface as pi
+        from spatioloji_s.spatial.polygon import InterfaceResult, identify_interface  # noqa: F401
+        from spatioloji_s.visualization import plot_interface_map, plot_interface_metrics
+        assert callable(identify_interface)
+        assert callable(pi)
+        assert callable(plot_interface_map)
+        assert callable(plot_interface_metrics)
