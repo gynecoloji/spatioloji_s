@@ -297,3 +297,72 @@ def sp_deg():
         cell_metadata=cell_meta,
         spatial_coords=spatial,
     )
+
+
+# ===========================================================================
+# Fixture 5: interface-specific object (two spatially separated regions)
+# ===========================================================================
+
+
+@pytest.fixture
+def sp_interface():
+    """100-cell spatioloji with two spatially separated regions and polygons.
+
+    TypeA (cells 0-49):  x_global in [50, 450], scattered in y [0, 1000].
+    TypeB (cells 50-99): x_global in [550, 950], scattered in y [0, 1000].
+    Interface cells: ~10 cells near x=500 on each side (x in [460, 540]).
+    Each cell gets a 4x4 square polygon around its centroid.
+    """
+    np.random.seed(99)
+    n_cells = 100
+    n_genes = 10
+    n_per_region = 50
+
+    expression = np.random.poisson(2.0, (n_cells, n_genes)).astype(float)
+    cell_ids = [f"cell_{i}" for i in range(n_cells)]
+    gene_names = [f"gene_{i}" for i in range(n_genes)]
+
+    # TypeA: x in [50, 450] with a few cells near 490-500
+    # TypeB: x in [550, 950] with a few cells near 500-510
+    x_a = np.concatenate([
+        np.random.uniform(50, 450, n_per_region - 5),
+        np.random.uniform(460, 500, 5),  # interface cells
+    ])
+    x_b = np.concatenate([
+        np.random.uniform(550, 950, n_per_region - 5),
+        np.random.uniform(500, 540, 5),  # interface cells
+    ])
+    x_global = np.concatenate([x_a, x_b])
+    y_global = np.random.uniform(0, 1000, n_cells)
+
+    cell_meta = pd.DataFrame(
+        {"cell_type": ["TypeA"] * n_per_region + ["TypeB"] * n_per_region},
+        index=cell_ids,
+    )
+
+    spatial = {
+        "x_global": x_global,
+        "y_global": y_global,
+        "x_local": x_global,
+        "y_local": y_global,
+    }
+
+    # Build 4x4 square polygons
+    rows = []
+    for cid, cx, cy in zip(cell_ids, x_global, y_global, strict=True):
+        for vx, vy in [
+            (cx - 2, cy - 2), (cx + 2, cy - 2),
+            (cx + 2, cy + 2), (cx - 2, cy + 2),
+            (cx - 2, cy - 2),
+        ]:
+            rows.append({"cell": cid, "x_global_px": vx, "y_global_px": vy})
+    polygons = pd.DataFrame(rows)
+
+    return spatioloji(
+        expression=expression,
+        cell_ids=cell_ids,
+        gene_names=gene_names,
+        cell_metadata=cell_meta,
+        spatial_coords=spatial,
+        polygons=polygons,
+    )
