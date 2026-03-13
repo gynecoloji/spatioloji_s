@@ -84,6 +84,10 @@ from .patterns import (
     spatial_autocorrelation,
 )
 
+# Interface
+from .interface import identify_interface
+from .._interface_types import InterfaceResult
+
 # Statistics
 from .statistics import (
     boundary_enrichment_test,
@@ -118,6 +122,9 @@ __all__ = [
     "hotspot_detection",
     "spatial_autocorrelation",
     "colocalization",
+    # Interface
+    "identify_interface",
+    "InterfaceResult",
     # Statistics
     "contact_permutation_test",
     "morphology_association_test",
