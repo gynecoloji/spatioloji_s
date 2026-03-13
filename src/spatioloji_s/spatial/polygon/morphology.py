@@ -13,12 +13,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
 
+from concurrent.futures import ProcessPoolExecutor
 import numba as nb
 import numpy as np
+import os
 import pandas as pd
 from scipy import stats
 from shapely.geometry import Polygon
 from statsmodels.stats.multitest import multipletests
+
 
 from .graph import _get_gdf
 
@@ -549,33 +552,65 @@ def morphology_by_group(
     }
 
 
+def _correlation_worker(gene_chunk, morph_mat_processed, n_cells, gene_names_chunk, method):
+    """
+    Worker function handles ranking (if Spearman) and correlation.
+    """
+    # 1. Ranking (The heavy lifter for Spearman)
+    if method == "spearman":
+        # Process each gene column in the chunk
+        gene_chunk = stats.rankdata(gene_chunk, axis=0).astype(np.float32)
+    else:
+        gene_chunk = gene_chunk.astype(np.float32)
+
+    # 2. Standardize Gene Chunk
+    gene_chunk -= np.mean(gene_chunk, axis=0)
+    g_std = np.std(gene_chunk, axis=0, ddof=1)
+    g_std[g_std == 0] = 1.0  # Avoid division by zero for constant genes
+    gene_chunk /= g_std
+
+    # 3. Correlation (Dot Product)
+    corr_chunk = np.dot(morph_mat_processed.T, gene_chunk) / (n_cells - 1)
+
+    # 4. P-value calculation
+    df_val = n_cells - 2
+    corr_clipped = np.clip(corr_chunk, -0.999999, 0.999999)
+    t_stat = corr_clipped * np.sqrt(df_val / (1 - corr_clipped**2))
+    p_chunk = 2 * stats.t.sf(np.abs(t_stat), df_val)
+
+    return corr_chunk, p_chunk, gene_names_chunk
+
 def morphology_gene_correlation(
     sp,
-    morph_metrics: list[str] | None = None,
-    genes: list[str] | None = None,
-    layer: str | None = None,
-    method: str = "spearman",
-    min_cells: int = 50,
-    adjust_p: bool = True,
-) -> pd.DataFrame:
-    
-    # --- Morphology Extraction ---
+    morph_metrics=None,
+    genes=None,
+    layer=None,
+    method="spearman",
+    n_workers=None,
+    chunk_size=1000  # Smaller chunks often better for parallel overhead
+):
+    if n_workers is None:
+        n_workers = os.cpu_count()
+
+    # --- Pre-processing Morphology (Main Process) ---
     morph_cols = [c for c in sp.cell_meta.columns if c.startswith("morph_")]
-    if morph_metrics is not None:
+    if morph_metrics:
         morph_cols = [f"morph_{m}" for m in morph_metrics]
-
-    morph_df = sp.cell_meta[morph_cols]
-    morph_names = [c.replace("morph_", "") for c in morph_cols]
-
-    # Drop rows with any NaN in morph
-    valid_cells = morph_df.notna().all(axis=1)
-    morph_mat = morph_df.loc[valid_cells].values
+    
+    valid_cells = sp.cell_meta[morph_cols].notna().all(axis=1).values
+    morph_mat = sp.cell_meta.loc[valid_cells, morph_cols].values.astype(np.float32)
     n_cells = morph_mat.shape[0]
 
-    if n_cells < min_cells:
-        raise ValueError(f"Only {n_cells} cells found. Need {min_cells}.")
+    # Process morphology once so workers don't repeat this
+    if method == "spearman":
+        morph_mat = stats.rankdata(morph_mat, axis=0).astype(np.float32)
+    
+    morph_mat -= np.mean(morph_mat, axis=0)
+    m_std = np.std(morph_mat, axis=0, ddof=1)
+    m_std[m_std == 0] = 1.0
+    morph_mat /= m_std
 
-    # --- Expression Extraction ---
+    # --- Prepare Gene Data ---
     X = sp.layers[layer] if layer else sp.X
     gene_names = np.array(sp.gene_index)
     
@@ -584,54 +619,52 @@ def morphology_gene_correlation(
         X = X[:, gene_mask]
         gene_names = gene_names[gene_mask]
 
-    # Convert to dense only after filtering cells/genes to save RAM
-    if hasattr(X, "toarray"):
-        X = X[valid_cells.values, :].toarray()
-    else:
-        X = X[valid_cells.values, :]
+    # Slice cells (keep sparse if possible until chunking)
+    X = X[valid_cells, :]
 
-    # Filter genes with zero variance or low expression
-    gene_var_mask = (np.nanstd(X, axis=0) > 0) & (np.sum(~np.isnan(X), axis=0) >= min_cells)
-    X = X[:, gene_var_mask]
-    gene_names = gene_names[gene_var_mask]
+    # --- Parallel Dispatch ---
+    n_genes = X.shape[1]
+    tasks = []
     
-    n_genes = len(gene_names)
-    print(f"[Morphology] Correlating {len(morph_cols)} metrics with {n_genes} genes across {n_cells} cells")
-
-    # --- Correlation Logic ---
-    if method == "spearman":
-        X = stats.rankdata(X, axis=0)
-        morph_mat = stats.rankdata(morph_mat, axis=0)
-
-    # Standardize (Z-score)
-    X_z = (X - np.mean(X, axis=0)) / np.std(X, axis=0, ddof=1)
-    m_z = (morph_mat - np.mean(morph_mat, axis=0)) / np.std(morph_mat, axis=0, ddof=1)
-
-    # Calculate Correlation Matrix
-    corr_mat = np.dot(m_z.T, X_z) / (n_cells - 1)
-
-    # --- P-value Calculation ---
-    df_val = n_cells - 2
-    # Clip corr_mat to avoid precision issues resulting in values > 1.0 or < -1.0
-    corr_clipped = np.clip(corr_mat, -0.999999, 0.999999)
-    t_stat = corr_clipped * np.sqrt(df_val / (1 - corr_clipped**2))
-    p_mat = 2 * stats.t.sf(np.abs(t_stat), df_val)
-
-    # --- Fast Flattening (The Pandas Way) ---
-    res_df = pd.DataFrame(
-        corr_mat, 
-        index=morph_names, 
-        columns=gene_names
-    ).stack().reset_index()
+    print(f"[Morphology] Parallel {method} correlation: {n_genes} genes, {n_cells} cells")
     
-    res_df.columns = ["metric", "gene", "correlation"]
-    res_df["p_value"] = p_mat.flatten()
-    res_df["n_cells"] = n_cells
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = []
+        for i in range(0, n_genes, chunk_size):
+            # Densify only the chunk to keep memory usage low
+            g_chunk = X[:, i : i + chunk_size]
+            if hasattr(g_chunk, "toarray"):
+                g_chunk = g_chunk.toarray()
+                
+            n_chunk = gene_names[i : i + chunk_size]
+            
+            futures.append(
+                executor.submit(_correlation_worker, g_chunk, morph_mat, n_cells, n_chunk, method)
+            )
 
-    # --- Post-processing ---
-    if adjust_p and not res_df.empty:
-        res_df["p_adj"] = multipletests(res_df["p_value"], method="fdr_bh")[1]
-        res_df["significant"] = res_df["p_adj"] < 0.05
+        all_corrs, all_ps, all_genes = [], [], []
+        for f in futures:
+            c, p, g = f.result()
+            all_corrs.append(c)
+            all_ps.append(p)
+            all_genes.append(g)
+
+    # --- Fast Recombine ---
+    full_corr = np.hstack(all_corrs)
+    full_p = np.hstack(all_ps)
+    full_gene_names = np.concatenate(all_genes)
+    morph_names = [m.replace("morph_", "") for m in morph_cols]
+
+    res_df = pd.DataFrame({
+        "metric": np.repeat(morph_names, full_corr.shape[1]),
+        "gene": np.tile(full_gene_names, full_corr.shape[0]),
+        "correlation": full_corr.ravel(),
+        "p_value": full_p.ravel(),
+        "n_cells": n_cells
+    })
+
+    res_df["p_adj"] = multipletests(res_df["p_value"], method="fdr_bh")[1]
+    res_df["significant"] = res_df["p_adj"] < 0.05
     
     return res_df.sort_values("p_value")
 
