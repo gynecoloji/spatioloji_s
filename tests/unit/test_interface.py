@@ -156,3 +156,60 @@ class TestPolygonGraphMethod:
         assert isinstance(result, InterfaceResult)
         assert isinstance(result.summary, dict)
         assert "n_segments" in result.summary
+
+
+class TestPolygonDensityMethod:
+    """Tests for the density-based interface identification."""
+
+    def test_density_returns_interface_result(self, sp_interface):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB",
+                                    method="density")
+        assert isinstance(result, InterfaceResult)
+        assert result.method == "density"
+
+    def test_density_without_graph_explicit_threshold(self, sp_interface):
+        result = identify_interface(sp_interface, graph=None,
+                                    group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB",
+                                    method="density",
+                                    distance_threshold=30.0)
+        assert isinstance(result, InterfaceResult)
+
+    def test_density_cell_labels_valid(self, sp_interface):
+        result = identify_interface(sp_interface, graph=None,
+                                    group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB",
+                                    method="density",
+                                    distance_threshold=30.0)
+        valid = {"region_a_interface", "region_b_interface",
+                 "interior_a", "interior_b", "other"}
+        assert set(result.cell_labels.unique()).issubset(valid)
+
+    def test_density_contour_is_geometry(self, sp_interface):
+        result = identify_interface(sp_interface, graph=None,
+                                    group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB",
+                                    method="density",
+                                    distance_threshold=30.0)
+        if result.contour is not None:
+            assert result.contour.geom_type in ("MultiLineString", "LineString")
+
+    def test_density_scikit_image_missing_raises(self, sp_interface, monkeypatch):
+        """Should raise ImportError if scikit-image not installed."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "skimage" or name.startswith("skimage."):
+                raise ImportError("mocked")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        with pytest.raises(ImportError, match="scikit-image"):
+            identify_interface(sp_interface, graph=None,
+                               group_col="cell_type",
+                               region_a="TypeA", region_b="TypeB",
+                               method="density", distance_threshold=30.0)

@@ -429,5 +429,168 @@ def _density_method(
     sp, graph, group_col, a_list, b_list, min_interface_cells,
     bandwidth, distance_threshold, coord_type,
 ) -> InterfaceResult:
-    """KDE density-based interface identification. Placeholder for Task 5."""
-    raise NotImplementedError("Density method not yet implemented")
+    """KDE density-based interface identification.
+
+    Args:
+        sp: spatioloji object.
+        graph: Optional PolygonSpatialGraph for distance_threshold estimation.
+        group_col: Column in cell_meta.
+        a_list: Region A labels.
+        b_list: Region B labels.
+        min_interface_cells: Min cells per segment side.
+        bandwidth: KDE bandwidth or None.
+        distance_threshold: Max distance from contour or None.
+        coord_type: "global" or "local".
+
+    Returns:
+        InterfaceResult.
+    """
+    try:
+        from skimage.measure import find_contours
+    except ImportError as err:
+        raise ImportError(
+            "Density method requires scikit-image. "
+            "Install with: pip install scikit-image"
+        ) from err
+
+    from scipy.stats import gaussian_kde
+
+    labels = sp.cell_meta[group_col]
+
+    # Get coordinates
+    if coord_type == "global":
+        x_all = np.asarray(sp.spatial.x_global)
+        y_all = np.asarray(sp.spatial.y_global)
+    else:
+        x_all = np.asarray(sp.spatial.x_local)
+        y_all = np.asarray(sp.spatial.y_local)
+
+    cell_ids = np.asarray(sp.cell_index)
+    mask_a = labels.isin(a_list).values
+    mask_b = labels.isin(b_list).values
+
+    # Auto-estimate distance_threshold
+    if distance_threshold is None and graph is not None:
+        dists = graph.distances.tocoo()
+        nonzero = dists.data[dists.data > 0]
+        distance_threshold = float(np.median(nonzero)) if len(nonzero) > 0 else 50.0
+        print(f"  Auto distance_threshold={distance_threshold:.1f}")
+
+    # Fit KDE for each region
+    pts_a = np.vstack([x_all[mask_a], y_all[mask_a]])
+    pts_b = np.vstack([x_all[mask_b], y_all[mask_b]])
+
+    bw = bandwidth if bandwidth is not None else "scott"
+
+    try:
+        kde_a = gaussian_kde(pts_a, bw_method=bw)
+        kde_b = gaussian_kde(pts_b, bw_method=bw)
+    except Exception:
+        warnings.warn("KDE fitting failed.", UserWarning, stacklevel=3)
+        return _empty_result(sp, a_list, b_list, group_col, "density")
+
+    # Evaluate on grid
+    x_min, x_max = x_all.min(), x_all.max()
+    y_min, y_max = y_all.min(), y_all.max()
+    pad = max(x_max - x_min, y_max - y_min) * 0.05
+    grid_res = 200
+    xi = np.linspace(x_min - pad, x_max + pad, grid_res)
+    yi = np.linspace(y_min - pad, y_max + pad, grid_res)
+    xx, yy = np.meshgrid(xi, yi)
+    grid_pts = np.vstack([xx.ravel(), yy.ravel()])
+
+    za = kde_a(grid_pts).reshape(grid_res, grid_res)
+    zb = kde_b(grid_pts).reshape(grid_res, grid_res)
+    diff = za - zb
+
+    # Extract zero-contour
+    raw_contours = find_contours(diff, level=0.0)
+
+    if not raw_contours:
+        warnings.warn("No density boundary found.", UserWarning, stacklevel=3)
+        return _empty_result(sp, a_list, b_list, group_col, "density")
+
+    # Convert pixel coords back to spatial coords
+    contour_lines = []
+    for c in raw_contours:
+        # c is (n_pts, 2) in (row, col) pixel space
+        spatial_x = xi[0] + c[:, 1] * (xi[-1] - xi[0]) / (grid_res - 1)
+        spatial_y = yi[0] + c[:, 0] * (yi[-1] - yi[0]) / (grid_res - 1)
+        if len(c) >= 2:
+            contour_lines.append(LineString(np.column_stack([spatial_x, spatial_y])))
+
+    if not contour_lines:
+        return _empty_result(sp, a_list, b_list, group_col, "density")
+
+    # Label cells by distance to nearest contour
+    from shapely.geometry import Point
+
+    cell_labels = pd.Series("other", index=sp.cell_index)
+    cell_labels[labels.isin(a_list)] = "interior_a"
+    cell_labels[labels.isin(b_list)] = "interior_b"
+
+    contour_union = unary_union(contour_lines)
+
+    for i, cid in enumerate(cell_ids):
+        if not (mask_a[i] or mask_b[i]):
+            continue
+        pt = Point(x_all[i], y_all[i])
+        dist = contour_union.distance(pt)
+        if dist <= distance_threshold:
+            if mask_a[i]:
+                cell_labels.loc[cid] = "region_a_interface"
+            elif mask_b[i]:
+                cell_labels.loc[cid] = "region_b_interface"
+
+    # Build segments
+    seg_rows = []
+    for idx, line in enumerate(contour_lines):
+        # Count interface cells near this specific contour line
+        n_ca, n_cb = 0, 0
+        for i, cid in enumerate(cell_ids):
+            if cell_labels.loc[cid] not in ("region_a_interface", "region_b_interface"):
+                continue
+            pt = Point(x_all[i], y_all[i])
+            if line.distance(pt) <= distance_threshold:
+                if mask_a[i]:
+                    n_ca += 1
+                elif mask_b[i]:
+                    n_cb += 1
+
+        if n_ca < min_interface_cells or n_cb < min_interface_cells:
+            continue
+
+        seg_rows.append({
+            "segment_id": len(seg_rows),
+            "geometry": line,
+            "length": line.length,
+            "tortuosity": _compute_tortuosity(line),
+            "n_cells_a": n_ca,
+            "n_cells_b": n_cb,
+        })
+
+    if not seg_rows:
+        warnings.warn("All density segments dropped by min_interface_cells.",
+                      UserWarning, stacklevel=3)
+        return _empty_result(sp, a_list, b_list, group_col, "density")
+
+    segments = gpd.GeoDataFrame(seg_rows, geometry="geometry")
+
+    all_geoms = [row.geometry for _, row in segments.iterrows()]
+    contour = MultiLineString(all_geoms) if all_geoms else None
+
+    summary = {
+        "total_length": float(segments["length"].sum()),
+        "n_segments": len(segments),
+        "mean_tortuosity": float(segments["tortuosity"].replace(np.inf, np.nan).mean()),
+        "n_interface_a": int((cell_labels == "region_a_interface").sum()),
+        "n_interface_b": int((cell_labels == "region_b_interface").sum()),
+    }
+
+    return InterfaceResult(
+        cell_labels=cell_labels, contour=contour, segments=segments,
+        summary=summary,
+        region_a=a_list if len(a_list) > 1 else a_list[0],
+        region_b=b_list if len(b_list) > 1 else b_list[0],
+        method="density",
+    )
