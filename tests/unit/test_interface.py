@@ -56,3 +56,103 @@ class TestInterfaceResult:
         )
         assert isinstance(result.contour, MultiLineString)
         assert len(result.segments) == 1
+
+
+from spatioloji_s.spatial.polygon.interface import identify_interface
+from spatioloji_s.spatial.polygon.graph import build_buffer_graph, build_contact_graph
+
+
+class TestPolygonValidation:
+    """Tests for input validation in polygon identify_interface."""
+
+    def test_invalid_group_col_raises(self, sp_interface):
+        g = build_contact_graph(sp_interface)
+        with pytest.raises(ValueError, match="not found in cell_meta"):
+            identify_interface(sp_interface, g, group_col="nonexistent",
+                               region_a="TypeA", region_b="TypeB")
+
+    def test_invalid_region_label_raises(self, sp_interface):
+        g = build_contact_graph(sp_interface)
+        with pytest.raises(ValueError, match="not found"):
+            identify_interface(sp_interface, g, group_col="cell_type",
+                               region_a="Tumor", region_b="TypeB")
+
+    def test_overlapping_regions_raises(self, sp_interface):
+        g = build_contact_graph(sp_interface)
+        with pytest.raises(ValueError, match="overlap"):
+            identify_interface(sp_interface, g, group_col="cell_type",
+                               region_a=["TypeA", "TypeB"], region_b="TypeA")
+
+    def test_graph_required_for_graph_method(self, sp_interface):
+        with pytest.raises(ValueError, match="graph.*required"):
+            identify_interface(sp_interface, graph=None, group_col="cell_type",
+                               region_a="TypeA", region_b="TypeB", method="graph")
+
+    def test_density_without_graph_needs_threshold(self, sp_interface):
+        with pytest.raises(ValueError, match="distance_threshold"):
+            identify_interface(sp_interface, graph=None, group_col="cell_type",
+                               region_a="TypeA", region_b="TypeB", method="density")
+
+
+class TestPolygonGraphMethod:
+    """Tests for the graph-based interface identification (polygon)."""
+
+    def test_returns_interface_result(self, sp_interface):
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        assert isinstance(result, InterfaceResult)
+        assert result.method == "graph"
+
+    def test_cell_labels_values(self, sp_interface):
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        valid = {"region_a_interface", "region_b_interface",
+                 "interior_a", "interior_b", "other"}
+        assert set(result.cell_labels.unique()).issubset(valid)
+
+    def test_cell_labels_index_matches_cells(self, sp_interface):
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        assert len(result.cell_labels) == len(sp_interface.cell_index)
+
+    def test_interface_cells_detected(self, sp_interface):
+        """With buffer_distance=50, cells near x=500 should be interface."""
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        n_a = (result.cell_labels == "region_a_interface").sum()
+        n_b = (result.cell_labels == "region_b_interface").sum()
+        assert n_a > 0, "Should detect TypeA interface cells"
+        assert n_b > 0, "Should detect TypeB interface cells"
+
+    def test_store_writes_to_cell_meta(self, sp_interface):
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        identify_interface(sp_interface, g, group_col="cell_type",
+                           region_a="TypeA", region_b="TypeB", store=True)
+        assert "interface_label" in sp_interface.cell_meta.columns
+
+    def test_store_false_no_modification(self, sp_interface):
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        identify_interface(sp_interface, g, group_col="cell_type",
+                           region_a="TypeA", region_b="TypeB", store=False)
+        assert "interface_label" not in sp_interface.cell_meta.columns
+
+    def test_list_region_labels(self, sp_interface):
+        """region_a as a list should work."""
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a=["TypeA"], region_b="TypeB")
+        assert isinstance(result, InterfaceResult)
+
+    def test_no_interface_returns_empty(self, sp_interface):
+        """With no buffer (contact only), far-apart cells have no interface."""
+        g = build_contact_graph(sp_interface)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB",
+                                    min_interface_cells=1)
+        assert isinstance(result, InterfaceResult)
+        assert isinstance(result.summary, dict)
+        assert "n_segments" in result.summary
