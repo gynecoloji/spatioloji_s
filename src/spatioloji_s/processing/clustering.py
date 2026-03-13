@@ -8,13 +8,13 @@ including spatial-aware clustering methods.
 import warnings
 from typing import Literal
 
+import igraph as ig
 import numpy as np
 import pandas as pd
 from scipy import sparse
 from sklearn.cluster import DBSCAN, AgglomerativeClustering, KMeans
 from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
-import igraph as ig
 
 
 def _compute_umap_connectivities(
@@ -46,25 +46,36 @@ def _compute_umap_connectivities(
     # ρ_i — distance to the 1st nearest neighbour (shifts the origin)
     rho = knn_distances[:, 0].astype(np.float64)
 
-    # Binary search for σ_i: Σ_j exp(−max(d_ij − ρ_i, 0) / σ_i) = log₂(k)
-    sigma = np.ones(n_cells, dtype=np.float64)
-    for i in range(n_cells):
-        shifted = np.maximum(knn_distances[i].astype(np.float64) - rho[i], 0.0)
-        lo, hi, mid = 0.0, np.inf, 1.0
-        for _ in range(64):
-            psum = float(np.sum(np.exp(-shifted / mid)))
-            if abs(psum - target) < 1e-5:
-                break
-            if psum > target:
-                hi = mid
-                mid = (lo + mid) / 2.0
-            else:
-                lo = mid
-                mid = (mid * 2.0) if np.isinf(hi) else ((lo + hi) / 2.0)
-        sigma[i] = max(mid, 1e-8)
-
-    # Vectorised directed weight matrix A: w_ij = exp(−max(d_ij−ρ_i,0) / σ_i)
+    # Vectorised binary search for σ across ALL cells simultaneously.
+    # For each cell i, find σ_i such that Σ_j exp(−shifted_ij / σ_i) = target.
     shifted_all = np.maximum(knn_distances.astype(np.float64) - rho[:, np.newaxis], 0.0)
+
+    lo = np.zeros(n_cells, dtype=np.float64)
+    hi = np.full(n_cells, np.inf, dtype=np.float64)
+    mid = np.ones(n_cells, dtype=np.float64)
+
+    for _ in range(64):
+        # psum[i] = Σ_j exp(−shifted_all[i,j] / mid[i])
+        psum = np.exp(-shifted_all / mid[:, np.newaxis]).sum(axis=1)
+        converged = np.abs(psum - target) < 1e-5
+        if converged.all():
+            break
+        too_high = psum > target
+        too_low = ~too_high & ~converged
+        # too_high: hi = mid, mid = (lo + mid) / 2
+        hi = np.where(too_high, mid, hi)
+        mid_new = np.where(too_high, (lo + mid) / 2.0, mid)
+        # too_low: lo = mid, mid = 2*mid if hi==inf else (lo+hi)/2
+        lo = np.where(too_low, mid, lo)
+        hi_inf = np.isinf(hi)
+        mid_new = np.where(too_low & hi_inf, mid * 2.0, mid_new)
+        mid_new = np.where(too_low & ~hi_inf, (lo + hi) / 2.0, mid_new)
+        mid = mid_new
+
+    sigma = np.maximum(mid, 1e-8)
+
+    # Directed weight matrix A: w_ij = exp(−shifted_ij / σ_i)
+    # shifted_all already computed above during binary search
     weights = np.exp(-shifted_all / sigma[:, np.newaxis]).astype(np.float32)
 
     row_idx = np.repeat(np.arange(n_cells, dtype=np.int32), k)
@@ -121,14 +132,13 @@ def _build_leiden_graph(
         W = W.tocoo()
         # Keep only upper triangle to avoid duplicate undirected edges
         mask = W.row < W.col
-        edges = list(zip(W.row[mask].tolist(), W.col[mask].tolist()))
+        edges = list(zip(W.row[mask].tolist(), W.col[mask].tolist(), strict=True))
         weights = W.data[mask].tolist()
-    else:  # simple
-        edges, weights = [], []
-        for i in range(n_cells):
-            for j, dist in zip(knn_indices[i], knn_distances[i]):
-                edges.append((i, int(j)))
-                weights.append(float(1.0 / (1.0 + dist)))
+    else:  # simple — vectorised edge construction
+        row_ids = np.repeat(np.arange(n_cells), n_neighbors)
+        col_ids = knn_indices.ravel()
+        edges = list(zip(row_ids.tolist(), col_ids.tolist(), strict=True))
+        weights = (1.0 / (1.0 + knn_distances.ravel())).tolist()
 
     g = ig.Graph(n=n_cells, edges=edges, directed=False)
     g.es["weight"] = weights
@@ -1011,6 +1021,7 @@ def leiden_resolution_sweep(
     n_neighbors: int = 15,
     graph_method: Literal["umap", "simple"] = "umap",
     random_state: int = 42,
+    n_jobs: int = 1,
 ) -> pd.DataFrame:
     """
     Sweep Leiden resolution parameter and report stability and quality metrics.
@@ -1035,6 +1046,9 @@ def leiden_resolution_sweep(
             for details.
         random_state: Base random seed (seeds used are random_state, random_state+1, …),
             by default 42.
+        n_jobs: Number of parallel threads for Leiden calls, by default 1.
+            Set to -1 to use all available CPUs. Values > 1 parallelize the
+            ``len(resolutions) × n_runs`` Leiden calls via threads.
 
     Returns:
         pd.DataFrame with columns:
@@ -1055,7 +1069,6 @@ def leiden_resolution_sweep(
         >>> leiden_clustering(sp, resolution=0.6)
     """
     try:
-        import igraph as ig
         import leidenalg
     except ImportError as err:
         raise ImportError(
@@ -1090,28 +1103,54 @@ def leiden_resolution_sweep(
     print(f"  Building {graph_method} connectivity graph...")
     g, _, _ = _build_leiden_graph(X_reduced, n_neighbors, graph_method)
 
-    print(f"\nLeiden resolution sweep ({len(resolutions)} resolutions × {n_runs} runs each, graph={graph_method})")
+    n_total = len(resolutions) * n_runs
+    print(
+        f"\nLeiden resolution sweep "
+        f"({len(resolutions)} resolutions × {n_runs} runs = {n_total} calls, graph={graph_method})"
+    )
     print(f"  {'Resolution':>10}  {'n_clusters':>10}  {'mean_ARI':>9}  {'modularity':>10}")
     print("  " + "-" * 46)
 
+    # --- Run all (resolution, seed) pairs, optionally in parallel ---
+    import os
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor
+
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 1
+
+    def _run_one(res: float, seed: int) -> tuple[float, int, np.ndarray, float]:
+        """Run one Leiden call, return (resolution, seed, membership, modularity)."""
+        partition = leidenalg.find_partition(
+            g,
+            leidenalg.RBConfigurationVertexPartition,
+            weights="weight",
+            resolution_parameter=res,
+            seed=seed,
+        )
+        mem = np.array(partition.membership)
+        mod = g.modularity(mem.tolist())
+        return res, seed, mem, mod
+
+    tasks = [(res, random_state + run) for res in resolutions for run in range(n_runs)]
+
+    if n_jobs > 1:
+        with ThreadPoolExecutor(max_workers=n_jobs) as pool:
+            results_list = list(pool.map(lambda args: _run_one(*args), tasks))
+    else:
+        results_list = [_run_one(*t) for t in tasks]
+
+    # --- Group results by resolution ---
+    grouped = defaultdict(lambda: {"memberships": [], "modularities": []})
+    for res, _seed, mem, mod in results_list:
+        grouped[res]["memberships"].append(mem)
+        grouped[res]["modularities"].append(mod)
+
     rows = []
     for res in resolutions:
-        memberships = []
-        modularities = []
-        n_clusters_list = []
-
-        for run in range(n_runs):
-            partition = leidenalg.find_partition(
-                g,
-                leidenalg.RBConfigurationVertexPartition,
-                weights="weight",
-                resolution_parameter=res,
-                seed=random_state + run,
-            )
-            mem = np.array(partition.membership)
-            memberships.append(mem)
-            n_clusters_list.append(int(mem.max()) + 1)
-            modularities.append(g.modularity(mem.tolist()))
+        memberships = grouped[res]["memberships"]
+        modularities = grouped[res]["modularities"]
+        n_clusters_list = [int(m.max()) + 1 for m in memberships]
 
         # Pairwise ARI across all run pairs
         ari_vals = [
