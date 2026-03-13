@@ -366,3 +366,100 @@ def sp_interface():
         spatial_coords=spatial,
         polygons=polygons,
     )
+
+
+# ===========================================================================
+# Fixture 6: gradient/infiltration-specific object
+# ===========================================================================
+
+
+@pytest.fixture
+def sp_gradient():
+    """200-cell spatioloji with spatial expression gradient + immune cell types.
+
+    Layout:
+    - TypeA (cells 0-99): x_global in [50, 490] (tumor-like region)
+    - TypeB (cells 100-199): x_global in [510, 950] (stroma-like region)
+    - Interface around x=500.
+    - 10 cells per side near boundary (x in [460, 540]).
+
+    Expression:
+    - gene_0: positively correlated with distance from interface (gradient gene)
+    - gene_1: negatively correlated with distance (inverse gradient)
+    - gene_2 to gene_9: random noise (no gradient)
+
+    Cell types (in cell_meta 'immune_type' column):
+    - TypeA cells: 80 'Tumor', 20 'CD8_T' (infiltrating immune cells)
+    - TypeB cells: 60 'Stroma', 30 'CD8_T' (resident), 10 'Macrophage'
+
+    Each cell has a 4x4 square polygon.
+    """
+    np.random.seed(42)
+    n_cells = 200
+    n_genes = 10
+    n_per_region = 100
+
+    # Spatial layout — two regions with interface at x=500
+    x_a = np.concatenate([
+        np.random.uniform(50, 460, n_per_region - 10),
+        np.random.uniform(460, 490, 10),
+    ])
+    x_b = np.concatenate([
+        np.random.uniform(510, 540, 10),
+        np.random.uniform(540, 950, n_per_region - 10),
+    ])
+    x_global = np.concatenate([x_a, x_b])
+    y_global = np.random.uniform(0, 1000, n_cells)
+
+    # Expression with gradient signal
+    expression = np.random.poisson(2.0, (n_cells, n_genes)).astype(float)
+    # gene_0: expression increases with distance from x=500
+    dist_from_interface = np.abs(x_global - 500)
+    expression[:, 0] += (dist_from_interface / 100).astype(float)
+    # gene_1: expression decreases with distance from x=500
+    expression[:, 1] += np.maximum(0, 5 - dist_from_interface / 100).astype(float)
+
+    cell_ids = [f"cell_{i}" for i in range(n_cells)]
+    gene_names = [f"gene_{i}" for i in range(n_genes)]
+
+    # Cell metadata with region and immune type
+    region_labels = ["TypeA"] * n_per_region + ["TypeB"] * n_per_region
+    # Immune types: CD8_T cells in both regions (20 in A = infiltrating, 30 in B = resident)
+    immune_a = ["Tumor"] * 80 + ["CD8_T"] * 20
+    immune_b = ["Stroma"] * 60 + ["CD8_T"] * 30 + ["Macrophage"] * 10
+    immune_labels = immune_a + immune_b
+
+    cell_meta = pd.DataFrame(
+        {
+            "cell_type": region_labels,
+            "immune_type": immune_labels,
+        },
+        index=cell_ids,
+    )
+
+    spatial = {
+        "x_global": x_global,
+        "y_global": y_global,
+        "x_local": x_global,
+        "y_local": y_global,
+    }
+
+    # Build 4x4 square polygons
+    rows = []
+    for cid, cx, cy in zip(cell_ids, x_global, y_global, strict=True):
+        for vx, vy in [
+            (cx - 2, cy - 2), (cx + 2, cy - 2),
+            (cx + 2, cy + 2), (cx - 2, cy + 2),
+            (cx - 2, cy - 2),
+        ]:
+            rows.append({"cell": cid, "x_global_px": vx, "y_global_px": vy})
+    polygons = pd.DataFrame(rows)
+
+    return spatioloji(
+        expression=expression,
+        cell_ids=cell_ids,
+        gene_names=gene_names,
+        cell_metadata=cell_meta,
+        spatial_coords=spatial,
+        polygons=polygons,
+    )
