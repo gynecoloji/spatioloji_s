@@ -212,3 +212,4 @@ __marimo__/
 # AI 
 .claude/
 CLAUDE.md
+.worktrees/
