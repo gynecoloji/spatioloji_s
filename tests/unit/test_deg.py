@@ -491,3 +491,79 @@ class TestNbGlmBackend:
         valid = ~(np.isnan(r1["pval"]) | np.isnan(r4["pval"]))
         if valid.sum() > 0:
             np.testing.assert_allclose(r1["pval"][valid], r4["pval"][valid], rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Pseudobulk / DESeq2 tests
+# ---------------------------------------------------------------------------
+
+from scipy import sparse
+
+
+class TestAggregatePseudobulk:
+    def test_sum_correctness(self, sp_deg):
+        """Pseudobulk sum per replicate must equal manual sum."""
+        from spatioloji_s.processing.DEG import _aggregate_pseudobulk, _build_cell_mask, _get_X
+
+        fg_idx, bg_idx = _build_cell_mask(sp_deg, "cell_type", "TypeA", "rest", None, 10)
+        X = _get_X(sp_deg, None)
+        if sparse.issparse(X):
+            X = X.toarray()
+
+        counts_fg, counts_bg, rep_fg_labels, rep_bg_labels = _aggregate_pseudobulk(
+            X, fg_idx, bg_idx, "replicate", sp_deg.cell_meta
+        )
+
+        # Verify rep1 fg sum manually
+        rep1_mask = sp_deg.cell_meta.iloc[fg_idx]["replicate"].values == "rep1"
+        rep1_rows = fg_idx[rep1_mask]
+        expected = X[rep1_rows, :].sum(axis=0)
+        rep1_idx = list(rep_fg_labels).index("rep1")
+        np.testing.assert_allclose(counts_fg[rep1_idx], expected, rtol=1e-5)
+
+    def test_replicate_count(self, sp_deg):
+        from spatioloji_s.processing.DEG import _aggregate_pseudobulk, _build_cell_mask, _get_X
+
+        fg_idx, bg_idx = _build_cell_mask(sp_deg, "cell_type", "TypeA", "rest", None, 10)
+        X = _get_X(sp_deg, None)
+        if sparse.issparse(X):
+            X = X.toarray()
+        counts_fg, counts_bg, _, _ = _aggregate_pseudobulk(X, fg_idx, bg_idx, "replicate", sp_deg.cell_meta)
+        assert counts_fg.shape[0] == 2  # rep1, rep2
+        assert counts_bg.shape[0] == 2
+
+    def test_min_replicates_fg_raises(self, sp_deg):
+        """fg with < 2 replicates must raise ValueError."""
+        import copy
+
+        from spatioloji_s.processing.DEG import _aggregate_pseudobulk, _build_cell_mask, _get_X
+
+        sp2 = copy.deepcopy(sp_deg)
+        cm = sp2.cell_meta.copy()
+        cm.loc[cm["cell_type"] == "TypeA", "replicate"] = "rep_only_one"
+        sp2._cell_meta = cm
+
+        fg_idx, bg_idx = _build_cell_mask(sp2, "cell_type", "TypeA", "rest", None, 10)
+        X = _get_X(sp2, None)
+        if sparse.issparse(X):
+            X = X.toarray()
+        with pytest.raises(ValueError, match="Foreground has only 1"):
+            _aggregate_pseudobulk(X, fg_idx, bg_idx, "replicate", sp2.cell_meta)
+
+    def test_min_replicates_bg_raises(self, sp_deg):
+        """bg with < 2 replicates must raise ValueError (independent of fg check)."""
+        import copy
+
+        from spatioloji_s.processing.DEG import _aggregate_pseudobulk, _build_cell_mask, _get_X
+
+        sp2 = copy.deepcopy(sp_deg)
+        cm = sp2.cell_meta.copy()
+        cm.loc[cm["cell_type"] == "TypeB", "replicate"] = "bg_only_one"
+        sp2._cell_meta = cm
+
+        fg_idx, bg_idx = _build_cell_mask(sp2, "cell_type", "TypeA", "rest", None, 10)
+        X = _get_X(sp2, None)
+        if sparse.issparse(X):
+            X = X.toarray()
+        with pytest.raises(ValueError, match="Background has only 1"):
+            _aggregate_pseudobulk(X, fg_idx, bg_idx, "replicate", sp2.cell_meta)

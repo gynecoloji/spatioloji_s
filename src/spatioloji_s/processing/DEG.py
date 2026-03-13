@@ -514,6 +514,136 @@ def _nb_glm_backend(
 
 
 # ---------------------------------------------------------------------------
+# Pseudobulk / DESeq2
+# ---------------------------------------------------------------------------
+
+
+def _aggregate_pseudobulk(
+    X: np.ndarray,
+    fg_idx: np.ndarray,
+    bg_idx: np.ndarray,
+    replicate_key: str,
+    cell_meta: pd.DataFrame,
+    min_replicates: int = 2,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Sum raw counts per replicate per group for pseudobulk DESeq2 analysis.
+
+    Args:
+        X: Dense expression matrix, shape (n_cells, n_genes). Must be dense (not sparse).
+        fg_idx: Positional indices of foreground cells.
+        bg_idx: Positional indices of background cells.
+        replicate_key: Column in *cell_meta* identifying replicates.
+        cell_meta: Full cell metadata DataFrame (use ``iloc`` indexing).
+        min_replicates: Minimum unique replicates required per group.
+            Enforced independently for fg and bg.
+
+    Returns:
+        Tuple (counts_fg, counts_bg, rep_fg_labels, rep_bg_labels):
+            - counts_fg: shape (n_rep_fg, n_genes), float64 aggregated counts
+            - counts_bg: shape (n_rep_bg, n_genes), float64 aggregated counts
+            - rep_fg_labels: unique replicate labels for fg
+            - rep_bg_labels: unique replicate labels for bg
+
+    Raises:
+        ValueError: If either group has fewer than *min_replicates* replicates.
+    """
+    rep_fg = cell_meta.iloc[fg_idx][replicate_key].values
+    rep_bg = cell_meta.iloc[bg_idx][replicate_key].values
+
+    unique_rep_fg = np.unique(rep_fg)
+    unique_rep_bg = np.unique(rep_bg)
+
+    if len(unique_rep_fg) < min_replicates:
+        raise ValueError(
+            f"Foreground has only {len(unique_rep_fg)} replicate(s) in '{replicate_key}'; "
+            f"DESeq2 requires >= {min_replicates} per group."
+        )
+    if len(unique_rep_bg) < min_replicates:
+        raise ValueError(
+            f"Background has only {len(unique_rep_bg)} replicate(s) in '{replicate_key}'; "
+            f"DESeq2 requires >= {min_replicates} per group."
+        )
+
+    n_genes = X.shape[1]
+
+    def _aggregate(idx_array: np.ndarray, rep_labels: np.ndarray, unique_reps: np.ndarray):
+        out = np.zeros((len(unique_reps), n_genes), dtype=np.float64)
+        for i, rep in enumerate(unique_reps):
+            mask = rep_labels == rep
+            rows = idx_array[mask]
+            chunk = X[rows, :]
+            out[i] = chunk.sum(axis=0)
+        return out
+
+    counts_fg = _aggregate(fg_idx, rep_fg, unique_rep_fg)
+    counts_bg = _aggregate(bg_idx, rep_bg, unique_rep_bg)
+
+    return counts_fg, counts_bg, unique_rep_fg, unique_rep_bg
+
+
+def _deseq2_backend(
+    counts_fg: np.ndarray,
+    counts_bg: np.ndarray,
+    gene_names: np.ndarray,
+) -> pd.DataFrame:
+    """Run DESeq2 via pydeseq2 on pseudobulk-aggregated count matrices.
+
+    Args:
+        counts_fg: Pseudobulk counts for fg, shape (n_rep_fg, n_genes). Float64.
+        counts_bg: Pseudobulk counts for bg, shape (n_rep_bg, n_genes). Float64.
+        gene_names: Gene name array, shape (n_genes,).
+
+    Returns:
+        pd.DataFrame with the standard DEG output schema. padj comes from
+        pydeseq2's own Benjamini-Hochberg correction (not re-applied externally).
+
+    Raises:
+        ImportError: If pydeseq2 is not installed.
+    """
+    try:
+        from pydeseq2.dds import DeseqDataSet
+        from pydeseq2.ds import DeseqStats
+    except ImportError:
+        raise ImportError("DESeq2 requires pydeseq2. Install with: pip install spatioloji_s[deg]")
+
+    n_fg = counts_fg.shape[0]
+    n_bg = counts_bg.shape[0]
+
+    counts = np.vstack([counts_fg, counts_bg]).round().astype(int)
+    condition = ["fg"] * n_fg + ["bg"] * n_bg
+    sample_df = pd.DataFrame({"condition": condition})
+    counts_df = pd.DataFrame(counts, columns=gene_names)
+
+    dds = DeseqDataSet(counts=counts_df, metadata=sample_df, design_factors="condition")
+    dds.deseq2()
+
+    stat_res = DeseqStats(dds, contrast=["condition", "fg", "bg"])
+    stat_res.summary()
+
+    res = stat_res.results_df.reset_index().rename(columns={"index": "gene"})
+
+    # Merge on gene name to handle pydeseq2's internal gene reordering.
+    gene_df = pd.DataFrame({"gene": gene_names})
+    merged = gene_df.merge(res, on="gene", how="left")
+
+    result_df = pd.DataFrame(
+        {
+            "gene": merged["gene"].values,
+            "log2fc": merged["log2FoldChange"].values.astype(np.float64),
+            "mean_fg": counts_fg.mean(axis=0).astype(np.float64),
+            "mean_bg": counts_bg.mean(axis=0).astype(np.float64),
+            "pct_fg": (counts_fg > 0).mean(axis=0).astype(np.float64),
+            "pct_bg": (counts_bg > 0).mean(axis=0).astype(np.float64),
+            "pval": merged["pvalue"].values.astype(np.float64),
+            "padj": merged["padj"].values.astype(np.float64),
+            "n_fg": n_fg,
+            "n_bg": n_bg,
+        }
+    )
+    return result_df.sort_values("padj", na_position="last").reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
