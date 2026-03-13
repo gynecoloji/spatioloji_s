@@ -213,3 +213,46 @@ class TestPolygonDensityMethod:
                                group_col="cell_type",
                                region_a="TypeA", region_b="TypeB",
                                method="density", distance_threshold=30.0)
+
+
+from spatioloji_s.spatial.point.interface import (
+    identify_interface as point_identify_interface,
+)
+from spatioloji_s.spatial.point.graph import build_knn_graph
+
+
+class TestPointGraphMethod:
+    """Tests for point-based interface identification."""
+
+    def test_returns_interface_result(self, sp_interface):
+        g = build_knn_graph(sp_interface, k=10)
+        result = point_identify_interface(sp_interface, g, group_col="cell_type",
+                                          region_a="TypeA", region_b="TypeB")
+        assert isinstance(result, InterfaceResult)
+
+    def test_cell_labels_valid(self, sp_interface):
+        g = build_knn_graph(sp_interface, k=10)
+        result = point_identify_interface(sp_interface, g, group_col="cell_type",
+                                          region_a="TypeA", region_b="TypeB")
+        valid = {"region_a_interface", "region_b_interface",
+                 "interior_a", "interior_b", "other"}
+        assert set(result.cell_labels.unique()).issubset(valid)
+
+    def test_interface_cells_detected(self, sp_interface):
+        g = build_knn_graph(sp_interface, k=10)
+        result = point_identify_interface(sp_interface, g, group_col="cell_type",
+                                          region_a="TypeA", region_b="TypeB")
+        assert result.summary["n_interface_a"] > 0 or result.summary["n_interface_b"] > 0
+
+    def test_contour_geometry(self, sp_interface):
+        g = build_knn_graph(sp_interface, k=10)
+        result = point_identify_interface(sp_interface, g, group_col="cell_type",
+                                          region_a="TypeA", region_b="TypeB")
+        if result.contour is not None:
+            assert result.contour.geom_type in ("MultiLineString", "LineString")
+
+    def test_validation_same_as_polygon(self, sp_interface):
+        with pytest.raises(ValueError, match="not found in cell_meta"):
+            point_identify_interface(sp_interface, None, group_col="bad",
+                                     region_a="TypeA", region_b="TypeB",
+                                     method="graph")

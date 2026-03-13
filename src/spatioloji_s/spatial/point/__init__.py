@@ -78,6 +78,10 @@ from .statistics import (
     proximity_score,
 )
 
+# Interface
+from .interface import identify_interface
+from .._interface_types import InterfaceResult
+
 __all__ = [
     # Graph
     "PointSpatialGraph",
@@ -106,4 +110,7 @@ __all__ = [
     "cross_type_distances",
     "proximity_score",
     "permutation_test",
+    # Interface
+    "identify_interface",
+    "InterfaceResult",
 ]
