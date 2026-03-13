@@ -65,6 +65,7 @@ from .morphology import (
     classify_morphology,
     compute_morphology,
     morphology_by_group,
+    morphology_gene_correlation,
 )
 
 # Neighborhoods
@@ -101,6 +102,7 @@ __all__ = [
     "compute_morphology",
     "classify_morphology",
     "morphology_by_group",
+    "morphology_gene_correlation",
     # Boundaries
     "contact_length",
     "contact_fraction",

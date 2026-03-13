@@ -13,212 +13,255 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
 
-
+import numba as nb
 import numpy as np
 import pandas as pd
+from scipy import stats
+from shapely.geometry import Polygon
+from statsmodels.stats.multitest import multipletests
 
 from .graph import _get_gdf
 
 
-def _curvature_entropy(geom, n_bins: int = 36) -> float:
+# ============================================================
+# Geometry Extraction
+# ============================================================
+
+def extract_polygon_arrays(gdf):
     """
-    Shannon entropy (bits) of the turning-angle distribution along the boundary.
-
-    At each polygon vertex i, the turning angle is the signed angle between the
-    incoming edge (i-1 → i) and the outgoing edge (i → i+1), computed as:
-        θ_i = arctan2(cross(v_in, v_out), dot(v_in, v_out))
-    Range: (-π, π].
-
-    The angles are binned into n_bins equal-width bins over [-π, π] and the
-    Shannon entropy of the resulting probability distribution is returned:
-        H = -Σ p_k × log2(p_k)   (bits, empty bins excluded)
-
-    Interpretation
-    --------------
-    High H : curvature varies widely → complex, irregular boundary
-             (protrusions, indentations, ruffled membrane)
-    Low H  : curvature is concentrated in a narrow range → smooth uniform
-             boundary (near-circle or smooth convex polygon)
-
-    Parameters
-    ----------
-    geom : shapely Polygon
-    n_bins : int
-        Number of histogram bins over [-π, π]. Default 36 (10° per bin).
-        Should be ≥ 8; for very small polygons (< 10 vertices) the result
-        is less reliable regardless of n_bins.
+    Convert GeoDataFrame polygons into flattened coordinate arrays.
 
     Returns
     -------
-    float
-        Entropy in bits. Returns np.nan for degenerate polygons (< 3 vertices).
+    all_x : np.ndarray
+    all_y : np.ndarray
+    offsets : np.ndarray
+        offsets[i] : start index of polygon i
     """
-    coords = np.array(geom.exterior.coords)
-    if np.allclose(coords[0], coords[-1]):
-        coords = coords[:-1]  # remove closing duplicate
 
-    n = len(coords)
+    xs = []
+    ys = []
+    offsets = [0]
+
+    for geom in gdf.geometry:
+
+        if geom is None or geom.is_empty:
+            offsets.append(offsets[-1])
+            continue
+
+        coords = np.asarray(geom.exterior.coords)
+
+        xs.extend(coords[:, 0])
+        ys.extend(coords[:, 1])
+
+        offsets.append(len(xs))
+
+    return (
+        np.asarray(xs, dtype=np.float64),
+        np.asarray(ys, dtype=np.float64),
+        np.asarray(offsets, dtype=np.int64),
+    )
+
+
+import numpy as np
+import pandas as pd
+import numba as nb
+from shapely.geometry import Polygon
+
+# ============================================================
+# Numba Kernels
+# ============================================================
+
+@nb.njit(parallel=True, fastmath=True)
+def polygon_area_perimeter(all_x, all_y, offsets):
+    n_cells = len(offsets) - 1
+    areas = np.zeros(n_cells)
+    perims = np.zeros(n_cells)
+    for i in nb.prange(n_cells):
+        start, end = offsets[i], offsets[i + 1]
+        if end - start < 3:
+            areas[i] = np.nan
+            perims[i] = np.nan
+            continue
+        area, perim = 0.0, 0.0
+        for j in range(start, end):
+            j_next = start if j + 1 == end else j + 1
+            x1, y1 = all_x[j], all_y[j]
+            x2, y2 = all_x[j_next], all_y[j_next]
+            area += x1 * y2 - x2 * y1
+            dx, dy = x2 - x1, y2 - y1
+            perim += (dx * dx + dy * dy) ** 0.5
+        areas[i] = abs(area) * 0.5
+        perims[i] = perim
+    return areas, perims
+
+@nb.njit(parallel=True, fastmath=True)
+def compute_circularity(areas, perims):
+    n = len(areas)
+    circ = np.full(n, np.nan)
+    for i in nb.prange(n):
+        p = perims[i]
+        if p > 0:
+            circ[i] = 4.0 * np.pi * areas[i] / (p * p)
+    return circ
+
+@nb.njit(fastmath=True)
+def polygon_entropy(x, y):
+    n = len(x)
     if n < 3:
         return np.nan
 
-    # Vectorised turning angles: no Python loop over vertices
-    # v_in[i]  = coords[i] - coords[i-1]  (incoming edge, wraps around)
-    # v_out[i] = coords[(i+1)%n] - coords[i]  (outgoing edge)
-    v_in = coords - np.roll(coords, 1, axis=0)
-    v_out = np.roll(coords, -1, axis=0) - coords
+    angles = np.zeros(n)
+    for i in range(n):
+        i_prev = (i - 1) % n
+        i_next = (i + 1) % n
+        v1x, v1y = x[i] - x[i_prev], y[i] - y[i_prev]
+        v2x, v2y = x[i_next] - x[i], y[i_next] - y[i]
+        dot = v1x * v2x + v1y * v2y
+        n1 = np.sqrt(v1x**2 + v1y**2)
+        n2 = np.sqrt(v2x**2 + v2y**2)
+        if n1 > 0 and n2 > 0:
+            cosang = dot / (n1 * n2)
+            if cosang > 1.0:
+                cosang = 1.0
+            elif cosang < -1.0:
+                cosang = -1.0
+            angles[i] = np.arccos(cosang)
 
-    cross = v_in[:, 0] * v_out[:, 1] - v_in[:, 1] * v_out[:, 0]
-    dot = v_in[:, 0] * v_out[:, 0] + v_in[:, 1] * v_out[:, 1]
-    angles = np.arctan2(cross, dot)  # (n,) in (-π, π]
-
-    # Histogram over [-π, π]
-    counts, _ = np.histogram(angles, bins=n_bins, range=(-np.pi, np.pi))
-    total = counts.sum()
+    hist = np.histogram(angles, bins=16)[0]
+    total = hist.sum()
     if total == 0:
-        return np.nan
+        return 0.0
 
-    probs = counts[counts > 0] / total
-    return float(-np.sum(probs * np.log2(probs)))
+    # Numba-friendly entropy computation
+    entropy = 0.0
+    for h in hist:
+        if h > 0:
+            p = h / total
+            entropy -= p * np.log2(p)
 
+    return entropy
+
+@nb.njit(parallel=True)
+def batch_entropy(all_x, all_y, offsets):
+    n_cells = len(offsets) - 1
+    out = np.full(n_cells, np.nan)
+    for i in nb.prange(n_cells):
+        start, end = offsets[i], offsets[i + 1]
+        if end - start < 3:
+            continue
+        x, y = all_x[start:end], all_y[start:end]
+        out[i] = polygon_entropy(x, y)
+    return out
+
+# ============================================================
+# Main API with Shapely Elongation
+# ============================================================
 
 def compute_morphology(
-    sp: spatioloji, coord_type: str = "global", metrics: list[str] | None = None, store: bool = True
-) -> pd.DataFrame:
+    sp,
+    coord_type="global",
+    metrics=None,
+    store=True,
+):
     """
-    Compute cell shape metrics from polygon geometry.
+    High-performance morphology computation using Numba + Shapely.
 
-    Metrics computed:
-    - area: polygon area
-    - perimeter: polygon perimeter length
-    - circularity: 4π × area / perimeter² (1.0 = perfect circle)
-    - elongation: major_axis / minor_axis of fitted ellipse (1.0 = round)
-    - solidity: area / convex_hull_area (1.0 = no concavities)
-    - compactness: sqrt(4 × area / π) / major_axis
-    - convexity: convex_hull_perimeter / perimeter
-    - contour_entropy: Shannon entropy (bits) of turning-angle distribution
-                       along the boundary. High = complex irregular outline;
-                       low = smooth uniform boundary (e.g. near-circle).
-
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object with polygon data
-    coord_type : str
-        'global' or 'local' coordinates
-    metrics : list of str, optional
-        Specific metrics to compute. If None, compute all.
-    store : bool
-        If True, store results in sp.cell_meta with 'morph_' prefix
-
-    Returns
-    -------
-    pd.DataFrame
-        Shape metrics per cell, indexed by cell_index
-
-    Examples
-    --------
-    >>> from spatioloji_s.spatial.polygon.morphology import compute_morphology
-    >>> morph = compute_morphology(sp)
-    >>> print(morph[['area', 'circularity', 'elongation']].describe())
-    >>>
-    >>> # Access via cell_meta after store=True
-    >>> sp.cell_meta['morph_circularity']
+    Metrics supported:
+        - area
+        - perimeter
+        - circularity
+        - elongation (minimum rotated rectangle)
+        - solidity (convex hull)
+        - compactness (sqrt(4*area/pi)/major_axis)
+        - convexity (convex hull / perimeter)
+        - contour_entropy
     """
 
     all_metrics = [
-        "area",
-        "perimeter",
-        "circularity",
-        "elongation",
-        "solidity",
-        "compactness",
-        "convexity",
-        "contour_entropy",
+        "area", "perimeter", "circularity",
+        "elongation", "solidity", "compactness",
+        "convexity", "contour_entropy",
     ]
 
-    if metrics is not None:
-        invalid = set(metrics) - set(all_metrics)
-        if invalid:
-            raise ValueError(f"Unknown metrics: {invalid}. Available: {all_metrics}")
-        compute = metrics
-    else:
-        compute = all_metrics
-
-    print(f"\n[Morphology] Computing shape metrics ({len(compute)} metrics)...")
+    if metrics is None:
+        metrics = all_metrics
 
     gdf = _get_gdf(sp, coord_type=coord_type)
 
-    # Initialize result arrays
-    n_cells = len(gdf)
-    results = {m: np.full(n_cells, np.nan) for m in compute}
+    print("\n[Morphology] Extracting polygon coordinates...")
+    all_x, all_y, offsets = extract_polygon_arrays(gdf)
 
-    for i, (_cell_id, row) in enumerate(gdf.iterrows()):
-        geom = row.geometry
+    results = {}
 
-        # Skip invalid/missing
-        if geom is None or geom.is_empty or not geom.is_valid:
-            continue
+    # --- Area + Perimeter + Circularity ---
+    if any(m in metrics for m in ["area", "perimeter", "circularity"]):
+        print("[Morphology] Computing area and perimeter...")
+        areas, perims = polygon_area_perimeter(all_x, all_y, offsets)
+        if "area" in metrics:
+            results["area"] = areas
+        if "perimeter" in metrics:
+            results["perimeter"] = perims
+        if "circularity" in metrics:
+            results["circularity"] = compute_circularity(areas, perims)
 
-        poly_area = geom.area
-        poly_perimeter = geom.length
+    # --- Elongation + Solidity + Compactness + Convexity ---
+    if any(m in metrics for m in ["elongation", "solidity", "compactness", "convexity"]):
+        print("[Morphology] Computing elongation, solidity, convexity, compactness (shapely)...")
+        elong, sol, comp, conv = [], [], [], []
 
-        if "area" in compute:
-            results["area"][i] = poly_area
+        for poly, area, perim in zip(gdf.geometry, results.get("area", [None]*len(gdf)), results.get("perimeter", [None]*len(gdf))):
+            if poly is None or poly.is_empty or not poly.is_valid:
+                elong.append(np.nan)
+                sol.append(np.nan)
+                comp.append(np.nan)
+                conv.append(np.nan)
+                continue
 
-        if "perimeter" in compute:
-            results["perimeter"][i] = poly_perimeter
-
-        if "circularity" in compute:
-            if poly_perimeter > 0:
-                results["circularity"][i] = 4.0 * np.pi * poly_area / (poly_perimeter**2)
-
-        # Elongation and compactness need minimum rotated rectangle
-        if any(m in compute for m in ["elongation", "compactness"]):
+            # Elongation via minimum rotated rectangle
             try:
-                mrr = geom.minimum_rotated_rectangle
+                mrr = poly.minimum_rotated_rectangle
                 coords = np.array(mrr.exterior.coords)
-                edge_lengths = np.sqrt(np.sum(np.diff(coords, axis=0) ** 2, axis=1))
+                edge_lengths = np.sqrt(np.sum(np.diff(coords, axis=0)**2, axis=1))
                 major = edge_lengths.max()
                 minor = edge_lengths.min()
-
-                if "elongation" in compute and minor > 0:
-                    results["elongation"][i] = major / minor
-
-                if "compactness" in compute and major > 0:
-                    results["compactness"][i] = np.sqrt(4.0 * poly_area / np.pi) / major
+                elong.append(major / minor if minor > 0 else np.nan)
             except Exception:
-                pass
+                elong.append(np.nan)
 
-        if "solidity" in compute:
-            convex = geom.convex_hull
+            # Solidity & Convexity
+            convex = poly.convex_hull
             convex_area = convex.area
-            if convex_area > 0:
-                results["solidity"][i] = poly_area / convex_area
+            convex_perim = convex.length
+            sol.append(area / convex_area if convex_area > 0 else np.nan)
+            conv.append(convex_perim / perim if perim > 0 else np.nan)
 
-        if "convexity" in compute:
-            convex = geom.convex_hull
-            convex_perimeter = convex.length
-            if poly_perimeter > 0:
-                results["convexity"][i] = convex_perimeter / poly_perimeter
+            # Compactness
+            comp.append(np.sqrt(4*area/np.pi)/major if major > 0 else np.nan)
 
-        if "contour_entropy" in compute:
-            results["contour_entropy"][i] = _curvature_entropy(geom)
+        if "elongation" in metrics:
+            results["elongation"] = np.array(elong)
+        if "solidity" in metrics:
+            results["solidity"] = np.array(sol)
+        if "convexity" in metrics:
+            results["convexity"] = np.array(conv)
+        if "compactness" in metrics:
+            results["compactness"] = np.array(comp)
 
-    # Build DataFrame aligned to cell_index
-    morph_df = pd.DataFrame(results, index=gdf.index)
-    morph_df = morph_df.reindex(sp.cell_index)
+    # --- Contour Entropy ---
+    if "contour_entropy" in metrics:
+        print("[Morphology] Computing contour entropy...")
+        results["contour_entropy"] = batch_entropy(all_x, all_y, offsets)
 
-    # Store in cell_meta
+    # --- Build DataFrame ---
+    morph_df = pd.DataFrame(results, index=gdf.index).reindex(sp.cell_index)
+
     if store:
         for col in morph_df.columns:
             sp.cell_meta[f"morph_{col}"] = morph_df[col].values
-        print("  ✓ Stored in cell_meta with 'morph_' prefix")
-
-    n_valid = morph_df.notna().all(axis=1).sum()
-    print(f"  ✓ Computed {len(compute)} metrics for {n_valid}/{len(sp.cell_index)} cells")
+        print("✓ Stored in sp.cell_meta")
 
     return morph_df
-
 
 def classify_morphology(
     sp: spatioloji,
@@ -355,134 +398,240 @@ def classify_morphology(
 
 
 def morphology_by_group(
-    sp: spatioloji, group_col: str, metrics: list[str] | None = None, test: str = "kruskal"
+    sp: spatioloji,
+    group_col: str,
+    metrics: list[str] | None = None,
+    test: str = "kruskal",
 ) -> dict[str, pd.DataFrame]:
-    """
-    Compare morphology metrics across cell groups.
 
-    For each metric, computes per-group summary statistics and
-    runs a statistical test for differences between groups.
-
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object with morph_ columns in cell_meta
-    group_col : str
-        Column in cell_meta defining groups (e.g., 'cell_type')
-    metrics : list of str, optional
-        Morphology metrics to compare (without 'morph_' prefix).
-        If None, uses all available morph_ columns.
-    test : str
-        Statistical test: 'kruskal' (Kruskal-Wallis) or 'anova' (one-way ANOVA)
-
-    Returns
-    -------
-    dict with two keys:
-        'summary' : pd.DataFrame
-            Per-group mean, median, std for each metric (MultiIndex columns)
-        'tests' : pd.DataFrame
-            Test statistic and p-value for each metric
-
-    Examples
-    --------
-    >>> compute_morphology(sp)
-    >>> results = morphology_by_group(sp, group_col='cell_type')
-    >>> print(results['tests'])
-    >>>
-    >>> # Summary stats per cell type
-    >>> print(results['summary']['circularity'])
-    """
     from scipy import stats as scipy_stats
 
     print(f"\n[Morphology] Comparing metrics by '{group_col}'...")
 
     if group_col not in sp.cell_meta.columns:
-        raise ValueError(f"'{group_col}' not found in cell_meta")
+        raise ValueError(f"{group_col} not found in cell_meta")
 
-    # Find available morphology columns
-    all_morph_cols = [c for c in sp.cell_meta.columns if c.startswith("morph_") and c != "morph_class"]
+    # --------------------------------------------------
+    # Find morphology columns
+    # --------------------------------------------------
+
+    all_morph_cols = [
+        c for c in sp.cell_meta.columns
+        if c.startswith("morph_") and c != "morph_class"
+    ]
 
     if not all_morph_cols:
-        raise ValueError("No morphology metrics found. Run compute_morphology(sp) first.")
+        raise ValueError("No morphology metrics found. Run compute_morphology() first.")
 
-    # Select metrics
-    if metrics is not None:
-        morph_cols = [f"morph_{m}" for m in metrics]
-        missing = [c for c in morph_cols if c not in sp.cell_meta.columns]
-        if missing:
-            raise ValueError(f"Metrics not found in cell_meta: {missing}")
-    else:
+    if metrics is None:
         morph_cols = all_morph_cols
+    else:
+        morph_cols = [f"morph_{m}" for m in metrics]
 
-    # Clean metric names (without prefix) for display
     metric_names = [c.replace("morph_", "") for c in morph_cols]
 
-    groups = sp.cell_meta[group_col].dropna()
+    # --------------------------------------------------
+    # Filter dataframe once
+    # --------------------------------------------------
+
+    df = sp.cell_meta[[group_col] + morph_cols].dropna()
+
+    if df.empty:
+        raise ValueError("No valid rows after dropping NaNs")
+
+    groups = df[group_col]
+
     unique_groups = groups.unique()
-    n_groups = len(unique_groups)
 
-    print(f"  → {n_groups} groups, {len(morph_cols)} metrics")
+    print(f"  → {len(unique_groups)} groups, {len(morph_cols)} metrics")
 
-    # Per-group summary
-    summary_records = []
-    for col, name in zip(morph_cols, metric_names, strict=True):
-        data = sp.cell_meta[[group_col, col]].dropna()
-        grouped = data.groupby(group_col)[col]
+    # --------------------------------------------------
+    # Summary statistics
+    # --------------------------------------------------
 
-        for grp_name, grp_data in grouped:
-            summary_records.append(
-                {
-                    "metric": name,
-                    "group": grp_name,
-                    "n": len(grp_data),
-                    "mean": grp_data.mean(),
-                    "median": grp_data.median(),
-                    "std": grp_data.std(),
-                    "q25": grp_data.quantile(0.25),
-                    "q75": grp_data.quantile(0.75),
-                }
-            )
+    summary = (
+        df.groupby(group_col)[morph_cols]
+        .agg(["count", "mean", "median", "std", "min", "max"])
+    )
 
-    summary_df = pd.DataFrame(summary_records)
+    # rename columns
+    summary.columns = pd.MultiIndex.from_tuples(
+        [(c.replace("morph_", ""), stat) for c, stat in summary.columns]
+    )
 
+    # --------------------------------------------------
     # Statistical tests
+    # --------------------------------------------------
+
+    grouped = df.groupby(group_col)
+
     test_records = []
-    for col, name in zip(morph_cols, metric_names, strict=True):
-        data = sp.cell_meta[[group_col, col]].dropna()
 
-        # Split into groups
-        group_arrays = [grp_data[col].values for _, grp_data in data.groupby(group_col)]
+    for col, name in zip(morph_cols, metric_names):
 
-        # Need at least 2 groups with data
-        group_arrays = [g for g in group_arrays if len(g) > 0]
+        group_arrays = [
+            g[col].values
+            for _, g in grouped
+            if len(g[col].values) > 0
+        ]
 
         if len(group_arrays) < 2:
+
             test_records.append(
-                {"metric": name, "test": test, "statistic": np.nan, "p_value": np.nan, "significant": False}
+                {
+                    "metric": name,
+                    "test": test,
+                    "statistic": np.nan,
+                    "p_value": np.nan,
+                }
             )
             continue
 
         if test == "kruskal":
+
             stat, pval = scipy_stats.kruskal(*group_arrays)
+
         elif test == "anova":
+
             stat, pval = scipy_stats.f_oneway(*group_arrays)
+
         else:
-            raise ValueError(f"Unknown test: '{test}'. Use 'kruskal' or 'anova'.")
+
+            raise ValueError("test must be 'kruskal' or 'anova'")
 
         test_records.append(
-            {"metric": name, "test": test, "statistic": stat, "p_value": pval, "significant": pval < 0.05}
+            {
+                "metric": name,
+                "test": test,
+                "statistic": stat,
+                "p_value": pval,
+            }
         )
 
     tests_df = pd.DataFrame(test_records)
 
-    # Report
-    print(f"\n  Statistical tests ({test}):")
-    for _, row in tests_df.iterrows():
-        sig = (
-            "***"
-            if row["p_value"] < 0.001
-            else ("**" if row["p_value"] < 0.01 else ("*" if row["p_value"] < 0.05 else "ns"))
-        )
-        print(f"    {row['metric']:>15s}: p={row['p_value']:.2e} {sig}")
+    # --------------------------------------------------
+    # Significance labels
+    # --------------------------------------------------
 
-    return {"summary": summary_df, "tests": tests_df}
+    def p_to_star(p):
+
+        if pd.isna(p):
+            return "NA"
+        elif p < 0.001:
+            return "***"
+        elif p < 0.01:
+            return "**"
+        elif p < 0.05:
+            return "*"
+        else:
+            return "ns"
+
+    tests_df["significance"] = tests_df["p_value"].apply(p_to_star)
+
+    # --------------------------------------------------
+    # Report
+    # --------------------------------------------------
+
+    print(f"\n  Statistical tests ({test})")
+
+    for _, row in tests_df.iterrows():
+
+        print(
+            f"    {row['metric']:>15s} "
+            f"p={row['p_value']:.2e} "
+            f"{row['significance']}"
+        )
+
+    return {
+        "summary": summary,
+        "tests": tests_df,
+    }
+
+
+def morphology_gene_correlation(
+    sp,
+    morph_metrics: list[str] | None = None,
+    genes: list[str] | None = None,
+    layer: str | None = None,
+    method: str = "spearman",
+    min_cells: int = 50,
+    adjust_p: bool = True,
+) -> pd.DataFrame:
+    
+    # --- Morphology Extraction ---
+    morph_cols = [c for c in sp.cell_meta.columns if c.startswith("morph_")]
+    if morph_metrics is not None:
+        morph_cols = [f"morph_{m}" for m in morph_metrics]
+
+    morph_df = sp.cell_meta[morph_cols]
+    morph_names = [c.replace("morph_", "") for c in morph_cols]
+
+    # Drop rows with any NaN in morph
+    valid_cells = morph_df.notna().all(axis=1)
+    morph_mat = morph_df.loc[valid_cells].values
+    n_cells = morph_mat.shape[0]
+
+    if n_cells < min_cells:
+        raise ValueError(f"Only {n_cells} cells found. Need {min_cells}.")
+
+    # --- Expression Extraction ---
+    X = sp.layers[layer] if layer else sp.X
+    gene_names = np.array(sp.gene_index)
+    
+    if genes is not None:
+        gene_mask = np.isin(gene_names, genes)
+        X = X[:, gene_mask]
+        gene_names = gene_names[gene_mask]
+
+    # Convert to dense only after filtering cells/genes to save RAM
+    if hasattr(X, "toarray"):
+        X = X[valid_cells.values, :].toarray()
+    else:
+        X = X[valid_cells.values, :]
+
+    # Filter genes with zero variance or low expression
+    gene_var_mask = (np.nanstd(X, axis=0) > 0) & (np.sum(~np.isnan(X), axis=0) >= min_cells)
+    X = X[:, gene_var_mask]
+    gene_names = gene_names[gene_var_mask]
+    
+    n_genes = len(gene_names)
+    print(f"[Morphology] Correlating {len(morph_cols)} metrics with {n_genes} genes across {n_cells} cells")
+
+    # --- Correlation Logic ---
+    if method == "spearman":
+        X = stats.rankdata(X, axis=0)
+        morph_mat = stats.rankdata(morph_mat, axis=0)
+
+    # Standardize (Z-score)
+    X_z = (X - np.mean(X, axis=0)) / np.std(X, axis=0, ddof=1)
+    m_z = (morph_mat - np.mean(morph_mat, axis=0)) / np.std(morph_mat, axis=0, ddof=1)
+
+    # Calculate Correlation Matrix
+    corr_mat = np.dot(m_z.T, X_z) / (n_cells - 1)
+
+    # --- P-value Calculation ---
+    df_val = n_cells - 2
+    # Clip corr_mat to avoid precision issues resulting in values > 1.0 or < -1.0
+    corr_clipped = np.clip(corr_mat, -0.999999, 0.999999)
+    t_stat = corr_clipped * np.sqrt(df_val / (1 - corr_clipped**2))
+    p_mat = 2 * stats.t.sf(np.abs(t_stat), df_val)
+
+    # --- Fast Flattening (The Pandas Way) ---
+    res_df = pd.DataFrame(
+        corr_mat, 
+        index=morph_names, 
+        columns=gene_names
+    ).stack().reset_index()
+    
+    res_df.columns = ["metric", "gene", "correlation"]
+    res_df["p_value"] = p_mat.flatten()
+    res_df["n_cells"] = n_cells
+
+    # --- Post-processing ---
+    if adjust_p and not res_df.empty:
+        res_df["p_adj"] = multipletests(res_df["p_value"], method="fdr_bh")[1]
+        res_df["significant"] = res_df["p_adj"] < 0.05
+    
+    return res_df.sort_values("p_value")
+
