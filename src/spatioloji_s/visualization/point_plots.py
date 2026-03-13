@@ -1334,4 +1334,154 @@ __all__ = [
     "plot_nearest_neighbor_distances",
     "plot_proximity_score",
     "plot_permutation_test",
+    "plot_interface_map",
+    "plot_interface_metrics",
 ]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Interface map (point/scatter mode)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def plot_interface_map(
+    spatioloji_obj,
+    interface_result,
+    coord_type: str = "global",
+    colors: dict | None = None,
+    contour_color: str = "black",
+    contour_width: float = 2.0,
+    point_size: float = 5.0,
+    show_interior: bool = True,
+    ax=None,
+    figsize: tuple[float, float] = (9, 8),
+    title: str | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+):
+    """Scatter plot coloured by interface role with contour overlay.
+
+    Args:
+        spatioloji_obj: A ``spatioloji`` object.
+        interface_result: ``InterfaceResult`` from ``identify_interface()``.
+        coord_type: ``'global'`` or ``'local'``.
+        colors: Dict mapping label -> colour. Defaults provide red/blue.
+        contour_color: Colour of the interface contour line.
+        contour_width: Width of the contour line.
+        point_size: Scatter dot size.
+        show_interior: If ``False``, interior and other cells shown in grey.
+        ax: Optional matplotlib Axes to draw into.
+        figsize: Figure size (ignored if ``ax`` provided).
+        title: Plot title. Auto-generated if ``None``.
+        show: If ``True``, call ``plt.show()``.
+        save_path: File path to save the figure.
+        dpi: Resolution.
+
+    Returns:
+        ``plt.Figure`` or ``None``.
+
+    Example:
+        >>> result = sj.spatial.point.interface.identify_interface(
+        ...     sp, g, "cell_type", "Tumor", "Stromal")
+        >>> sj.visualization.point_plots.plot_interface_map(sp, result)
+    """
+    from matplotlib.patches import Patch
+
+    default_colors = {
+        "region_a_interface": "#e74c3c",
+        "region_b_interface": "#3498db",
+        "interior_a": "#fadbd8",
+        "interior_b": "#d6eaf8",
+        "other": "#e8e8e8",
+    }
+    grey = "#d5d5d5"
+    cmap = {**(default_colors), **(colors or {})}
+
+    if coord_type == "global":
+        x = spatioloji_obj.spatial.x_global
+        y = spatioloji_obj.spatial.y_global
+    else:
+        x = spatioloji_obj.spatial.x_local
+        y = spatioloji_obj.spatial.y_local
+
+    labels = interface_result.cell_labels.reindex(spatioloji_obj.cell_index).fillna("other")
+
+    if show_interior:
+        c = [cmap.get(lbl, grey) for lbl in labels]
+    else:
+        c = [cmap.get(lbl, grey) if lbl.endswith("_interface") else grey for lbl in labels]
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    ax.scatter(x, y, c=c, s=point_size, edgecolors="none", zorder=1)
+
+    # Overlay contour
+    if interface_result.contour is not None:
+        if interface_result.contour.geom_type == "MultiLineString":
+            for line in interface_result.contour.geoms:
+                xs, ys = line.xy
+                ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
+        elif interface_result.contour.geom_type == "LineString":
+            xs, ys = interface_result.contour.xy
+            ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
+
+    ax.set_aspect("equal")
+
+    # Legend
+    legend_items = []
+    for lbl in ["region_a_interface", "region_b_interface",
+                "interior_a", "interior_b", "other"]:
+        n = (labels == lbl).sum()
+        if n > 0:
+            display = lbl.replace("_", " ")
+            legend_items.append(Patch(facecolor=cmap.get(lbl, grey),
+                                      label=f"{display} ({n})"))
+    ax.legend(handles=legend_items, bbox_to_anchor=(1.01, 1), loc="upper left",
+              fontsize=7, frameon=False)
+
+    ra = interface_result.region_a
+    rb = interface_result.region_b
+    ax.set_title(title or f"Interface: {ra} vs {rb} ({interface_result.method})")
+    clean_axes(ax)
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+def plot_interface_metrics(
+    interface_result,
+    metric: str = "length",
+    ax=None,
+    figsize: tuple[float, float] | None = None,
+    title: str | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+):
+    """Horizontal bar chart of per-segment interface metrics (point mode).
+
+    Delegates to ``polygon_plots.plot_interface_metrics``.
+
+    Args:
+        interface_result: ``InterfaceResult`` from ``identify_interface()``.
+        metric: Column to plot: ``'length'``, ``'tortuosity'``,
+            ``'n_cells_a'``, or ``'n_cells_b'``.
+        ax: Optional matplotlib Axes to draw into.
+        figsize: Figure size. Auto-computed if ``None``.
+        title: Plot title.
+        show: If ``True``, call ``plt.show()``.
+        save_path: File path to save the figure.
+        dpi: Resolution.
+
+    Returns:
+        ``plt.Figure`` or ``None``.
+    """
+    from spatioloji_s.visualization.polygon_plots import (
+        plot_interface_metrics as _poly_plot_metrics,
+    )
+    return _poly_plot_metrics(
+        interface_result, metric=metric, ax=ax, figsize=figsize,
+        title=title, show=show, save_path=save_path, dpi=dpi,
+    )

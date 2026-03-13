@@ -78,6 +78,8 @@ from .polygon_plots import (
     plot_contact_summary,
     plot_density_map,
     plot_free_boundary_map,
+    plot_interface_map,
+    plot_interface_metrics,
     plot_morphology_association,
     plot_morphology_class_map,
     plot_morphology_correlation,
@@ -164,4 +166,6 @@ __all__ = [
     "plot_density_map",
     "plot_polygon_hotspot_map",
     "plot_spatial_autocorrelation",
+    "plot_interface_map",
+    "plot_interface_metrics",
 ]

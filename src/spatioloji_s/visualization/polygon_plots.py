@@ -1532,4 +1532,193 @@ __all__ = [
     "plot_boundary_enrichment",
     "plot_spatial_autocorrelation",
     "plot_morphology_association",
+    "plot_interface_map",
+    "plot_interface_metrics",
 ]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Interface map
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def plot_interface_map(
+    spatioloji_obj,
+    interface_result,
+    coord_type: str = "global",
+    colors: dict | None = None,
+    contour_color: str = "black",
+    contour_width: float = 2.0,
+    poly_alpha: float = 0.7,
+    show_interior: bool = True,
+    ax: plt.Axes | None = None,
+    figsize: tuple[float, float] = (9, 8),
+    title: str | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure | None:
+    """Polygon map coloured by interface role with contour overlay.
+
+    Args:
+        spatioloji_obj: A ``spatioloji`` object with polygon data.
+        interface_result: ``InterfaceResult`` from ``identify_interface()``.
+        coord_type: ``'global'`` or ``'local'``.
+        colors: Dict mapping label -> colour. Defaults provide red/blue.
+        contour_color: Colour of the interface contour line.
+        contour_width: Width of the contour line.
+        poly_alpha: Polygon fill opacity.
+        show_interior: If ``False``, interior and other cells shown in grey.
+        ax: Optional matplotlib Axes to draw into.
+        figsize: Figure size (ignored if ``ax`` provided).
+        title: Plot title. Auto-generated if ``None``.
+        show: If ``True``, call ``plt.show()``.
+        save_path: File path to save the figure.
+        dpi: Resolution.
+
+    Returns:
+        ``plt.Figure`` or ``None``.
+
+    Example:
+        >>> result = sj.spatial.polygon.interface.identify_interface(
+        ...     sp, g, "cell_type", "Tumor", "Stromal")
+        >>> sj.visualization.plot_interface_map(sp, result)
+    """
+    from matplotlib.patches import Patch
+
+    default_colors = {
+        "region_a_interface": "#e74c3c",
+        "region_b_interface": "#3498db",
+        "interior_a": "#fadbd8",
+        "interior_b": "#d6eaf8",
+        "other": "#e8e8e8",
+    }
+    grey = "#d5d5d5"
+    cmap = {**(default_colors), **(colors or {})}
+
+    gdf = spatioloji_obj.to_geopandas(coord_type=coord_type, include_metadata=False)
+    labels = interface_result.cell_labels.reindex(gdf.index).fillna("other")
+
+    if show_interior:
+        face_colors = [cmap.get(lbl, grey) for lbl in labels]
+    else:
+        face_colors = [
+            cmap.get(lbl, grey) if lbl.endswith("_interface") else grey
+            for lbl in labels
+        ]
+
+    pc = _build_poly_collection(gdf, face_colors)
+    pc.set_alpha(poly_alpha)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    ax.add_collection(pc)
+
+    # Overlay contour
+    if interface_result.contour is not None:
+        if interface_result.contour.geom_type == "MultiLineString":
+            for line in interface_result.contour.geoms:
+                xs, ys = line.xy
+                ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
+        elif interface_result.contour.geom_type == "LineString":
+            xs, ys = interface_result.contour.xy
+            ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
+
+    ax.autoscale_view()
+    ax.set_aspect("equal")
+
+    # Legend
+    legend_items = []
+    for lbl in ["region_a_interface", "region_b_interface",
+                "interior_a", "interior_b", "other"]:
+        n = (labels == lbl).sum()
+        if n > 0:
+            display = lbl.replace("_", " ")
+            legend_items.append(Patch(facecolor=cmap.get(lbl, grey),
+                                      label=f"{display} ({n})"))
+    ax.legend(handles=legend_items, bbox_to_anchor=(1.01, 1), loc="upper left",
+              fontsize=7, frameon=False)
+
+    ra = interface_result.region_a
+    rb = interface_result.region_b
+    ax.set_title(title or f"Interface: {ra} vs {rb} ({interface_result.method})")
+    clean_axes(ax)
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Interface metrics bar chart
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def plot_interface_metrics(
+    interface_result,
+    metric: str = "length",
+    ax: plt.Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+    title: str | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure | None:
+    """Horizontal bar chart of per-segment interface metrics.
+
+    Args:
+        interface_result: ``InterfaceResult`` from ``identify_interface()``.
+        metric: Column to plot: ``'length'``, ``'tortuosity'``,
+            ``'n_cells_a'``, or ``'n_cells_b'``.
+        ax: Optional matplotlib Axes to draw into.
+        figsize: Figure size. Auto-computed if ``None``.
+        title: Plot title.
+        show: If ``True``, call ``plt.show()``.
+        save_path: File path to save the figure.
+        dpi: Resolution.
+
+    Returns:
+        ``plt.Figure`` or ``None``.
+
+    Example:
+        >>> sj.visualization.plot_interface_metrics(result, metric="length")
+    """
+    segs = interface_result.segments
+
+    if len(segs) == 0:
+        figsize = figsize or (6, 3)
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        ax.text(0.5, 0.5, "No interface segments found",
+                ha="center", va="center", transform=ax.transAxes, fontsize=11)
+        ax.set_title(title or f"Interface segments — {metric}")
+        clean_axes(ax)
+        return finalize_plot(fig, save_path, dpi, show)
+
+    n = len(segs)
+    figsize = figsize or (7, max(3, n * 0.5))
+    vals = segs[metric].values
+    bar_labels = [f"Segment {i}" for i in range(n)]
+
+    from matplotlib.colors import Normalize
+    cm_obj = plt.get_cmap("YlOrRd")
+    v_min, v_max = float(vals.min()), float(vals.max())
+    if v_min == v_max:
+        v_min, v_max = v_min - 0.1, v_max + 0.1
+    norm = Normalize(vmin=v_min, vmax=v_max)
+    bar_colors = [cm_obj(norm(v)) for v in vals]
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    ax.barh(range(n), vals, color=bar_colors, height=0.6)
+    ax.set_yticks(range(n))
+    ax.set_yticklabels(bar_labels, fontsize=8)
+    ax.set_xlabel(metric)
+    ax.set_title(title or f"Interface segments — {metric}")
+    clean_axes(ax)
+    return finalize_plot(fig, save_path, dpi, show)

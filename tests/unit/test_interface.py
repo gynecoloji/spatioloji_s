@@ -1,9 +1,12 @@
 """Tests for interface cell identification."""
 
-import numpy as np
+import matplotlib
 import pandas as pd
 import pytest
 from shapely.geometry import LineString, MultiLineString
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from spatioloji_s.spatial._interface_types import InterfaceResult
 
@@ -58,8 +61,8 @@ class TestInterfaceResult:
         assert len(result.segments) == 1
 
 
-from spatioloji_s.spatial.polygon.interface import identify_interface
 from spatioloji_s.spatial.polygon.graph import build_buffer_graph, build_contact_graph
+from spatioloji_s.spatial.polygon.interface import identify_interface
 
 
 class TestPolygonValidation:
@@ -215,10 +218,10 @@ class TestPolygonDensityMethod:
                                method="density", distance_threshold=30.0)
 
 
+from spatioloji_s.spatial.point.graph import build_knn_graph
 from spatioloji_s.spatial.point.interface import (
     identify_interface as point_identify_interface,
 )
-from spatioloji_s.spatial.point.graph import build_knn_graph
 
 
 class TestPointGraphMethod:
@@ -256,3 +259,82 @@ class TestPointGraphMethod:
             point_identify_interface(sp_interface, None, group_col="bad",
                                      region_a="TypeA", region_b="TypeB",
                                      method="graph")
+
+
+from spatioloji_s.visualization.polygon_plots import (
+    plot_interface_map,
+    plot_interface_metrics,
+)
+
+
+class TestPlotInterfaceMap:
+    """Tests for plot_interface_map."""
+
+    def test_returns_figure(self, sp_interface):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        fig = plot_interface_map(sp_interface, result, show=False)
+        assert isinstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_empty_result_no_error(self, sp_interface):
+        """Should handle empty InterfaceResult without crashing."""
+        import geopandas as gpd
+        empty = InterfaceResult(
+            cell_labels=pd.Series("other", index=sp_interface.cell_index),
+            contour=None,
+            segments=gpd.GeoDataFrame(
+                {"segment_id": pd.Series(dtype=int), "length": pd.Series(dtype=float),
+                 "tortuosity": pd.Series(dtype=float),
+                 "n_cells_a": pd.Series(dtype=int), "n_cells_b": pd.Series(dtype=int)},
+                geometry=[]),
+            summary={"total_length": 0.0, "n_segments": 0, "mean_tortuosity": 0.0,
+                     "n_interface_a": 0, "n_interface_b": 0},
+            region_a="TypeA", region_b="TypeB", method="graph",
+        )
+        fig = plot_interface_map(sp_interface, empty, show=False)
+        assert isinstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_custom_ax(self, sp_interface):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        fig, ax = plt.subplots()
+        plot_interface_map(sp_interface, result, ax=ax, show=False)
+        plt.close("all")
+
+
+class TestPlotInterfaceMetrics:
+    """Tests for plot_interface_metrics."""
+
+    def test_returns_figure(self, sp_interface):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        result = identify_interface(sp_interface, g, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        fig = plot_interface_metrics(result, metric="length", show=False)
+        assert isinstance(fig, plt.Figure)
+        plt.close("all")
+
+    def test_empty_segments(self):
+        """Should handle empty segments without crashing."""
+        import geopandas as gpd
+        empty = InterfaceResult(
+            cell_labels=pd.Series(dtype=str),
+            contour=None,
+            segments=gpd.GeoDataFrame(
+                {"segment_id": pd.Series(dtype=int), "length": pd.Series(dtype=float),
+                 "tortuosity": pd.Series(dtype=float),
+                 "n_cells_a": pd.Series(dtype=int), "n_cells_b": pd.Series(dtype=int)},
+                geometry=[]),
+            summary={"total_length": 0.0, "n_segments": 0, "mean_tortuosity": 0.0,
+                     "n_interface_a": 0, "n_interface_b": 0},
+            region_a="A", region_b="B", method="graph",
+        )
+        fig = plot_interface_metrics(empty, show=False)
+        assert isinstance(fig, plt.Figure)
+        plt.close("all")
