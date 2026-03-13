@@ -277,3 +277,93 @@ class TestTtestBackend:
         r1 = _ttest_backend(X_fg, X_bg, n_jobs=1)
         r4 = _ttest_backend(X_fg, X_bg, n_jobs=4)
         np.testing.assert_array_equal(r1["pval"], r4["pval"])
+
+
+# ---------------------------------------------------------------------------
+# run_deg integration tests (Wilcoxon + t-test paths)
+# ---------------------------------------------------------------------------
+
+
+class TestRunDegCore:
+    def test_returns_dict(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        results = run_deg(sp_deg, "cell_type", "TypeA", methods=["wilcoxon"])
+        assert isinstance(results, dict)
+        assert "wilcoxon" in results
+
+    def test_output_schema(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        results = run_deg(sp_deg, "cell_type", "TypeA", methods=["ttest"])
+        df = results["ttest"]
+        required = {"gene", "log2fc", "mean_fg", "mean_bg", "pct_fg", "pct_bg", "pval", "padj", "n_fg", "n_bg"}
+        assert required.issubset(set(df.columns))
+        assert df.shape[0] == 50  # 50 genes in sp_deg
+
+    def test_sorted_by_padj(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        df = run_deg(sp_deg, "cell_type", "TypeA", methods=["wilcoxon"])["wilcoxon"]
+        non_nan = df["padj"].dropna()
+        assert (non_nan.diff().dropna() >= 0).all()
+
+    def test_both_methods_returned(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        results = run_deg(sp_deg, "cell_type", "TypeA", methods=["wilcoxon", "ttest"])
+        assert "wilcoxon" in results and "ttest" in results
+
+    def test_unknown_method_raises(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        with pytest.raises(ValueError, match="Unknown method"):
+            run_deg(sp_deg, "cell_type", "TypeA", methods=["bad_method"])
+
+    def test_deseq2_without_replicate_key_raises(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        with pytest.raises(ValueError, match="replicate_key"):
+            run_deg(sp_deg, "cell_type", "TypeA", methods=["deseq2"])
+
+    def test_invalid_replicate_key_raises(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        with pytest.raises(ValueError, match="replicate_key"):
+            run_deg(sp_deg, "cell_type", "TypeA", methods=["deseq2"], replicate_key="nonexistent")
+
+    def test_detects_true_deg(self, sp_deg):
+        """Genes 0-24 upregulated in TypeA should be top hits."""
+        from spatioloji_s.processing.DEG import run_deg
+
+        df = run_deg(sp_deg, "cell_type", "TypeA", methods=["wilcoxon"])["wilcoxon"]
+        top_genes = set(df.head(25)["gene"].values)
+        expected = {f"gene_{i}" for i in range(25)}
+        # At least 10 of the top 25 hits should be true positives
+        # (both groups have signal, so some bg genes are also significant)
+        assert len(top_genes & expected) >= 10
+
+    def test_sparse_input(self, sp_deg):
+        """run_deg must work when the expression matrix is sparse."""
+        from spatioloji_s.processing.DEG import run_deg
+
+        # Add a sparse layer
+        X = sp_deg.expression.get_dense()
+        sp_deg.add_layer("sparse_layer", csr_matrix(X), overwrite=True)
+        results = run_deg(sp_deg, "cell_type", "TypeA", methods=["ttest"], layer="sparse_layer")
+        assert "ttest" in results
+
+    def test_one_vs_rest(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        df = run_deg(sp_deg, "cell_type", "TypeA", group_bg="rest", methods=["ttest"])["ttest"]
+        assert df["n_fg"].iloc[0] == 250
+        assert df["n_bg"].iloc[0] == 250
+
+    def test_spatial_filter_reduces_cells(self, sp_deg):
+        from spatioloji_s.processing.DEG import run_deg
+
+        # Only cells in x [0, 800] — reduces bg (TypeB is in x [500, 1000])
+        sf = {"x_range": (0, 800), "y_range": (0, 1000)}
+        df = run_deg(sp_deg, "cell_type", "TypeA", group_bg="TypeB", methods=["ttest"], spatial_filter=sf)["ttest"]
+        assert df["n_bg"].iloc[0] < 250

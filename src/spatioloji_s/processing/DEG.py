@@ -329,3 +329,146 @@ def _ttest_backend(
         "pct_fg": (X_fg > 0).mean(axis=0).astype(np.float64),
         "pct_bg": (X_bg > 0).mean(axis=0).astype(np.float64),
     }
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+_VALID_METHODS = frozenset({"wilcoxon", "ttest", "mast", "nb_glm", "deseq2"})
+
+# Populated incrementally as backends are implemented.
+# Finalized to the full four-method definition after all backends exist.
+_BACKEND_MAP: dict = {
+    "wilcoxon": _wilcoxon_backend,
+    "ttest": _ttest_backend,
+}
+
+
+def run_deg(
+    spatioloji_obj,
+    groupby: str,
+    group_fg: str | list[str],
+    group_bg: str | list[str] = "rest",
+    methods: list[str] | None = None,
+    layer: str | None = None,
+    spatial_filter: dict | None = None,
+    replicate_key: str | None = None,
+    min_cells: int = 10,
+    n_jobs: int = 1,
+    gene_chunk_size: int = 500,
+    correction: str = "fdr_bh",
+) -> dict[str, pd.DataFrame]:
+    """Run differentially expressed gene analysis.
+
+    Args:
+        spatioloji_obj: spatioloji object with expression data.
+        groupby: Column in ``cell_meta`` defining cell groups.
+        group_fg: Foreground group label(s).  Single string or list of strings.
+        group_bg: Background group label(s), or ``"rest"`` for all non-fg cells.
+        methods: Statistical methods to run.  Any subset of
+            ``["wilcoxon", "ttest", "mast", "nb_glm", "deseq2"]``.
+            Default: ``["wilcoxon", "ttest"]``.
+        layer: Expression layer to use.  None uses the main matrix.
+        spatial_filter: Optional dict restricting the cell universe spatially.
+            Keys: ``x_range`` (tuple), ``y_range`` (tuple), or ``polygon``
+            (shapely geometry).
+        replicate_key: Column in ``cell_meta`` identifying pseudobulk replicates.
+            Required when ``"deseq2"`` is in *methods*.
+        min_cells: Minimum cells required in fg and bg after filtering.
+        n_jobs: Worker threads for parallelism (``-1`` = all cores).
+        gene_chunk_size: Genes processed per backend call.
+        correction: Multiple-testing correction method (``'fdr_bh'``,
+            ``'bonferroni'``, or any statsmodels method string).
+
+    Returns:
+        Dict mapping method name -> pd.DataFrame with columns:
+        ``gene``, ``log2fc``, ``mean_fg``, ``mean_bg``, ``pct_fg``, ``pct_bg``,
+        ``pval``, ``padj``, ``n_fg``, ``n_bg``.  Sorted by ``padj`` ascending,
+        NaN last.
+
+    Raises:
+        ValueError: Invalid method names, missing replicate_key, insufficient cells.
+        ImportError: If statsmodels or pydeseq2 not installed for the chosen method.
+
+    Examples:
+        >>> results = run_deg(sp, "leiden", "0", group_bg="rest",
+        ...                    methods=["wilcoxon", "ttest"])
+        >>> results["wilcoxon"].head()
+    """
+    if methods is None:
+        methods = ["wilcoxon", "ttest"]
+
+    invalid = set(methods) - _VALID_METHODS
+    if invalid:
+        raise ValueError(f"Unknown method(s): {invalid}. Valid methods: {sorted(_VALID_METHODS)}")
+
+    if "deseq2" in methods and replicate_key is None:
+        raise ValueError("'deseq2' requires replicate_key to specify pseudobulk replicates.")
+    if replicate_key is not None and replicate_key not in spatioloji_obj.cell_meta.columns:
+        raise ValueError(
+            f"replicate_key '{replicate_key}' not found in cell_meta columns: "
+            f"{list(spatioloji_obj.cell_meta.columns)}"
+        )
+
+    # -- Build cell masks --
+    fg_idx, bg_idx = _build_cell_mask(spatioloji_obj, groupby, group_fg, group_bg, spatial_filter, min_cells)
+    n_fg, n_bg = len(fg_idx), len(bg_idx)
+
+    # -- Get expression matrix and densify fg/bg slices --
+    X = _get_X(spatioloji_obj, layer)
+    gene_names = np.asarray(spatioloji_obj.gene_index)
+    n_genes = len(gene_names)
+
+    if n_genes == 0:
+        return {}
+
+    if sparse.issparse(X):
+        X_fg = X[fg_idx, :].toarray().astype(np.float32)
+        X_bg = X[bg_idx, :].toarray().astype(np.float32)
+    else:
+        X_fg = X[fg_idx, :].astype(np.float32, copy=False)
+        X_bg = X[bg_idx, :].astype(np.float32, copy=False)
+
+    results: dict[str, pd.DataFrame] = {}
+
+    for method in methods:
+        print(f"\nRunning DEG [{method}]: {n_fg} fg vs {n_bg} bg, {n_genes} genes")
+
+        # -- DESeq2 pseudobulk path --
+        if method == "deseq2":
+            counts_fg, counts_bg, _, _ = _aggregate_pseudobulk(
+                X, fg_idx, bg_idx, replicate_key, spatioloji_obj.cell_meta
+            )
+            results["deseq2"] = _deseq2_backend(counts_fg, counts_bg, gene_names)
+            n_sig = int((results["deseq2"]["padj"] < 0.05).sum())
+            print(f"  ✓ deseq2: {n_sig} significant genes (padj < 0.05)")
+            # IMPORTANT: `continue` skips _apply_correction — pydeseq2's own
+            # BH-corrected padj is used verbatim, not recomputed.
+            continue
+
+        # -- Gene-chunked path for Wilcoxon / t-test / MAST / NB-GLM --
+        backend_fn = _BACKEND_MAP[method]
+
+        # MAST needs CDR computed from the full gene set before chunking
+        extra_kwargs: dict = {}
+        if method == "mast":
+            extra_kwargs["cdr_fg"] = (X_fg > 0).mean(axis=1).astype(np.float32)
+            extra_kwargs["cdr_bg"] = (X_bg > 0).mean(axis=1).astype(np.float32)
+
+        chunk_stats: list[dict[str, np.ndarray]] = []
+        for s in range(0, n_genes, gene_chunk_size):
+            e = min(s + gene_chunk_size, n_genes)
+            chunk = backend_fn(X_fg[:, s:e], X_bg[:, s:e], n_jobs=n_jobs, **extra_kwargs)
+            chunk_stats.append(chunk)
+
+        # Concatenate chunks
+        stats = {k: np.concatenate([c[k] for c in chunk_stats]) for k in chunk_stats[0]}
+        padj = _apply_correction(stats["pval"], method=correction)
+        result_df = _build_result_df(gene_names, stats, padj, n_fg, n_bg)
+        results[method] = result_df
+
+        n_sig = int((result_df["padj"] < 0.05).sum())
+        print(f"  ✓ {method}: {n_sig} significant genes (padj < 0.05)")
+
+    return results
