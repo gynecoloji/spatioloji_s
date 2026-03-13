@@ -59,6 +59,11 @@ batch = [
     "statsmodels",
 ]
 
+deg = [
+    "statsmodels",
+    "pydeseq2",
+]
+
 anndata = [
     "anndata",
     "scanpy",
@@ -85,6 +90,7 @@ all = [
     "umap-learn",
     "harmonypy", "combat", "statsmodels",
     "anndata", "scanpy",
+    "pydeseq2",
     "DCA",
     "natsort", "tqdm", "networkx",
 ]
