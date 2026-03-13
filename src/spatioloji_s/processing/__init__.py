@@ -52,6 +52,14 @@ from .imputation import (
     magic_impute,
     scvi_impute,
 )
+from .DEG import (
+    deg_deseq2,
+    deg_mast,
+    deg_nb_glm,
+    deg_ttest,
+    deg_wilcoxon,
+    run_deg,
+)
 from .normalization import (
     log_transform,
     normalize_pearson_residuals,
@@ -103,4 +111,11 @@ __all__ = [
     "alra_impute",
     "scvi_impute",
     "compare_imputation_methods",
+    # DEG
+    "run_deg",
+    "deg_wilcoxon",
+    "deg_ttest",
+    "deg_mast",
+    "deg_nb_glm",
+    "deg_deseq2",
 ]

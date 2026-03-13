@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import sparse
 from scipy.sparse import csr_matrix
 from shapely.geometry import Polygon
 
@@ -11,7 +12,6 @@ from spatioloji_s.processing.DEG import (
     _build_cell_mask,
     _build_result_df,
 )
-
 
 # ---------------------------------------------------------------------------
 # _build_cell_mask tests
@@ -407,6 +407,7 @@ class TestMastBackend:
     def test_statsmodels_missing_raises(self, monkeypatch):
         """If statsmodels is absent, _mast_one_gene must raise ImportError."""
         import sys
+
         from spatioloji_s.processing.DEG import _mast_one_gene
 
         monkeypatch.setitem(sys.modules, "statsmodels", None)
@@ -497,8 +498,6 @@ class TestNbGlmBackend:
 # Pseudobulk / DESeq2 tests
 # ---------------------------------------------------------------------------
 
-from scipy import sparse
-
 
 class TestAggregatePseudobulk:
     def test_sum_correctness(self, sp_deg):
@@ -567,3 +566,36 @@ class TestAggregatePseudobulk:
             X = X.toarray()
         with pytest.raises(ValueError, match="Background has only 1"):
             _aggregate_pseudobulk(X, fg_idx, bg_idx, "replicate", sp2.cell_meta)
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrappers and integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestConvenienceWrappers:
+    def test_deg_wilcoxon(self, sp_deg):
+        from spatioloji_s.processing import deg_wilcoxon
+
+        results = deg_wilcoxon(sp_deg, "cell_type", "TypeA")
+        assert "wilcoxon" in results
+        assert set(results["wilcoxon"].columns) >= {"gene", "padj", "log2fc"}
+
+    def test_deg_ttest(self, sp_deg):
+        from spatioloji_s.processing import deg_ttest
+
+        results = deg_ttest(sp_deg, "cell_type", "TypeA")
+        assert "ttest" in results
+
+    def test_run_deg_importable(self, sp_deg):
+        from spatioloji_s.processing import run_deg
+
+        results = run_deg(sp_deg, "cell_type", "TypeA", methods=["ttest"])
+        assert "ttest" in results
+
+    def test_all_wrappers_importable(self):
+        """All six public functions must be importable from spatioloji_s.processing."""
+        from spatioloji_s import processing
+
+        for name in ("run_deg", "deg_wilcoxon", "deg_ttest", "deg_mast", "deg_nb_glm", "deg_deseq2"):
+            assert hasattr(processing, name), f"{name} not in processing"

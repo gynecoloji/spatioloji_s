@@ -26,7 +26,6 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -99,7 +98,7 @@ def _build_cell_mask(
     missing_fg = [g for g in group_fg if g not in col_values]
     if missing_fg:
         raise ValueError(
-            f"group_fg values {missing_fg} not found in '{groupby}' column. " f"Available: {sorted(col_values)}"
+            f"group_fg values {missing_fg} not found in '{groupby}' column. Available: {sorted(col_values)}"
         )
 
     n_cells = len(cell_meta)
@@ -113,7 +112,7 @@ def _build_cell_mask(
             from shapely.geometry import Point
 
             poly = spatial_filter["polygon"]
-            universe = np.array([poly.contains(Point(float(xi), float(yi))) for xi, yi in zip(x, y)])
+            universe = np.array([poly.contains(Point(float(xi), float(yi))) for xi, yi in zip(x, y, strict=False)])
         elif "x_range" in spatial_filter or "y_range" in spatial_filter:
             if "x_range" in spatial_filter:
                 x0, x1 = spatial_filter["x_range"]
@@ -140,13 +139,11 @@ def _build_cell_mask(
 
     if len(fg_idx) < min_cells:
         raise ValueError(
-            f"Foreground has {len(fg_idx)} cells after filtering; "
-            f"need >= {min_cells} (min_cells={min_cells})"
+            f"Foreground has {len(fg_idx)} cells after filtering; need >= {min_cells} (min_cells={min_cells})"
         )
     if len(bg_idx) < min_cells:
         raise ValueError(
-            f"Background has {len(bg_idx)} cells after filtering; "
-            f"need >= {min_cells} (min_cells={min_cells})"
+            f"Background has {len(bg_idx)} cells after filtering; need >= {min_cells} (min_cells={min_cells})"
         )
 
     return fg_idx, bg_idx
@@ -199,9 +196,8 @@ def _apply_correction(pvals: np.ndarray, method: str = "fdr_bh") -> np.ndarray:
             from statsmodels.stats.multitest import multipletests
         except ImportError:
             raise ImportError(
-                f"Correction method '{method}' requires statsmodels. "
-                "Install with: pip install spatioloji_s[deg]"
-            )
+                f"Correction method '{method}' requires statsmodels. Install with: pip install spatioloji_s[deg]"
+            ) from None
         _, padj_valid, _, _ = multipletests(p_valid, method=method)
         padj[valid] = padj_valid
 
@@ -228,9 +224,7 @@ def _build_result_df(
     Returns:
         pd.DataFrame sorted by ``padj`` ascending (NaN last).
     """
-    log2fc = np.log2(
-        (stats["mean_fg"].astype(np.float64) + 1e-9) / (stats["mean_bg"].astype(np.float64) + 1e-9)
-    )
+    log2fc = np.log2((stats["mean_fg"].astype(np.float64) + 1e-9) / (stats["mean_bg"].astype(np.float64) + 1e-9))
     df = pd.DataFrame(
         {
             "gene": gene_names,
@@ -290,7 +284,7 @@ def _wilcoxon_backend(
             pvals[j] = _test_gene(j)
     else:
         with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
-            for j, p in zip(range(chunk_genes), ex.map(_test_gene, range(chunk_genes))):
+            for j, p in zip(range(chunk_genes), ex.map(_test_gene, range(chunk_genes)), strict=True):
                 pvals[j] = p
 
     return {
@@ -352,7 +346,7 @@ def _mast_one_gene(
         import statsmodels.api as sm
         from scipy.stats import combine_pvalues
     except ImportError:
-        raise ImportError("MAST requires statsmodels. Install with: pip install spatioloji_s[deg]")
+        raise ImportError("MAST requires statsmodels. Install with: pip install spatioloji_s[deg]") from None
 
     x = np.concatenate([x_fg, x_bg]).astype(np.float64)
     cdr = np.concatenate([cdr_fg, cdr_bg]).astype(np.float64)
@@ -457,7 +451,7 @@ def _nb_glm_one_gene(x_fg: np.ndarray, x_bg: np.ndarray) -> float:
     try:
         import statsmodels.api as sm
     except ImportError:
-        raise ImportError("NB-GLM requires statsmodels. Install with: pip install spatioloji_s[deg]")
+        raise ImportError("NB-GLM requires statsmodels. Install with: pip install spatioloji_s[deg]") from None
 
     y = np.concatenate([x_fg, x_bg]).astype(np.float64)
     group = np.array([1.0] * len(x_fg) + [0.0] * len(x_bg))
@@ -604,7 +598,7 @@ def _deseq2_backend(
         from pydeseq2.dds import DeseqDataSet
         from pydeseq2.ds import DeseqStats
     except ImportError:
-        raise ImportError("DESeq2 requires pydeseq2. Install with: pip install spatioloji_s[deg]")
+        raise ImportError("DESeq2 requires pydeseq2. Install with: pip install spatioloji_s[deg]") from None
 
     n_fg = counts_fg.shape[0]
     n_bg = counts_bg.shape[0]
@@ -720,8 +714,7 @@ def run_deg(
         raise ValueError("'deseq2' requires replicate_key to specify pseudobulk replicates.")
     if replicate_key is not None and replicate_key not in spatioloji_obj.cell_meta.columns:
         raise ValueError(
-            f"replicate_key '{replicate_key}' not found in cell_meta columns: "
-            f"{list(spatioloji_obj.cell_meta.columns)}"
+            f"replicate_key '{replicate_key}' not found in cell_meta columns: {list(spatioloji_obj.cell_meta.columns)}"
         )
 
     # -- Build cell masks --
@@ -785,3 +778,160 @@ def run_deg(
         print(f"  ✓ {method}: {n_sig} significant genes (padj < 0.05)")
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrappers
+# ---------------------------------------------------------------------------
+
+
+def deg_wilcoxon(
+    spatioloji_obj,
+    groupby: str,
+    group_fg: str | list[str],
+    group_bg: str | list[str] = "rest",
+    layer: str | None = None,
+    spatial_filter: dict | None = None,
+    min_cells: int = 10,
+    n_jobs: int = 1,
+    gene_chunk_size: int = 500,
+    correction: str = "fdr_bh",
+    **_ignored,
+) -> dict[str, pd.DataFrame]:
+    """Run Wilcoxon rank-sum DEG test. See ``run_deg`` for parameter docs."""
+    return run_deg(
+        spatioloji_obj,
+        groupby,
+        group_fg,
+        group_bg,
+        methods=["wilcoxon"],
+        layer=layer,
+        spatial_filter=spatial_filter,
+        min_cells=min_cells,
+        n_jobs=n_jobs,
+        gene_chunk_size=gene_chunk_size,
+        correction=correction,
+    )
+
+
+def deg_ttest(
+    spatioloji_obj,
+    groupby: str,
+    group_fg: str | list[str],
+    group_bg: str | list[str] = "rest",
+    layer: str | None = None,
+    spatial_filter: dict | None = None,
+    min_cells: int = 10,
+    n_jobs: int = 1,
+    gene_chunk_size: int = 500,
+    correction: str = "fdr_bh",
+    **_ignored,
+) -> dict[str, pd.DataFrame]:
+    """Run Student's t-test DEG analysis. See ``run_deg`` for parameter docs."""
+    return run_deg(
+        spatioloji_obj,
+        groupby,
+        group_fg,
+        group_bg,
+        methods=["ttest"],
+        layer=layer,
+        spatial_filter=spatial_filter,
+        min_cells=min_cells,
+        n_jobs=n_jobs,
+        gene_chunk_size=gene_chunk_size,
+        correction=correction,
+    )
+
+
+def deg_mast(
+    spatioloji_obj,
+    groupby: str,
+    group_fg: str | list[str],
+    group_bg: str | list[str] = "rest",
+    layer: str | None = None,
+    spatial_filter: dict | None = None,
+    min_cells: int = 10,
+    n_jobs: int = 1,
+    gene_chunk_size: int = 500,
+    correction: str = "fdr_bh",
+    **_ignored,
+) -> dict[str, pd.DataFrame]:
+    """Run MAST-inspired hurdle model DEG analysis. Requires ``statsmodels``.
+
+    See ``run_deg`` for parameter docs.
+    """
+    return run_deg(
+        spatioloji_obj,
+        groupby,
+        group_fg,
+        group_bg,
+        methods=["mast"],
+        layer=layer,
+        spatial_filter=spatial_filter,
+        min_cells=min_cells,
+        n_jobs=n_jobs,
+        gene_chunk_size=gene_chunk_size,
+        correction=correction,
+    )
+
+
+def deg_nb_glm(
+    spatioloji_obj,
+    groupby: str,
+    group_fg: str | list[str],
+    group_bg: str | list[str] = "rest",
+    layer: str | None = None,
+    spatial_filter: dict | None = None,
+    min_cells: int = 10,
+    n_jobs: int = 1,
+    gene_chunk_size: int = 500,
+    correction: str = "fdr_bh",
+    **_ignored,
+) -> dict[str, pd.DataFrame]:
+    """Run negative-binomial GLM DEG analysis. Requires ``statsmodels``.
+
+    See ``run_deg`` for parameter docs.
+    """
+    return run_deg(
+        spatioloji_obj,
+        groupby,
+        group_fg,
+        group_bg,
+        methods=["nb_glm"],
+        layer=layer,
+        spatial_filter=spatial_filter,
+        min_cells=min_cells,
+        n_jobs=n_jobs,
+        gene_chunk_size=gene_chunk_size,
+        correction=correction,
+    )
+
+
+def deg_deseq2(
+    spatioloji_obj,
+    groupby: str,
+    group_fg: str | list[str],
+    group_bg: str | list[str] = "rest",
+    layer: str | None = None,
+    spatial_filter: dict | None = None,
+    replicate_key: str | None = None,
+    min_cells: int = 10,
+    correction: str = "fdr_bh",
+    **_ignored,
+) -> dict[str, pd.DataFrame]:
+    """Run DESeq2 pseudobulk DEG analysis. Requires ``pydeseq2``.
+
+    See ``run_deg`` for parameter docs. ``replicate_key`` is required.
+    """
+    return run_deg(
+        spatioloji_obj,
+        groupby,
+        group_fg,
+        group_bg,
+        methods=["deseq2"],
+        layer=layer,
+        spatial_filter=spatial_filter,
+        replicate_key=replicate_key,
+        min_cells=min_cells,
+        correction=correction,
+    )
