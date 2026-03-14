@@ -169,6 +169,75 @@ class TestDiscoverMotifsValidation:
         assert catalog.labels.nunique() == 1
 
 
+class TestDetectAssemblies:
+    """Tests for detect_assemblies."""
+
+    @pytest.fixture
+    def graph(self, sp_motif):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
+        return build_buffer_graph(sp_motif, buffer_distance=30)
+
+    @pytest.fixture
+    def motif_catalog(self, sp_motif, graph):
+        from spatioloji_s.spatial.polygon.motifs import discover_motifs
+
+        return discover_motifs(sp_motif, graph, group_col="cell_type", n_motifs=5)
+
+    def test_returns_assembly_catalog(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies
+
+        result = detect_assemblies(sp_motif, graph, motif_catalog)
+        assert isinstance(result, AssemblyCatalog)
+
+    def test_labels_cover_all_cells(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies
+
+        result = detect_assemblies(sp_motif, graph, motif_catalog)
+        assert len(result.labels) == len(sp_motif.cell_index)
+
+    def test_instances_columns(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies
+
+        result = detect_assemblies(sp_motif, graph, motif_catalog)
+        expected = {"instance_id", "assembly_id", "motif_id", "n_cells", "centroid_x", "centroid_y"}
+        assert expected.issubset(set(result.instances.columns))
+
+    def test_composition_shape(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies
+
+        result = detect_assemblies(sp_motif, graph, motif_catalog)
+        n_assemblies = result.labels[result.labels >= 0].nunique()
+        if n_assemblies > 0:
+            assert result.composition.shape[0] == n_assemblies
+
+    def test_adjacency_pattern_columns(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies
+
+        result = detect_assemblies(sp_motif, graph, motif_catalog)
+        if not result.adjacency_pattern.empty:
+            expected = {"assembly_id", "motif_a", "motif_b", "frequency"}
+            assert expected.issubset(set(result.adjacency_pattern.columns))
+
+    def test_min_assembly_cells_filter(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies
+
+        result = detect_assemblies(sp_motif, graph, motif_catalog, min_assembly_cells=9999)
+        assert (result.labels == -1).all()
+
+    def test_store_writes_to_cell_meta(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies
+
+        detect_assemblies(sp_motif, graph, motif_catalog, store=True)
+        assert "assembly_label" in sp_motif.cell_meta.columns
+
+    def test_kmeans_method(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies
+
+        result = detect_assemblies(sp_motif, graph, motif_catalog, method="kmeans", n_assemblies=3)
+        assert isinstance(result, AssemblyCatalog)
+
+
 class TestPointMotifReExport:
     """Verify point module re-exports the polygon function."""
 

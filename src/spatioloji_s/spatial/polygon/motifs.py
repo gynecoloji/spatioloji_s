@@ -13,7 +13,7 @@ import pandas as pd
 import scipy.sparse as sp_sparse
 from sklearn.preprocessing import normalize
 
-from spatioloji_s.spatial._motif_types import MotifCatalog, _get_cell_ids, _get_sparse_adjacency
+from spatioloji_s.spatial._motif_types import AssemblyCatalog, MotifCatalog, _get_cell_ids, _get_sparse_adjacency
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
@@ -345,3 +345,284 @@ def discover_motifs(
         sp.cell_meta["motif"] = labels_series.reindex(sp.cell_meta.index)
 
     return catalog
+
+
+def detect_assemblies(
+    sp: spatioloji,
+    graph: PolygonSpatialGraph | PointSpatialGraph,
+    motif_catalog: MotifCatalog,
+    method: str = "leiden",
+    resolution: float = 0.5,
+    n_assemblies: int | None = None,
+    min_assembly_cells: int = 10,
+    random_state: int = 42,
+    store: bool = True,
+) -> AssemblyCatalog:
+    """Detect mesoscale tissue assemblies by clustering spatially contiguous motif instances.
+
+    Groups cells sharing the same motif label into connected components (motif
+    instances), builds a region-level graph over those instances, and clusters
+    it to identify assemblies — recurring mesoscale tissue structures.
+
+    Args:
+        sp: spatioloji object with spatial coordinates.
+        graph: Pre-built spatial graph (PolygonSpatialGraph or PointSpatialGraph).
+        motif_catalog: Result of :func:`discover_motifs`.
+        method: Clustering algorithm — ``"kmeans"`` or ``"leiden"`` (default).
+        resolution: Leiden resolution parameter (ignored for kmeans).
+        n_assemblies: Number of assemblies for kmeans.  If ``None`` and method
+            is ``"kmeans"``, auto-selects via Calinski-Harabasz.
+        min_assembly_cells: Assemblies with fewer total cells are labelled -1.
+        random_state: Random seed for reproducibility.
+        store: If True, write ``assembly_label`` into ``sp.cell_meta``.
+
+    Returns:
+        AssemblyCatalog with per-cell labels, instance table, composition,
+        and adjacency pattern DataFrames.
+
+    Raises:
+        ValueError: If *method* is not ``"kmeans"`` or ``"leiden"``.
+
+    Example:
+        >>> from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        >>> from spatioloji_s.spatial.polygon.motifs import discover_motifs, detect_assemblies
+        >>> graph = build_buffer_graph(sp, buffer_distance=30)
+        >>> catalog = discover_motifs(sp, graph, group_col="cell_type", n_motifs=5)
+        >>> assemblies = detect_assemblies(sp, graph, catalog)
+        >>> assemblies.instances.head()
+    """
+    from scipy.sparse.csgraph import connected_components as _connected_components
+
+    # ---- validation --------------------------------------------------------
+    if method not in ("kmeans", "leiden"):
+        raise ValueError(f"Unknown clustering method '{method}'. Choose 'kmeans' or 'leiden'.")
+
+    cell_ids = _get_cell_ids(graph)
+    adj = _get_sparse_adjacency(graph)
+    motif_labels = motif_catalog.labels.reindex(cell_ids)
+    n_cells = len(cell_ids)
+    unique_motifs = sorted(motif_labels.unique())
+
+    # ---- connected components per motif ------------------------------------
+    instance_records: list[dict] = []
+    cell_instance_map = np.full(n_cells, -1, dtype=np.int64)
+    instance_id_counter = 0
+
+    # Align coordinates to graph ordering
+    idx_in_sp = sp.cell_index.get_indexer(cell_ids)
+    x_coords = np.asarray(sp.spatial.x_global)[idx_in_sp]
+    y_coords = np.asarray(sp.spatial.y_global)[idx_in_sp]
+
+    for motif_id in unique_motifs:
+        mask = (motif_labels.values == motif_id)
+        indices = np.where(mask)[0]
+        if len(indices) == 0:
+            continue
+
+        # Extract subgraph for this motif
+        sub_adj = adj[np.ix_(indices, indices)]
+        n_comp, comp_labels = _connected_components(sub_adj, directed=False)
+
+        for comp in range(n_comp):
+            comp_mask = comp_labels == comp
+            comp_cell_indices = indices[comp_mask]
+            n_comp_cells = len(comp_cell_indices)
+
+            cx = float(x_coords[comp_cell_indices].mean())
+            cy = float(y_coords[comp_cell_indices].mean())
+
+            instance_records.append({
+                "instance_id": instance_id_counter,
+                "motif_id": motif_id,
+                "n_cells": n_comp_cells,
+                "centroid_x": cx,
+                "centroid_y": cy,
+                "_cell_indices": comp_cell_indices,
+            })
+
+            cell_instance_map[comp_cell_indices] = instance_id_counter
+            instance_id_counter += 1
+
+    n_instances = len(instance_records)
+
+    # ---- build region graph ------------------------------------------------
+    # Edges: two instances are connected if any of their cells are neighbours
+    # in the original graph
+    instance_adj = np.zeros((n_instances, n_instances), dtype=np.float32)
+    for i, rec_i in enumerate(instance_records):
+        neighbours_of_i = set()
+        for ci in rec_i["_cell_indices"]:
+            row = adj.getrow(ci)
+            neighbours_of_i.update(row.indices.tolist())
+        for j in range(i + 1, n_instances):
+            rec_j_set = set(instance_records[j]["_cell_indices"].tolist())
+            if neighbours_of_i & rec_j_set:
+                instance_adj[i, j] = 1.0
+                instance_adj[j, i] = 1.0
+
+    # ---- featurise instances -----------------------------------------------
+    n_motif_types = len(unique_motifs)
+    motif_to_idx = {m: i for i, m in enumerate(unique_motifs)}
+
+    features_list = []
+    for rec in instance_records:
+        # One-hot motif identity
+        one_hot = np.zeros(n_motif_types, dtype=np.float32)
+        one_hot[motif_to_idx[rec["motif_id"]]] = 1.0
+
+        # Log(size) normalised
+        log_size = np.array([np.log1p(rec["n_cells"])], dtype=np.float32)
+
+        # Neighbour motif composition
+        neigh_comp = np.zeros(n_motif_types, dtype=np.float32)
+        inst_idx = rec["instance_id"]
+        for j in range(n_instances):
+            if instance_adj[inst_idx, j] > 0:
+                neigh_comp[motif_to_idx[instance_records[j]["motif_id"]]] += 1.0
+        total = neigh_comp.sum()
+        if total > 0:
+            neigh_comp /= total
+
+        features_list.append(np.concatenate([one_hot, log_size, neigh_comp]))
+
+    feature_matrix = np.vstack(features_list) if features_list else np.empty((0, 0))
+
+    # Normalise log_size column across instances
+    if n_instances > 0:
+        log_col = n_motif_types  # index of log_size column
+        max_log = feature_matrix[:, log_col].max()
+        if max_log > 0:
+            feature_matrix[:, log_col] /= max_log
+
+    # ---- cluster region graph ----------------------------------------------
+    if n_instances < 2:
+        instance_cluster_labels = np.zeros(n_instances, dtype=np.int64)
+    elif method == "kmeans":
+        from sklearn.cluster import MiniBatchKMeans
+
+        if n_assemblies is None:
+            n_assemblies_resolved = _auto_select_n_motifs(
+                sp_sparse.csr_matrix(feature_matrix), random_state=random_state
+            )
+        else:
+            n_assemblies_resolved = min(n_assemblies, n_instances)
+        km = MiniBatchKMeans(n_clusters=n_assemblies_resolved, random_state=random_state, n_init=5)
+        instance_cluster_labels = km.fit_predict(feature_matrix)
+    else:
+        # Leiden on the instance feature matrix
+        instance_cluster_labels = _cluster_leiden(
+            sp_sparse.csr_matrix(feature_matrix),
+            resolution=resolution,
+            random_state=random_state,
+        )
+
+    # Assign assembly labels to instances
+    for i, rec in enumerate(instance_records):
+        rec["assembly_id"] = int(instance_cluster_labels[i])
+
+    # ---- filter small assemblies -------------------------------------------
+    # Count total cells per assembly
+    assembly_cell_counts: dict[int, int] = {}
+    for rec in instance_records:
+        aid = rec["assembly_id"]
+        assembly_cell_counts[aid] = assembly_cell_counts.get(aid, 0) + rec["n_cells"]
+
+    small_assemblies = {aid for aid, cnt in assembly_cell_counts.items() if cnt < min_assembly_cells}
+    for rec in instance_records:
+        if rec["assembly_id"] in small_assemblies:
+            rec["assembly_id"] = -1
+
+    # ---- remap to contiguous IDs -------------------------------------------
+    valid_aids = sorted({rec["assembly_id"] for rec in instance_records if rec["assembly_id"] >= 0})
+    aid_remap = {old: new for new, old in enumerate(valid_aids)}
+    aid_remap[-1] = -1
+
+    for rec in instance_records:
+        rec["assembly_id"] = aid_remap[rec["assembly_id"]]
+
+    # ---- build per-cell assembly labels ------------------------------------
+    cell_assembly = np.full(n_cells, -1, dtype=np.int64)
+    for rec in instance_records:
+        cell_assembly[rec["_cell_indices"]] = rec["assembly_id"]
+
+    labels_series = pd.Series(cell_assembly, index=cell_ids, name="assembly_label")
+
+    # Extend to full sp.cell_index (cells not in graph get -1)
+    full_labels = labels_series.reindex(sp.cell_index, fill_value=-1)
+
+    # ---- instances DataFrame -----------------------------------------------
+    instances_df = pd.DataFrame([
+        {
+            "instance_id": rec["instance_id"],
+            "assembly_id": rec["assembly_id"],
+            "motif_id": rec["motif_id"],
+            "n_cells": rec["n_cells"],
+            "centroid_x": rec["centroid_x"],
+            "centroid_y": rec["centroid_y"],
+        }
+        for rec in instance_records
+    ])
+
+    # ---- composition DataFrame ---------------------------------------------
+    if instances_df.empty or (instances_df["assembly_id"] == -1).all():
+        composition = pd.DataFrame()
+    else:
+        valid_inst = instances_df[instances_df["assembly_id"] >= 0]
+        comp_rows = []
+        for aid, grp in valid_inst.groupby("assembly_id"):
+            total_cells = grp["n_cells"].sum()
+            motif_props = {}
+            for motif_id in unique_motifs:
+                motif_cells = grp.loc[grp["motif_id"] == motif_id, "n_cells"].sum()
+                motif_props[motif_id] = motif_cells / total_cells if total_cells > 0 else 0.0
+            motif_props["assembly_id"] = aid
+            comp_rows.append(motif_props)
+        composition = pd.DataFrame(comp_rows).set_index("assembly_id")
+
+    # ---- adjacency_pattern DataFrame ---------------------------------------
+    adj_rows = []
+    if not instances_df.empty:
+        valid_inst = instances_df[instances_df["assembly_id"] >= 0]
+        for aid, grp in valid_inst.groupby("assembly_id"):
+            inst_ids = grp["instance_id"].values
+            for i_idx in range(len(inst_ids)):
+                for j_idx in range(i_idx + 1, len(inst_ids)):
+                    ii = inst_ids[i_idx]
+                    jj = inst_ids[j_idx]
+                    if instance_adj[ii, jj] > 0:
+                        ma = instance_records[ii]["motif_id"]
+                        mb = instance_records[jj]["motif_id"]
+                        adj_rows.append({
+                            "assembly_id": aid,
+                            "motif_a": min(ma, mb),
+                            "motif_b": max(ma, mb),
+                            "frequency": 1,
+                        })
+
+    if adj_rows:
+        adjacency_pattern = pd.DataFrame(adj_rows)
+        adjacency_pattern = (
+            adjacency_pattern.groupby(["assembly_id", "motif_a", "motif_b"], as_index=False)["frequency"].sum()
+        )
+    else:
+        adjacency_pattern = pd.DataFrame(columns=["assembly_id", "motif_a", "motif_b", "frequency"])
+
+    # ---- store -------------------------------------------------------------
+    if store:
+        sp.cell_meta["assembly_label"] = full_labels.reindex(sp.cell_meta.index)
+
+    params = {
+        "method": method,
+        "resolution": resolution,
+        "n_assemblies": n_assemblies,
+        "min_assembly_cells": min_assembly_cells,
+        "random_state": random_state,
+    }
+
+    return AssemblyCatalog(
+        labels=full_labels,
+        composition=composition,
+        instances=instances_df,
+        adjacency_pattern=adjacency_pattern,
+        params=params,
+    )
