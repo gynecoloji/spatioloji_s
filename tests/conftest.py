@@ -463,3 +463,93 @@ def sp_gradient():
         spatial_coords=spatial,
         polygons=polygons,
     )
+
+
+# ===========================================================================
+# Fixture 7: motif-specific object (structured tissue layout)
+# ===========================================================================
+
+
+@pytest.fixture
+def sp_motif():
+    """500-cell spatioloji with structured tissue layout for motif tests.
+
+    Layout:
+    - Center (100 cells, x=400-600, y=400-600): Dense Tumor core (80% Tumor, 20% Fibroblast)
+    - Inner ring (100 cells, x=250-750, y=250-750 minus center): Macrophage + Fibroblast stroma
+    - Left lobe (100 cells, x=50-250, y=350-650): T_cell + B_cell aggregate (TLS-like)
+    - Right lobe (100 cells, x=750-950, y=350-650): Scattered T_cell + Macrophage
+    - Periphery (100 cells, x=0-1000, y=0-1000 outer): Sparse Fibroblast + Tumor
+    """
+    np.random.seed(42)
+    n_cells = 500
+    n_genes = 10
+    cell_ids = [f"cell_{i}" for i in range(n_cells)]
+    gene_names = [f"gene_{i}" for i in range(n_genes)]
+
+    # -- Coordinates --
+    cx = np.random.uniform(400, 600, 100)
+    cy = np.random.uniform(400, 600, 100)
+
+    rx = np.random.uniform(250, 750, 100)
+    ry = np.random.uniform(250, 750, 100)
+    for i in range(100):
+        while 400 <= rx[i] <= 600 and 400 <= ry[i] <= 600:
+            rx[i] = np.random.uniform(250, 750)
+            ry[i] = np.random.uniform(250, 750)
+
+    lx = np.random.uniform(50, 250, 100)
+    ly = np.random.uniform(350, 650, 100)
+
+    rlx = np.random.uniform(750, 950, 100)
+    rly = np.random.uniform(350, 650, 100)
+
+    px = np.random.uniform(0, 1000, 100)
+    py = np.random.uniform(0, 1000, 100)
+
+    x_global = np.concatenate([cx, rx, lx, rlx, px])
+    y_global = np.concatenate([cy, ry, ly, rly, py])
+
+    cell_types = []
+    cell_types += ["Tumor"] * 80 + ["Fibroblast"] * 20
+    cell_types += ["Macrophage"] * 60 + ["Fibroblast"] * 40
+    cell_types += ["T_cell"] * 50 + ["B_cell"] * 40 + ["Macrophage"] * 10
+    cell_types += ["T_cell"] * 60 + ["Macrophage"] * 30 + ["Fibroblast"] * 10
+    cell_types += ["Fibroblast"] * 50 + ["Tumor"] * 30 + ["T_cell"] * 20
+
+    cell_meta = pd.DataFrame({"cell_type": cell_types}, index=cell_ids)
+
+    expression = np.random.poisson(2.0, (n_cells, n_genes)).astype(float)
+
+    spatial = pd.DataFrame(
+        {
+            "x_global": x_global,
+            "y_global": y_global,
+            "x_local": x_global,
+            "y_local": y_global,
+            "fov": 1,
+        },
+        index=cell_ids,
+    )
+
+    rows = []
+    for i, cid in enumerate(cell_ids):
+        bx, by = x_global[i], y_global[i]
+        for vx, vy in [
+            (bx - 2, by - 2),
+            (bx + 2, by - 2),
+            (bx + 2, by + 2),
+            (bx - 2, by + 2),
+            (bx - 2, by - 2),
+        ]:
+            rows.append({"cell": cid, "x_global_px": vx, "y_global_px": vy})
+    polygons = pd.DataFrame(rows)
+
+    return spatioloji(
+        expression=expression,
+        cell_ids=cell_ids,
+        gene_names=gene_names,
+        cell_metadata=cell_meta,
+        spatial_coords=spatial,
+        polygons=polygons,
+    )
