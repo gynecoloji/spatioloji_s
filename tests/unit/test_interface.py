@@ -263,20 +263,20 @@ class TestPointGraphMethod:
 
 
 from spatioloji_s.visualization.polygon_plots import (  # noqa: E402
-    plot_interface_map,
-    plot_interface_metrics,
+    plot_interface_polygon_map,
+    plot_interface_polygon_metrics,
 )
 
 
 class TestPlotInterfaceMap:
-    """Tests for plot_interface_map."""
+    """Tests for plot_interface_polygon_map."""
 
     def test_returns_figure(self, sp_interface):
         from spatioloji_s.spatial.polygon.graph import build_buffer_graph
         g = build_buffer_graph(sp_interface, buffer_distance=50)
         result = identify_interface(sp_interface, g, group_col="cell_type",
                                     region_a="TypeA", region_b="TypeB")
-        fig = plot_interface_map(sp_interface, result, show=False)
+        fig = plot_interface_polygon_map(sp_interface, result, show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
 
@@ -295,7 +295,7 @@ class TestPlotInterfaceMap:
                      "n_interface_a": 0, "n_interface_b": 0},
             region_a="TypeA", region_b="TypeB", method="graph",
         )
-        fig = plot_interface_map(sp_interface, empty, show=False)
+        fig = plot_interface_polygon_map(sp_interface, empty, show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
 
@@ -305,19 +305,19 @@ class TestPlotInterfaceMap:
         result = identify_interface(sp_interface, g, group_col="cell_type",
                                     region_a="TypeA", region_b="TypeB")
         fig, ax = plt.subplots()
-        plot_interface_map(sp_interface, result, ax=ax, show=False)
+        plot_interface_polygon_map(sp_interface, result, ax=ax, show=False)
         plt.close("all")
 
 
 class TestPlotInterfaceMetrics:
-    """Tests for plot_interface_metrics."""
+    """Tests for plot_interface_polygon_metrics."""
 
     def test_returns_figure(self, sp_interface):
         from spatioloji_s.spatial.polygon.graph import build_buffer_graph
         g = build_buffer_graph(sp_interface, buffer_distance=50)
         result = identify_interface(sp_interface, g, group_col="cell_type",
                                     region_a="TypeA", region_b="TypeB")
-        fig = plot_interface_metrics(result, metric="length", show=False)
+        fig = plot_interface_polygon_metrics(result, metric="length", show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
 
@@ -336,7 +336,7 @@ class TestPlotInterfaceMetrics:
                      "n_interface_a": 0, "n_interface_b": 0},
             region_a="A", region_b="B", method="graph",
         )
-        fig = plot_interface_metrics(empty, show=False)
+        fig = plot_interface_polygon_metrics(empty, show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
 
@@ -354,12 +354,12 @@ class TestIntegration:
         assert "interface_label" in sp_interface.cell_meta.columns
         assert result.summary["n_segments"] >= 0
 
-        fig = plot_interface_map(sp_interface, result, show=False)
+        fig = plot_interface_polygon_map(sp_interface, result, show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
 
         if result.summary["n_segments"] > 0:
-            fig2 = plot_interface_metrics(result, metric="length", show=False)
+            fig2 = plot_interface_polygon_metrics(result, metric="length", show=False)
             assert isinstance(fig2, plt.Figure)
             plt.close("all")
 
@@ -377,8 +377,8 @@ class TestIntegration:
         """Verify imports work from package top-level paths."""
         from spatioloji_s.spatial.point import identify_interface as pi
         from spatioloji_s.spatial.polygon import InterfaceResult, identify_interface  # noqa: F401
-        from spatioloji_s.visualization import plot_interface_map, plot_interface_metrics
+        from spatioloji_s.visualization import plot_interface_polygon_map, plot_interface_polygon_metrics
         assert callable(identify_interface)
         assert callable(pi)
-        assert callable(plot_interface_map)
-        assert callable(plot_interface_metrics)
+        assert callable(plot_interface_polygon_map)
+        assert callable(plot_interface_polygon_metrics)

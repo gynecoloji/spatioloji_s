@@ -132,7 +132,9 @@ def _cat_color_map(cats: list, palette) -> dict:
     if isinstance(palette, list):
         return {str(k): palette[i % len(palette)] for i, k in enumerate(cats)}
     pal = sns.color_palette(palette or "tab20", n)
-    return {str(k): f"rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})" for k, c in zip(cats, pal, strict=False)}
+    return {
+        str(k): f"rgb({int(c[0] * 255)},{int(c[1] * 255)},{int(c[2] * 255)})" for k, c in zip(cats, pal, strict=False)
+    }
 
 
 def _mpl_to_plotly_colorscale(cmap_name: str, n: int = 12) -> list:
@@ -140,10 +142,12 @@ def _mpl_to_plotly_colorscale(cmap_name: str, n: int = 12) -> list:
     import matplotlib.pyplot as plt
 
     cmap = plt.get_cmap(cmap_name)
-    return [
-        [i / (n - 1), f"rgb({int(cmap(i/(n-1))[0]*255)},{int(cmap(i/(n-1))[1]*255)},{int(cmap(i/(n-1))[2]*255)})"]
-        for i in range(n)
-    ]
+    scale = []
+    for i in range(n):
+        t = i / (n - 1)
+        r, g, b = (int(cmap(t)[c] * 255) for c in range(3))
+        scale.append([t, f"rgb({r},{g},{b})"])
+    return scale
 
 
 def _scatter_traces_categorical(x, y, values, color_dict, hover_text=None, point_size=4, alpha=0.7):
@@ -172,8 +176,9 @@ def _scatter_traces_categorical(x, y, values, color_dict, hover_text=None, point
     return traces
 
 
-def _scatter_trace_continuous(x, y, values, colorscale, vmin, vmax, feat_name,
-                               hover_text=None, point_size=4, alpha=0.7):
+def _scatter_trace_continuous(
+    x, y, values, colorscale, vmin, vmax, feat_name, hover_text=None, point_size=4, alpha=0.7
+):
     """Single go.Scattergl trace with continuous colorscale."""
     vmin = float(values.min()) if vmin is None else vmin
     vmax = float(values.max()) if vmax is None else vmax
@@ -254,7 +259,7 @@ def _polygon_traces_continuous(gdf, feat_col, cmap_name, vmin, vmax, alpha=0.85,
             continue
         bin_center = (bin_edges[bin_idx] + bin_edges[bin_idx + 1]) / 2
         rgba = cmap(norm(bin_center))
-        color_str = f"rgba({int(rgba[0]*255)},{int(rgba[1]*255)},{int(rgba[2]*255)},{alpha})"
+        color_str = f"rgba({int(rgba[0] * 255)},{int(rgba[1] * 255)},{int(rgba[2] * 255)},{alpha})"
         xs: list = []
         ys: list = []
         for _, row in subset.iterrows():
@@ -406,7 +411,7 @@ def iplot_umap(
 
     # Build hover text
     hover_parts = [f"Cell: {cid}" for cid in cell_ids]
-    for col in (hover_cols or []):
+    for col in hover_cols or []:
         if col in meta.columns:
             for i, val in enumerate(meta[col].values):
                 hover_parts[i] += f"<br>{col}: {val}"
@@ -419,8 +424,9 @@ def iplot_umap(
         colorscale = _mpl_to_plotly_colorscale(cmap)
         for i, val in enumerate(values):
             hover_text[i] += f"<br>{gene}: {val:.3f}"
-        fig.add_trace(_scatter_trace_continuous(x, y, values, colorscale, vmin, vmax, gene,
-                                                hover_text, point_size, alpha))
+        fig.add_trace(
+            _scatter_trace_continuous(x, y, values, colorscale, vmin, vmax, gene, hover_text, point_size, alpha)
+        )
         auto_title = f"{gene} — UMAP"
 
     elif color_by is not None:
@@ -438,16 +444,24 @@ def iplot_umap(
                 fig.add_trace(trace)
         else:
             colorscale = _mpl_to_plotly_colorscale(cmap)
-            fig.add_trace(_scatter_trace_continuous(x, y, series.values, colorscale, vmin, vmax,
-                                                    color_by, hover_text, point_size, alpha))
+            fig.add_trace(
+                _scatter_trace_continuous(
+                    x, y, series.values, colorscale, vmin, vmax, color_by, hover_text, point_size, alpha
+                )
+            )
         auto_title = f"{color_by} — UMAP"
 
     else:
         fig.add_trace(
-            go.Scattergl(x=x, y=y, mode="markers",
-                         marker=dict(size=point_size, color="steelblue", opacity=alpha),
-                         text=hover_text, hovertemplate="%{text}<extra></extra>",
-                         showlegend=False)
+            go.Scattergl(
+                x=x,
+                y=y,
+                mode="markers",
+                marker=dict(size=point_size, color="steelblue", opacity=alpha),
+                text=hover_text,
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+            )
         )
         auto_title = "UMAP"
 
@@ -455,7 +469,8 @@ def iplot_umap(
         title=title or auto_title,
         xaxis_title="UMAP1",
         yaxis_title="UMAP2",
-        width=width, height=height,
+        width=width,
+        height=height,
         legend=dict(itemsizing="constant"),
         template="simple_white",
     )
@@ -510,13 +525,13 @@ def iplot_pca(
     xl, yl = f"PC{pcs[0]}", f"PC{pcs[1]}"
     vr = spatioloji_obj.embeddings.get("X_pca_variance_ratio")
     if vr is not None:
-        xl += f" ({vr[i]*100:.1f}%)"
-        yl += f" ({vr[j]*100:.1f}%)"
+        xl += f" ({vr[i] * 100:.1f}%)"
+        yl += f" ({vr[j] * 100:.1f}%)"
 
     meta = spatioloji_obj.cell_meta.reset_index()
     cell_ids = spatioloji_obj.cell_index.astype(str)
     hover_parts = [f"Cell: {cid}" for cid in cell_ids]
-    for col in (hover_cols or []):
+    for col in hover_cols or []:
         if col in meta.columns:
             for k, val in enumerate(meta[col].values):
                 hover_parts[k] += f"<br>{col}: {val}"
@@ -529,8 +544,9 @@ def iplot_pca(
         colorscale = _mpl_to_plotly_colorscale(cmap)
         for k, val in enumerate(values):
             hover_text[k] += f"<br>{gene}: {val:.3f}"
-        fig.add_trace(_scatter_trace_continuous(x, y, values, colorscale, vmin, vmax, gene,
-                                                hover_text, point_size, alpha))
+        fig.add_trace(
+            _scatter_trace_continuous(x, y, values, colorscale, vmin, vmax, gene, hover_text, point_size, alpha)
+        )
         auto_title = f"{gene} — PCA"
     elif color_by is not None:
         if color_by not in meta.columns:
@@ -546,22 +562,32 @@ def iplot_pca(
                 fig.add_trace(trace)
         else:
             colorscale = _mpl_to_plotly_colorscale(cmap)
-            fig.add_trace(_scatter_trace_continuous(x, y, series.values, colorscale, vmin, vmax,
-                                                    color_by, hover_text, point_size, alpha))
+            fig.add_trace(
+                _scatter_trace_continuous(
+                    x, y, series.values, colorscale, vmin, vmax, color_by, hover_text, point_size, alpha
+                )
+            )
         auto_title = f"{color_by} — PCA"
     else:
         fig.add_trace(
-            go.Scattergl(x=x, y=y, mode="markers",
-                         marker=dict(size=point_size, color="steelblue", opacity=alpha),
-                         text=hover_text, hovertemplate="%{text}<extra></extra>",
-                         showlegend=False)
+            go.Scattergl(
+                x=x,
+                y=y,
+                mode="markers",
+                marker=dict(size=point_size, color="steelblue", opacity=alpha),
+                text=hover_text,
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+            )
         )
         auto_title = "PCA"
 
     fig.update_layout(
         title=title or auto_title,
-        xaxis_title=xl, yaxis_title=yl,
-        width=width, height=height,
+        xaxis_title=xl,
+        yaxis_title=yl,
+        width=width,
+        height=height,
         legend=dict(itemsizing="constant"),
         template="simple_white",
     )
@@ -631,9 +657,9 @@ def iplot_umap_grid(
         try:
             if kind == "gene":
                 values = _get_expr_vector(spatioloji_obj, name, layer)
-                trace = _scatter_trace_continuous(coords[:, 0], coords[:, 1], values,
-                                                  colorscale, None, None, name,
-                                                  point_size=point_size, alpha=alpha)
+                trace = _scatter_trace_continuous(
+                    coords[:, 0], coords[:, 1], values, colorscale, None, None, name, point_size=point_size, alpha=alpha
+                )
                 trace.showlegend = False
                 fig.add_trace(trace, row=row, col=col)
             else:
@@ -644,20 +670,31 @@ def iplot_umap_grid(
                 if is_cat:
                     cats = sorted(series.dropna().unique().tolist(), key=str)
                     color_dict = _cat_color_map(cats, None)
-                    for i, trace in enumerate(_scatter_traces_categorical(
-                            coords[:, 0], coords[:, 1], series, color_dict,
-                            point_size=point_size, alpha=alpha)):
-                        trace.showlegend = (idx == 0 and i == 0)
+                    for i, trace in enumerate(
+                        _scatter_traces_categorical(
+                            coords[:, 0], coords[:, 1], series, color_dict, point_size=point_size, alpha=alpha
+                        )
+                    ):
+                        trace.showlegend = idx == 0 and i == 0
                         fig.add_trace(trace, row=row, col=col)
                 else:
-                    trace = _scatter_trace_continuous(coords[:, 0], coords[:, 1], series.values,
-                                                      colorscale, None, None, name,
-                                                      point_size=point_size, alpha=alpha)
+                    trace = _scatter_trace_continuous(
+                        coords[:, 0],
+                        coords[:, 1],
+                        series.values,
+                        colorscale,
+                        None,
+                        None,
+                        name,
+                        point_size=point_size,
+                        alpha=alpha,
+                    )
                     trace.showlegend = False
                     fig.add_trace(trace, row=row, col=col)
         except ValueError as exc:
-            fig.add_annotation(text=str(exc), row=row, col=col, xref="paper", yref="paper",
-                                x=0.5, y=0.5, showarrow=False)
+            fig.add_annotation(
+                text=str(exc), row=row, col=col, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False
+            )
 
         fig.update_xaxes(title_text=name, row=row, col=col)
 
@@ -726,8 +763,7 @@ def iplot_violin(
     color_dict = _cat_color_map(unique_groups, palette)
 
     n_genes = len(genes)
-    fig = make_subplots(rows=1, cols=n_genes, shared_yaxes=False,
-                        subplot_titles=genes)
+    fig = make_subplots(rows=1, cols=n_genes, shared_yaxes=False, subplot_titles=genes)
 
     box_visible = "box" if show_box else False
     points_visible = "all" if show_points else False
@@ -753,7 +789,8 @@ def iplot_violin(
                     showlegend=(gi == 0),
                     legendgroup=g,
                 ),
-                row=1, col=gi + 1,
+                row=1,
+                col=gi + 1,
             )
         fig.update_yaxes(title_text="Expression" if gi == 0 else "", row=1, col=gi + 1)
 
@@ -941,20 +978,24 @@ def iplot_dotplot(
             s = size_range[0] + frac_expr[i, j] * (size_range[1] - size_range[0])
             sizes.append(s)
             colors.append(mean_expr[i, j])
-            hover.append(f"Group: {grp}<br>Gene: {gene}<br>Mean expr: {mean_expr[i,j]:.3f}"
-                         f"<br>% expressing: {frac_expr[i,j]*100:.1f}%")
+            hover.append(
+                f"Group: {grp}<br>Gene: {gene}<br>Mean expr: {mean_expr[i, j]:.3f}"
+                f"<br>% expressing: {frac_expr[i, j] * 100:.1f}%"
+            )
 
     colorscale = _mpl_to_plotly_colorscale(cmap)
 
     fig = go.Figure(
         go.Scatter(
-            x=xs, y=ys,
+            x=xs,
+            y=ys,
             mode="markers",
             marker=dict(
                 size=sizes,
                 color=colors,
                 colorscale=colorscale,
-                cmin=vmin, cmax=vmax,
+                cmin=vmin,
+                cmax=vmax,
                 showscale=True,
                 colorbar=dict(title="Mean Expr", thickness=14),
                 line=dict(width=0.5, color="black"),
@@ -1040,7 +1081,7 @@ def iplot_global_dots(
     y = meta["CenterY_global_px"].values
 
     hover_parts = [f"Cell: {cid}<br>{feat_col}: {v}" for cid, v in zip(cell_ids, feat_series.values, strict=False)]
-    for col in (hover_cols or []):
+    for col in hover_cols or []:
         if col in meta.columns:
             for i, val in enumerate(meta[col].values):
                 hover_parts[i] += f"<br>{col}: {val}"
@@ -1055,15 +1096,19 @@ def iplot_global_dots(
             fig.add_trace(trace)
     else:
         colorscale = _mpl_to_plotly_colorscale(cmap)
-        fig.add_trace(_scatter_trace_continuous(x, y, feat_series.values, colorscale, vmin, vmax,
-                                                feat_col, hover_text, dot_size, alpha))
+        fig.add_trace(
+            _scatter_trace_continuous(
+                x, y, feat_series.values, colorscale, vmin, vmax, feat_col, hover_text, dot_size, alpha
+            )
+        )
 
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     fig.update_layout(
         title=title or feat_col,
         xaxis_title="X (global px)",
         yaxis_title="Y (global px)",
-        width=width, height=height,
+        width=width,
+        height=height,
         legend=dict(itemsizing="constant"),
         template="simple_white",
     )
@@ -1136,7 +1181,7 @@ def iplot_local_dots(
         y = fov_meta["CenterY_local_px"].values
         cell_ids = fov_meta[spatioloji_obj.config.cell_id_col].astype(str).values
         hover_parts = [f"Cell: {cid}<br>{feat_col}: {v}" for cid, v in zip(cell_ids, fov_feat.values, strict=False)]
-        for col in (hover_cols or []):
+        for col in hover_cols or []:
             if col in fov_meta.columns:
                 for i, val in enumerate(fov_meta[col].values):
                     hover_parts[i] += f"<br>{col}: {val}"
@@ -1145,14 +1190,15 @@ def iplot_local_dots(
         n_before = len(fig.data)
         if is_cat:
             for trace in _scatter_traces_categorical(x, y, fov_feat, color_dict, hover_text, dot_size, alpha):
-                trace.visible = (fov_id == first_fov)
-                trace.showlegend = (fov_id == first_fov)
+                trace.visible = fov_id == first_fov
+                trace.showlegend = fov_id == first_fov
                 trace.legendgroup = str(trace.name)
                 fig.add_trace(trace)
         else:
-            trace = _scatter_trace_continuous(x, y, fov_feat.values, colorscale, vmin, vmax,
-                                              feat_col, hover_text, dot_size, alpha)
-            trace.visible = (fov_id == first_fov)
+            trace = _scatter_trace_continuous(
+                x, y, fov_feat.values, colorscale, vmin, vmax, feat_col, hover_text, dot_size, alpha
+            )
+            trace.visible = fov_id == first_fov
             fig.add_trace(trace)
         fov_trace_counts[fov_id] = len(fig.data) - n_before
 
@@ -1165,8 +1211,11 @@ def iplot_local_dots(
         vis = [False] * total
         for i in range(offset, offset + n):
             vis[i] = True
-        buttons.append(dict(label=f"FOV {fov_id}", method="update",
-                            args=[{"visible": vis}, {"title": f"{feat_col} — FOV {fov_id}"}]))
+        buttons.append(
+            dict(
+                label=f"FOV {fov_id}", method="update", args=[{"visible": vis}, {"title": f"{feat_col} — FOV {fov_id}"}]
+            )
+        )
         offset += n
 
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
@@ -1174,11 +1223,13 @@ def iplot_local_dots(
         title=f"{feat_col} — FOV {first_fov}",
         xaxis_title="X (local px)",
         yaxis_title="Y (local px)",
-        width=width, height=height,
+        width=width,
+        height=height,
         legend=dict(itemsizing="constant"),
         template="simple_white",
-        updatemenus=[dict(buttons=buttons, direction="down", showactive=True,
-                          x=0.01, xanchor="left", y=1.06, yanchor="top")],
+        updatemenus=[
+            dict(buttons=buttons, direction="down", showactive=True, x=0.01, xanchor="left", y=1.06, yanchor="top")
+        ],
     )
     return _ifinalize(fig, save_path, show)
 
@@ -1242,8 +1293,10 @@ def iplot_global_dots_gene(
     layer_label = layer or "raw"
     fig.update_layout(
         title=title or f"{gene} ({layer_label}) — global",
-        xaxis_title="X (global px)", yaxis_title="Y (global px)",
-        width=width, height=height,
+        xaxis_title="X (global px)",
+        yaxis_title="Y (global px)",
+        width=width,
+        height=height,
         template="simple_white",
     )
     return _ifinalize(fig, save_path, show)
@@ -1314,10 +1367,11 @@ def iplot_local_dots_gene(
         fov_vals = values[fov_mask.values]
         fov_hover = hover_all[fov_mask.values]
 
-        trace = _scatter_trace_continuous(x, y, fov_vals, colorscale, vmin_eff, vmax_eff,
-                                          gene, fov_hover, dot_size, alpha)
-        trace.visible = (fov_id == first_fov)
-        trace.marker.colorbar.showticklabels = (fov_id == first_fov)
+        trace = _scatter_trace_continuous(
+            x, y, fov_vals, colorscale, vmin_eff, vmax_eff, gene, fov_hover, dot_size, alpha
+        )
+        trace.visible = fov_id == first_fov
+        trace.marker.colorbar.showticklabels = fov_id == first_fov
         fig.add_trace(trace)
         fov_trace_counts[fov_id] = 1
 
@@ -1326,18 +1380,22 @@ def iplot_local_dots_gene(
     for idx, fov_id in enumerate(fov_ids):
         vis = [False] * total
         vis[idx] = True
-        buttons.append(dict(label=f"FOV {fov_id}", method="update",
-                            args=[{"visible": vis}, {"title": f"{gene} — FOV {fov_id}"}]))
+        buttons.append(
+            dict(label=f"FOV {fov_id}", method="update", args=[{"visible": vis}, {"title": f"{gene} — FOV {fov_id}"}])
+        )
 
     layer_label = layer or "raw"
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     fig.update_layout(
         title=title or f"{gene} ({layer_label}) — FOV {first_fov}",
-        xaxis_title="X (local px)", yaxis_title="Y (local px)",
-        width=width, height=height,
+        xaxis_title="X (local px)",
+        yaxis_title="Y (local px)",
+        width=width,
+        height=height,
         template="simple_white",
-        updatemenus=[dict(buttons=buttons, direction="down", showactive=True,
-                          x=0.01, xanchor="left", y=1.06, yanchor="top")],
+        updatemenus=[
+            dict(buttons=buttons, direction="down", showactive=True, x=0.01, xanchor="left", y=1.06, yanchor="top")
+        ],
     )
     return _ifinalize(fig, save_path, show)
 
@@ -1417,8 +1475,10 @@ def iplot_global_polygon(
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     fig.update_layout(
         title=title or feat_col,
-        xaxis_title="X (global px)", yaxis_title="Y (global px)",
-        width=width, height=height,
+        xaxis_title="X (global px)",
+        yaxis_title="Y (global px)",
+        width=width,
+        height=height,
         legend=dict(itemsizing="constant"),
         template="simple_white",
     )
@@ -1495,7 +1555,7 @@ def iplot_local_polygon(
         else:
             traces = _polygon_traces_continuous(fov_gdf, feat_col, cmap, vmin, vmax, poly_alpha, n_bins)
         for trace in traces:
-            trace.visible = (fov_id == first_fov)
+            trace.visible = fov_id == first_fov
             trace.showlegend = (fov_id == first_fov) and is_cat
             if is_cat:
                 trace.legendgroup = str(trace.name)
@@ -1510,19 +1570,25 @@ def iplot_local_polygon(
         vis = [False] * total
         for i in range(offset, offset + n):
             vis[i] = True
-        buttons.append(dict(label=f"FOV {fov_id}", method="update",
-                            args=[{"visible": vis}, {"title": f"{feat_col} — FOV {fov_id}"}]))
+        buttons.append(
+            dict(
+                label=f"FOV {fov_id}", method="update", args=[{"visible": vis}, {"title": f"{feat_col} — FOV {fov_id}"}]
+            )
+        )
         offset += n
 
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     fig.update_layout(
         title=title or f"{feat_col} — FOV {first_fov}",
-        xaxis_title="X (local px)", yaxis_title="Y (local px)",
-        width=width, height=height,
+        xaxis_title="X (local px)",
+        yaxis_title="Y (local px)",
+        width=width,
+        height=height,
         legend=dict(itemsizing="constant"),
         template="simple_white",
-        updatemenus=[dict(buttons=buttons, direction="down", showactive=True,
-                          x=0.01, xanchor="left", y=1.06, yanchor="top")],
+        updatemenus=[
+            dict(buttons=buttons, direction="down", showactive=True, x=0.01, xanchor="left", y=1.06, yanchor="top")
+        ],
     )
     return _ifinalize(fig, save_path, show)
 
@@ -1582,8 +1648,10 @@ def iplot_global_polygon_gene(
     layer_label = layer or "raw"
     fig.update_layout(
         title=title or f"{gene} ({layer_label}) — global",
-        xaxis_title="X (global px)", yaxis_title="Y (global px)",
-        width=width, height=height,
+        xaxis_title="X (global px)",
+        yaxis_title="Y (global px)",
+        width=width,
+        height=height,
         template="simple_white",
     )
     return _ifinalize(fig, save_path, show)
@@ -1652,7 +1720,7 @@ def iplot_local_polygon_gene(
             continue
         n_before = len(fig.data)
         for trace in _polygon_traces_continuous(fov_gdf, gene, cmap, vmin_eff, vmax_eff, poly_alpha, n_bins):
-            trace.visible = (fov_id == first_fov)
+            trace.visible = fov_id == first_fov
             fig.add_trace(trace)
         fov_trace_counts[fov_id] = len(fig.data) - n_before
 
@@ -1664,19 +1732,23 @@ def iplot_local_polygon_gene(
         vis = [False] * total
         for i in range(offset, offset + n):
             vis[i] = True
-        buttons.append(dict(label=f"FOV {fov_id}", method="update",
-                            args=[{"visible": vis}, {"title": f"{gene} — FOV {fov_id}"}]))
+        buttons.append(
+            dict(label=f"FOV {fov_id}", method="update", args=[{"visible": vis}, {"title": f"{gene} — FOV {fov_id}"}])
+        )
         offset += n
 
     layer_label = layer or "raw"
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
     fig.update_layout(
         title=title or f"{gene} ({layer_label}) — FOV {first_fov}",
-        xaxis_title="X (local px)", yaxis_title="Y (local px)",
-        width=width, height=height,
+        xaxis_title="X (local px)",
+        yaxis_title="Y (local px)",
+        width=width,
+        height=height,
         template="simple_white",
-        updatemenus=[dict(buttons=buttons, direction="down", showactive=True,
-                          x=0.01, xanchor="left", y=1.06, yanchor="top")],
+        updatemenus=[
+            dict(buttons=buttons, direction="down", showactive=True, x=0.01, xanchor="left", y=1.06, yanchor="top")
+        ],
     )
     return _ifinalize(fig, save_path, show)
 

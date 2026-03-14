@@ -111,8 +111,7 @@ def plot_spatial_graph(
         rows, cols = rows[idx], cols[idx]
 
     segs = [
-        [(g_pos.iloc[r][x_col], g_pos.iloc[r][y_col]),
-         (g_pos.iloc[c][x_col], g_pos.iloc[c][y_col])]
+        [(g_pos.iloc[r][x_col], g_pos.iloc[r][y_col]), (g_pos.iloc[c][x_col], g_pos.iloc[c][y_col])]
         for r, c in zip(rows, cols, strict=False)
     ]
 
@@ -129,8 +128,15 @@ def plot_spatial_graph(
         if vals.dtype.kind in ("O", "U") or str(vals.dtype) == "category":
             colors, _, handles = categorical_colors(vals, palette)
             ax.scatter(pos_df[x_col], pos_df[y_col], s=point_size, c=colors, linewidths=0, zorder=2)
-            ax.legend(handles=handles, title=color_by, bbox_to_anchor=(1.01, 1), loc="upper left",
-                      fontsize=7, title_fontsize=8, frameon=False)
+            ax.legend(
+                handles=handles,
+                title=color_by,
+                bbox_to_anchor=(1.01, 1),
+                loc="upper left",
+                fontsize=7,
+                title_fontsize=8,
+                frameon=False,
+            )
         else:
             cmap_name = palette if isinstance(palette, str) else "viridis"
             colors, _, mappable = continuous_colors(vals, cmap_name, None, None, None)
@@ -214,8 +220,15 @@ def plot_neighborhood_enrichment(
             for j in range(n):
                 z = zscore.iloc[i, j]
                 sig = "*" if (pvalue is not None and pvalue.iloc[i, j] < significance_threshold) else ""
-                ax.text(j, i, f"{z:.1f}{sig}", ha="center", va="center", fontsize=6,
-                        color="white" if abs(z) > vmax * 0.6 else "black")
+                ax.text(
+                    j,
+                    i,
+                    f"{z:.1f}{sig}",
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="white" if abs(z) > vmax * 0.6 else "black",
+                )
 
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -291,8 +304,9 @@ def plot_neighborhood_composition(
     ax.set_ylabel("Mean neighbour fraction")
     ax.set_ylim(0, 1.0)
     ax.set_title(title)
-    ax.legend(title="Cell type", bbox_to_anchor=(1.01, 1), loc="upper left",
-               fontsize=7, title_fontsize=8, frameon=False)
+    ax.legend(
+        title="Cell type", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, title_fontsize=8, frameon=False
+    )
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -347,8 +361,15 @@ def plot_niches(
     ax.set_xlabel(x_col)
     ax.set_ylabel(y_col)
     ax.set_title(title)
-    ax.legend(handles=handles, title="Niche", bbox_to_anchor=(1.01, 1), loc="upper left",
-               fontsize=7, title_fontsize=8, frameon=False)
+    ax.legend(
+        handles=handles,
+        title="Niche",
+        bbox_to_anchor=(1.01, 1),
+        loc="upper left",
+        fontsize=7,
+        title_fontsize=8,
+        frameon=False,
+    )
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -413,15 +434,15 @@ def plot_morans_i_map(
     fig, ax = plt.subplots(figsize=figsize)
     for stype in [s for s in ["HH", "HL", "LH", "LL", "ns"] if s in plot_data[spot_type_col].unique()]:
         sub = plot_data[plot_data[spot_type_col] == stype]
-        ax.scatter(sub[x_col], sub[y_col], s=point_size, c=palette.get(stype, "grey"),
-                   label=stype, linewidths=0)
+        ax.scatter(sub[x_col], sub[y_col], s=point_size, c=palette.get(stype, "grey"), label=stype, linewidths=0)
 
     ax.set_aspect("equal")
     ax.set_xlabel(x_col)
     ax.set_ylabel(y_col)
     ax.set_title(title)
-    ax.legend(title="LISA cluster", bbox_to_anchor=(1.01, 1), loc="upper left",
-               fontsize=7, title_fontsize=8, frameon=False)
+    ax.legend(
+        title="LISA cluster", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, title_fontsize=8, frameon=False
+    )
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -558,8 +579,9 @@ def plot_co_occurrence(
     ax.set_xlabel("Distance (px)")
     ax.set_ylabel("Co-occurrence score")
     ax.set_title(title)
-    ax.legend(title="Type pair", bbox_to_anchor=(1.01, 1), loc="upper left",
-               fontsize=7, title_fontsize=8, frameon=False)
+    ax.legend(
+        title="Type pair", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, title_fontsize=8, frameon=False
+    )
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -615,8 +637,14 @@ def plot_ripley(
     fig, ax = plt.subplots(figsize=figsize)
 
     if show_envelope and getattr(ripley_result, "envelope_lo", None) is not None:
-        ax.fill_between(r, ripley_result.envelope_lo, ripley_result.envelope_hi,
-                        color=envelope_color, alpha=0.5, label="95% envelope")
+        ax.fill_between(
+            r,
+            ripley_result.envelope_lo,
+            ripley_result.envelope_hi,
+            color=envelope_color,
+            alpha=0.5,
+            label="95% envelope",
+        )
     if show_csr:
         ax.plot(r, csr, color=csr_color, linestyle="--", linewidth=1.2, label="CSR")
     ax.plot(r, stat, color=color, linewidth=2.0, label=f"Observed {label}")
@@ -692,8 +720,9 @@ def plot_getis_ord_map(
         for stype, color in palette.items():
             sub = merged[merged[spot_type_col] == stype]
             ax.scatter(sub[x_col], sub[y_col], s=point_size, c=color, label=stype, linewidths=0)
-        ax.legend(title="Spot type", bbox_to_anchor=(1.01, 1), loc="upper left",
-                  fontsize=7, title_fontsize=8, frameon=False)
+        ax.legend(
+            title="Spot type", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, title_fontsize=8, frameon=False
+        )
     else:
         zvals = merged[zscore_col].fillna(0.0)
         vmax = float(np.abs(zvals).max())
@@ -758,17 +787,18 @@ def plot_degree_distribution(
         groups = spatioloji_obj.cell_meta.reindex(degrees.index)[group_col]
         _, color_dict, _ = categorical_colors(groups.dropna(), palette)
         for grp, sub in degrees.groupby(groups):
-            sns.kdeplot(sub.values, ax=ax, fill=True, alpha=0.4,
-                        color=color_dict.get(grp, "grey"), label=str(grp))
+            sns.kdeplot(sub.values, ax=ax, fill=True, alpha=0.4, color=color_dict.get(grp, "grey"), label=str(grp))
         ax.set_ylabel("Density")
-        ax.legend(title=group_col, bbox_to_anchor=(1.01, 1), loc="upper left",
-                  fontsize=7, title_fontsize=8, frameon=False)
+        ax.legend(
+            title=group_col, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, title_fontsize=8, frameon=False
+        )
     else:
         ax.hist(degrees.values, bins=bins, color="steelblue", edgecolor="white", linewidth=0.4)
         ax.set_ylabel("Count")
 
-    ax.axvline(graph.mean_degree, color="#d7191c", linestyle="--", linewidth=1.2,
-               label=f"Mean = {graph.mean_degree:.1f}")
+    ax.axvline(
+        graph.mean_degree, color="#d7191c", linestyle="--", linewidth=1.2, label=f"Mean = {graph.mean_degree:.1f}"
+    )
     ax.set_xlabel("Degree")
     ax.set_title(title)
     ax.legend(fontsize=7, frameon=False)
@@ -830,8 +860,15 @@ def plot_niche_signatures(
 
     for i in range(n_niches):
         for j in range(n_types):
-            ax.text(j, i, f"{sigs.iloc[i, j]:.2f}", ha="center", va="center", fontsize=6,
-                    color="white" if sigs.iloc[i, j] > sigs.values.max() * 0.6 else "black")
+            ax.text(
+                j,
+                i,
+                f"{sigs.iloc[i, j]:.2f}",
+                ha="center",
+                va="center",
+                fontsize=6,
+                color="white" if sigs.iloc[i, j] > sigs.values.max() * 0.6 else "black",
+            )
 
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -960,16 +997,22 @@ def plot_morans_scatter(
         cat_vals = spatioloji_obj.cell_meta.reindex(common)[color_by]
         colors, _, handles = categorical_colors(cat_vals, palette)
         ax.scatter(x_std, y, s=point_size, c=colors, alpha=alpha, linewidths=0)
-        ax.legend(handles=handles, title=color_by, bbox_to_anchor=(1.01, 1), loc="upper left",
-                  fontsize=7, title_fontsize=8, frameon=False)
+        ax.legend(
+            handles=handles,
+            title=color_by,
+            bbox_to_anchor=(1.01, 1),
+            loc="upper left",
+            fontsize=7,
+            title_fontsize=8,
+            frameon=False,
+        )
     elif "spot_type" in local_result.columns:
         _lisa_pal = {"HH": "#d7191c", "LL": "#2c7bb6", "HL": "#fdae61", "LH": "#abd9e9", "ns": "#e0e0e0"}
         spot = local_result.reindex(common)["spot_type"].fillna("ns")
         colors = [_lisa_pal.get(s, "grey") for s in spot]
         for stype, color in _lisa_pal.items():
             mask = spot == stype
-            ax.scatter(x_std[mask], y[mask], s=point_size, c=color, alpha=alpha,
-                       linewidths=0, label=stype)
+            ax.scatter(x_std[mask], y[mask], s=point_size, c=color, alpha=alpha, linewidths=0, label=stype)
         ax.legend(title="LISA", fontsize=7, title_fontsize=8, frameon=False)
     else:
         ax.scatter(x_std, y, s=point_size, c="steelblue", alpha=alpha, linewidths=0)
@@ -988,12 +1031,13 @@ def plot_morans_scatter(
     # quadrant labels
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
     offset_x, offset_y = (xlim[1] - xlim[0]) * 0.04, (ylim[1] - ylim[0]) * 0.04
-    for txt, xp, yp in [("HH", xlim[1] - offset_x, ylim[1] - offset_y),
-                         ("HL", xlim[1] - offset_x, ylim[0] + offset_y),
-                         ("LH", xlim[0] + offset_x, ylim[1] - offset_y),
-                         ("LL", xlim[0] + offset_x, ylim[0] + offset_y)]:
-        ax.text(xp, yp, txt, ha="center", va="center", fontsize=8,
-                color="grey", fontstyle="italic")
+    for txt, xp, yp in [
+        ("HH", xlim[1] - offset_x, ylim[1] - offset_y),
+        ("HL", xlim[1] - offset_x, ylim[0] + offset_y),
+        ("LH", xlim[0] + offset_x, ylim[1] - offset_y),
+        ("LL", xlim[0] + offset_x, ylim[0] + offset_y),
+    ]:
+        ax.text(xp, yp, txt, ha="center", va="center", fontsize=8, color="grey", fontstyle="italic")
 
     ax.set_xlabel("Standardised value (z-score)")
     ax.set_ylabel("Spatial lag (local Moran's I)")
@@ -1050,9 +1094,7 @@ def plot_ripley_multi(
 
     ftypes = [r.function_type for r in ripley_results]
     if len(set(ftypes)) > 1:
-        warnings.warn(
-            f"Mixing function types: {set(ftypes)}. Plot may be misleading.", stacklevel=2
-        )
+        warnings.warn(f"Mixing function types: {set(ftypes)}. Plot may be misleading.", stacklevel=2)
 
     ftype = ftypes[0]
     pal = sns.color_palette(palette, len(ripley_results))
@@ -1061,8 +1103,14 @@ def plot_ripley_multi(
     fig, ax = plt.subplots(figsize=figsize)
 
     if show_csr:
-        ax.plot(ripley_results[0].r, ripley_results[0].csr_expected,
-                color="black", linestyle="--", linewidth=1.0, label="CSR")
+        ax.plot(
+            ripley_results[0].r,
+            ripley_results[0].csr_expected,
+            color="black",
+            linestyle="--",
+            linewidth=1.0,
+            label="CSR",
+        )
 
     for result, label, color in zip(ripley_results, _labels, pal, strict=False):
         ax.plot(result.r, result.statistic, color=color, linewidth=1.8, label=label)
@@ -1136,13 +1184,18 @@ def plot_nearest_neighbor_distances(
             groups = spatioloji_obj.cell_meta.reindex(nnd_df.index)[group_col]
             _, color_dict, _ = categorical_colors(groups.dropna(), palette)
             for grp, sub_idx in groups.groupby(groups).groups.items():
-                sns.kdeplot(nnd_df.loc[sub_idx, "nnd"].values, ax=ax, fill=True, alpha=0.4,
-                            color=color_dict.get(grp, "grey"), label=str(grp))
+                sns.kdeplot(
+                    nnd_df.loc[sub_idx, "nnd"].values,
+                    ax=ax,
+                    fill=True,
+                    alpha=0.4,
+                    color=color_dict.get(grp, "grey"),
+                    label=str(grp),
+                )
             ax.set_ylabel("Density")
             ax.legend(title=group_col, fontsize=7, title_fontsize=8, frameon=False)
         else:
-            ax.hist(nnd_df["nnd"].values, bins=bins, color="steelblue",
-                    edgecolor="white", linewidth=0.4)
+            ax.hist(nnd_df["nnd"].values, bins=bins, color="steelblue", edgecolor="white", linewidth=0.4)
             ax.set_ylabel("Count")
         ax.set_xlabel("Nearest-neighbour distance (px)")
 
@@ -1151,8 +1204,7 @@ def plot_nearest_neighbor_distances(
             raise ValueError("mode='violin' requires spatioloji_obj and group_col.")
         plot_data = nnd_df[["nnd"]].copy()
         plot_data[group_col] = spatioloji_obj.cell_meta.reindex(nnd_df.index)[group_col].values
-        sns.violinplot(data=plot_data, x=group_col, y="nnd", palette=palette, ax=ax,
-                       cut=0, linewidth=0.8)
+        sns.violinplot(data=plot_data, x=group_col, y="nnd", palette=palette, ax=ax, cut=0, linewidth=0.8)
         ax.set_xlabel("")
         ax.set_ylabel("NND (px)")
         ax.tick_params(axis="x", rotation=45)
@@ -1245,8 +1297,15 @@ def plot_proximity_score(
             for j in range(n):
                 v = mat.iloc[i, j]
                 if pd.notna(v):
-                    ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6,
-                            color="white" if v > vmax * 0.6 else "black")
+                    ax.text(
+                        j,
+                        i,
+                        f"{v:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=6,
+                        color="white" if v > vmax * 0.6 else "black",
+                    )
 
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -1302,9 +1361,16 @@ def plot_permutation_test(
     ax.axvline(observed, color=color_observed, linewidth=2.0, label=f"Observed = {observed:.3f}")
     ax.axvline(expected, color="black", linewidth=1.2, linestyle="--", label=f"Expected = {expected:.3f}")
 
-    ax.text(0.98, 0.96, f"z = {zscore:.2f}, p = {pvalue:.4f} ({alternative})",
-            transform=ax.transAxes, ha="right", va="top", fontsize=8,
-            bbox={"facecolor": "white", "alpha": 0.6, "edgecolor": "none"})
+    ax.text(
+        0.98,
+        0.96,
+        f"z = {zscore:.2f}, p = {pvalue:.4f} ({alternative})",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=8,
+        bbox={"facecolor": "white", "alpha": 0.6, "edgecolor": "none"},
+    )
 
     ax.set_xlabel("Statistic")
     ax.set_ylabel("Count")
@@ -1334,8 +1400,8 @@ __all__ = [
     "plot_nearest_neighbor_distances",
     "plot_proximity_score",
     "plot_permutation_test",
-    "plot_interface_map",
-    "plot_interface_metrics",
+    "plot_interface_point_map",
+    "plot_interface_point_metrics",
 ]
 
 
@@ -1344,7 +1410,7 @@ __all__ = [
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def plot_interface_map(
+def plot_interface_point_map(
     spatioloji_obj,
     interface_result,
     coord_type: str = "global",
@@ -1433,15 +1499,12 @@ def plot_interface_map(
 
     # Legend
     legend_items = []
-    for lbl in ["region_a_interface", "region_b_interface",
-                "interior_a", "interior_b", "other"]:
+    for lbl in ["region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"]:
         n = (labels == lbl).sum()
         if n > 0:
             display = lbl.replace("_", " ")
-            legend_items.append(Patch(facecolor=cmap.get(lbl, grey),
-                                      label=f"{display} ({n})"))
-    ax.legend(handles=legend_items, bbox_to_anchor=(1.01, 1), loc="upper left",
-              fontsize=7, frameon=False)
+            legend_items.append(Patch(facecolor=cmap.get(lbl, grey), label=f"{display} ({n})"))
+    ax.legend(handles=legend_items, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, frameon=False)
 
     ra = interface_result.region_a
     rb = interface_result.region_b
@@ -1450,7 +1513,7 @@ def plot_interface_map(
     return finalize_plot(fig, save_path, dpi, show)
 
 
-def plot_interface_metrics(
+def plot_interface_point_metrics(
     interface_result,
     metric: str = "length",
     ax=None,
@@ -1479,9 +1542,16 @@ def plot_interface_metrics(
         ``plt.Figure`` or ``None``.
     """
     from spatioloji_s.visualization.polygon_plots import (
-        plot_interface_metrics as _poly_plot_metrics,
+        plot_interface_polygon_metrics as _poly_plot_metrics,
     )
+
     return _poly_plot_metrics(
-        interface_result, metric=metric, ax=ax, figsize=figsize,
-        title=title, show=show, save_path=save_path, dpi=dpi,
+        interface_result,
+        metric=metric,
+        ax=ax,
+        figsize=figsize,
+        title=title,
+        show=show,
+        save_path=save_path,
+        dpi=dpi,
     )

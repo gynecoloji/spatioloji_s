@@ -166,8 +166,15 @@ def plot_polygon_graph(
             colors, _, handles = categorical_colors(vals, palette)
             pc = _build_poly_collection(gdf, colors)
             ax.add_collection(pc)
-            ax.legend(handles=handles, title=color_by, bbox_to_anchor=(1.01, 1), loc="upper left",
-                      fontsize=7, title_fontsize=8, frameon=False)
+            ax.legend(
+                handles=handles,
+                title=color_by,
+                bbox_to_anchor=(1.01, 1),
+                loc="upper left",
+                fontsize=7,
+                title_fontsize=8,
+                frameon=False,
+            )
         else:
             cmap_name = palette if isinstance(palette, str) else "viridis"
             colors, norm, mappable = continuous_colors(vals, cmap_name, None, None, None)
@@ -250,8 +257,10 @@ def plot_morphology_distribution(
             elif f"morph_{m}" in meta.columns:
                 metric_cols.append(f"morph_{m}")
             else:
-                raise ValueError(f"Metric '{m}' not found in cell_meta. "
-                                 f"Available morph columns: {[c for c in meta.columns if c.startswith('morph_')]}")
+                raise ValueError(
+                    f"Metric '{m}' not found in cell_meta. "
+                    f"Available morph columns: {[c for c in meta.columns if c.startswith('morph_')]}"
+                )
 
     n_metrics = len(metric_cols)
     figsize = figsize or (max(5, n_metrics * 3), 5)
@@ -273,8 +282,7 @@ def plot_morphology_distribution(
         elif plot_type == "box":
             sns.boxplot(data=plot_data, x=x_var, y=y_var, palette=palette, ax=ax, linewidth=0.8)
         else:
-            sns.stripplot(data=plot_data, x=x_var, y=y_var, palette=palette, ax=ax,
-                          size=2, jitter=True, alpha=0.4)
+            sns.stripplot(data=plot_data, x=x_var, y=y_var, palette=palette, ax=ax, size=2, jitter=True, alpha=0.4)
 
         ax.set_xlabel("")
         ax.set_ylabel(col)
@@ -435,8 +443,15 @@ def plot_contact_permutation(
             for j in range(n):
                 z = z_mat[i, j]
                 sig = "*" if sig_mat[i, j] else ""
-                ax.text(j, i, f"{z:.1f}{sig}", ha="center", va="center", fontsize=6,
-                        color="white" if abs(z) > vmax * 0.6 else "black")
+                ax.text(
+                    j,
+                    i,
+                    f"{z:.1f}{sig}",
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="white" if abs(z) > vmax * 0.6 else "black",
+                )
 
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -568,17 +583,18 @@ def plot_contact_degree_distribution(
         groups = spatioloji_obj.cell_meta.reindex(degrees.index)[group_col]
         _, color_dict, _ = categorical_colors(groups.dropna(), palette)
         for grp, sub in degrees.groupby(groups):
-            sns.kdeplot(sub.values, ax=ax, fill=True, alpha=0.4,
-                        color=color_dict.get(grp, "grey"), label=str(grp))
+            sns.kdeplot(sub.values, ax=ax, fill=True, alpha=0.4, color=color_dict.get(grp, "grey"), label=str(grp))
         ax.set_ylabel("Density")
-        ax.legend(title=group_col, bbox_to_anchor=(1.01, 1), loc="upper left",
-                  fontsize=7, title_fontsize=8, frameon=False)
+        ax.legend(
+            title=group_col, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, title_fontsize=8, frameon=False
+        )
     else:
         ax.hist(degrees.values, bins=bins, color="steelblue", edgecolor="white", linewidth=0.4)
         ax.set_ylabel("Count")
 
-    ax.axvline(graph.mean_degree, color="#d7191c", linestyle="--", linewidth=1.2,
-               label=f"Mean = {graph.mean_degree:.1f}")
+    ax.axvline(
+        graph.mean_degree, color="#d7191c", linestyle="--", linewidth=1.2, label=f"Mean = {graph.mean_degree:.1f}"
+    )
     ax.set_xlabel("Contact degree")
     ax.set_title(title)
     ax.legend(fontsize=7, frameon=False)
@@ -652,8 +668,15 @@ def plot_polygon_neighborhood_enrichment(
             for j in range(n):
                 z = zscore.iloc[i, j]
                 sig = "*" if (pvalue is not None and pvalue.iloc[i, j] < significance_threshold) else ""
-                ax.text(j, i, f"{z:.1f}{sig}", ha="center", va="center", fontsize=6,
-                        color="white" if abs(z) > vmax * 0.6 else "black")
+                ax.text(
+                    j,
+                    i,
+                    f"{z:.1f}{sig}",
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="white" if abs(z) > vmax * 0.6 else "black",
+                )
 
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -727,8 +750,9 @@ def plot_polygon_neighborhood_composition(
     ax.set_ylabel("Mean neighbour fraction")
     ax.set_ylim(0, 1.0)
     ax.set_title(title)
-    ax.legend(title="Cell type", bbox_to_anchor=(1.01, 1), loc="upper left",
-               fontsize=7, title_fontsize=8, frameon=False)
+    ax.legend(
+        title="Cell type", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, title_fontsize=8, frameon=False
+    )
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -783,8 +807,15 @@ def plot_polygon_niches(
     ax.autoscale_view()
     ax.set_aspect("equal")
     ax.set_title(title)
-    ax.legend(handles=handles, title="Niche", bbox_to_anchor=(1.01, 1), loc="upper left",
-               fontsize=7, title_fontsize=8, frameon=False)
+    ax.legend(
+        handles=handles,
+        title="Niche",
+        bbox_to_anchor=(1.01, 1),
+        loc="upper left",
+        fontsize=7,
+        title_fontsize=8,
+        frameon=False,
+    )
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -844,22 +875,23 @@ def plot_boundary_cells_map(
 
     if mode == "categorical":
         if boundary_col not in meta.columns:
-            raise ValueError(f"'{boundary_col}' not found in cell_meta. "
-                             "Run boundary_cells(store=True) first.")
+            raise ValueError(f"'{boundary_col}' not found in cell_meta. Run boundary_cells(store=True) first.")
         is_boundary = meta.reindex(gdf.index)[boundary_col].fillna(False).astype(bool)
         colors = [boundary_color if b else interior_color for b in is_boundary]
         pc = _build_poly_collection(gdf, colors)
         pc.set_alpha(poly_alpha)
         import matplotlib.patches as mpatches
-        handles = [mpatches.Patch(color=boundary_color, label="Boundary"),
-                   mpatches.Patch(color=interior_color, label="Interior")]
+
+        handles = [
+            mpatches.Patch(color=boundary_color, label="Boundary"),
+            mpatches.Patch(color=interior_color, label="Interior"),
+        ]
         fig, ax = plt.subplots(figsize=figsize)
         ax.add_collection(pc)
         ax.legend(handles=handles, fontsize=7, frameon=False)
     else:
         if score_col not in meta.columns:
-            raise ValueError(f"'{score_col}' not found in cell_meta. "
-                             "Run boundary_cells(store=True) first.")
+            raise ValueError(f"'{score_col}' not found in cell_meta. Run boundary_cells(store=True) first.")
         vals = meta.reindex(gdf.index)[score_col]
         colors_list, norm, mappable = continuous_colors(vals, cmap, 0.0, 1.0, None)
         pc = _build_poly_collection(gdf, colors_list)
@@ -980,8 +1012,7 @@ def plot_contact_summary(
         >>> sj.visualization.plot_contact_summary(cs, value_col="mean_length")
     """
     if value_col not in contact_summary_df.columns:
-        raise ValueError(f"value_col '{value_col}' not found. Available: "
-                         f"{contact_summary_df.columns.tolist()}")
+        raise ValueError(f"value_col '{value_col}' not found. Available: {contact_summary_df.columns.tolist()}")
 
     all_types = sorted(set(contact_summary_df["type_a"].tolist() + contact_summary_df["type_b"].tolist()))
     n = len(all_types)
@@ -1011,8 +1042,15 @@ def plot_contact_summary(
         vmax = mat.max()
         for i in range(n):
             for j in range(n):
-                ax.text(j, i, fmt.format(mat[i, j]), ha="center", va="center", fontsize=6,
-                        color="white" if mat[i, j] > vmax * 0.6 else "black")
+                ax.text(
+                    j,
+                    i,
+                    fmt.format(mat[i, j]),
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="white" if mat[i, j] > vmax * 0.6 else "black",
+                )
 
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -1141,11 +1179,19 @@ def plot_polygon_hotspot_map(
         pc = _build_poly_collection(gdf, colors)
         pc.set_alpha(poly_alpha)
         import matplotlib.patches as mpatches
+
         handles = [mpatches.Patch(color=v, label=k) for k, v in palette.items()]
         fig, ax = plt.subplots(figsize=figsize)
         ax.add_collection(pc)
-        ax.legend(handles=handles, title="Spot type", bbox_to_anchor=(1.01, 1), loc="upper left",
-                  fontsize=7, title_fontsize=8, frameon=False)
+        ax.legend(
+            handles=handles,
+            title="Spot type",
+            bbox_to_anchor=(1.01, 1),
+            loc="upper left",
+            fontsize=7,
+            title_fontsize=8,
+            frameon=False,
+        )
     else:
         vmax = float(np.abs(zvals).max())
         colors_list, norm, mappable = continuous_colors(zvals, cmap, -vmax, vmax, 0.0)
@@ -1206,8 +1252,7 @@ def plot_morphology_class_map(
         >>> sj.visualization.plot_morphology_class_map(sp)
     """
     if class_col not in spatioloji_obj.cell_meta.columns:
-        raise ValueError(f"'{class_col}' not found in cell_meta. "
-                         "Run classify_morphology() first.")
+        raise ValueError(f"'{class_col}' not found in cell_meta. Run classify_morphology() first.")
 
     gdf = spatioloji_obj.to_geopandas(coord_type=coord_type, include_metadata=False)
     labels = spatioloji_obj.cell_meta.reindex(gdf.index)[class_col]
@@ -1220,8 +1265,15 @@ def plot_morphology_class_map(
     ax.autoscale_view()
     ax.set_aspect("equal")
     ax.set_title(title)
-    ax.legend(handles=handles, title="Morphology class", bbox_to_anchor=(1.01, 1), loc="upper left",
-               fontsize=7, title_fontsize=8, frameon=False)
+    ax.legend(
+        handles=handles,
+        title="Morphology class",
+        bbox_to_anchor=(1.01, 1),
+        loc="upper left",
+        fontsize=7,
+        title_fontsize=8,
+        frameon=False,
+    )
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 
@@ -1299,8 +1351,15 @@ def plot_morphology_correlation(
         if annotate:
             for i in range(n):
                 for j in range(n):
-                    ax.text(j, i, f"{corr.iloc[i, j]:.2f}", ha="center", va="center",
-                            fontsize=6, color="white" if abs(corr.iloc[i, j]) > 0.6 else "black")
+                    ax.text(
+                        j,
+                        i,
+                        f"{corr.iloc[i, j]:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=6,
+                        color="white" if abs(corr.iloc[i, j]) > 0.6 else "black",
+                    )
         return im
 
     if group_col is not None and group_col in meta.columns:
@@ -1378,12 +1437,12 @@ def plot_spatial_autocorrelation(
     expected_val = float(df["expected"].iloc[0]) if "expected" in df.columns else 0.0
 
     dot_colors = [
-        "#d7191c" if (p_col in df.columns and row[p_col] < significance_threshold)
-        else "#aaaaaa"
+        "#d7191c" if (p_col in df.columns and row[p_col] < significance_threshold) else "#aaaaaa"
         for _, row in df.iterrows()
     ]
 
     import matplotlib.patches as mpatches
+
     fig, ax = plt.subplots(figsize=figsize)
     y_pos = range(n)
     ax.hlines(y_pos, expected_val, df["statistic"].values, colors="lightgrey", linewidth=1.2)
@@ -1395,8 +1454,10 @@ def plot_spatial_autocorrelation(
     ax.set_xlabel("Moran's I statistic")
     ax.set_title(title)
 
-    handles = [mpatches.Patch(color="#d7191c", label=f"p < {significance_threshold}"),
-               mpatches.Patch(color="#aaaaaa", label="ns")]
+    handles = [
+        mpatches.Patch(color="#d7191c", label=f"p < {significance_threshold}"),
+        mpatches.Patch(color="#aaaaaa", label="ns"),
+    ]
     ax.legend(handles=handles, fontsize=7, frameon=False)
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
@@ -1463,18 +1524,27 @@ def plot_morphology_association(
         if col not in spatioloji_obj.cell_meta.columns:
             raise ValueError(f"'{col}' not found in cell_meta.")
         plot_data = spatioloji_obj.cell_meta[[col, group_col]].dropna()
-        sns.violinplot(data=plot_data, x=group_col, y=col, palette=palette, ax=ax,
-                       cut=0, linewidth=0.8)
+        sns.violinplot(data=plot_data, x=group_col, y=col, palette=palette, ax=ax, cut=0, linewidth=0.8)
         ax.set_xlabel("")
         ax.set_ylabel(col)
         ax.tick_params(axis="x", rotation=45)
 
-        stat_str = (f"{assoc_result.get('test', '')}  "
-                    f"stat={assoc_result.get('statistic', float('nan')):.3f}  "
-                    f"p={assoc_result.get('p_value', float('nan')):.4f}")
+        stat_str = (
+            f"{assoc_result.get('test', '')}  "
+            f"stat={assoc_result.get('statistic', float('nan')):.3f}  "
+            f"p={assoc_result.get('p_value', float('nan')):.4f}"
+        )
         ax.set_title(title or f"Morphology association — {col}")
-        ax.text(0.98, 0.97, stat_str, transform=ax.transAxes, ha="right", va="top",
-                fontsize=7, bbox={"facecolor": "white", "alpha": 0.5, "edgecolor": "none"})
+        ax.text(
+            0.98,
+            0.97,
+            stat_str,
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=7,
+            bbox={"facecolor": "white", "alpha": 0.5, "edgecolor": "none"},
+        )
 
     elif "gene" in assoc_result:
         # ── correlation mode: scatter ─────────────────────────────────────────
@@ -1501,9 +1571,16 @@ def plot_morphology_association(
         ax.set_xlabel(col)
         ax.set_ylabel(f"{gene} expression")
         ax.set_title(title or f"Morphology association — {col}")
-        ax.text(0.98, 0.97, f"r = {corr:.3f},  p = {pval:.4f}",
-                transform=ax.transAxes, ha="right", va="top", fontsize=8,
-                bbox={"facecolor": "white", "alpha": 0.5, "edgecolor": "none"})
+        ax.text(
+            0.98,
+            0.97,
+            f"r = {corr:.3f},  p = {pval:.4f}",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=8,
+            bbox={"facecolor": "white", "alpha": 0.5, "edgecolor": "none"},
+        )
     else:
         raise ValueError("assoc_result must contain 'group_col' (group mode) or 'gene' (correlation mode).")
 
@@ -1532,8 +1609,8 @@ __all__ = [
     "plot_boundary_enrichment",
     "plot_spatial_autocorrelation",
     "plot_morphology_association",
-    "plot_interface_map",
-    "plot_interface_metrics",
+    "plot_interface_polygon_map",
+    "plot_interface_polygon_metrics",
 ]
 
 
@@ -1542,7 +1619,7 @@ __all__ = [
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def plot_interface_map(
+def plot_interface_polygon_map(
     spatioloji_obj,
     interface_result,
     coord_type: str = "global",
@@ -1602,10 +1679,7 @@ def plot_interface_map(
     if show_interior:
         face_colors = [cmap.get(lbl, grey) for lbl in labels]
     else:
-        face_colors = [
-            cmap.get(lbl, grey) if lbl.endswith("_interface") else grey
-            for lbl in labels
-        ]
+        face_colors = [cmap.get(lbl, grey) if lbl.endswith("_interface") else grey for lbl in labels]
 
     pc = _build_poly_collection(gdf, face_colors)
     pc.set_alpha(poly_alpha)
@@ -1632,15 +1706,12 @@ def plot_interface_map(
 
     # Legend
     legend_items = []
-    for lbl in ["region_a_interface", "region_b_interface",
-                "interior_a", "interior_b", "other"]:
+    for lbl in ["region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"]:
         n = (labels == lbl).sum()
         if n > 0:
             display = lbl.replace("_", " ")
-            legend_items.append(Patch(facecolor=cmap.get(lbl, grey),
-                                      label=f"{display} ({n})"))
-    ax.legend(handles=legend_items, bbox_to_anchor=(1.01, 1), loc="upper left",
-              fontsize=7, frameon=False)
+            legend_items.append(Patch(facecolor=cmap.get(lbl, grey), label=f"{display} ({n})"))
+    ax.legend(handles=legend_items, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, frameon=False)
 
     ra = interface_result.region_a
     rb = interface_result.region_b
@@ -1654,7 +1725,7 @@ def plot_interface_map(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def plot_interface_metrics(
+def plot_interface_polygon_metrics(
     interface_result,
     metric: str = "length",
     ax: plt.Axes | None = None,
@@ -1691,8 +1762,7 @@ def plot_interface_metrics(
             fig, ax = plt.subplots(figsize=figsize)
         else:
             fig = ax.get_figure()
-        ax.text(0.5, 0.5, "No interface segments found",
-                ha="center", va="center", transform=ax.transAxes, fontsize=11)
+        ax.text(0.5, 0.5, "No interface segments found", ha="center", va="center", transform=ax.transAxes, fontsize=11)
         ax.set_title(title or f"Interface segments — {metric}")
         clean_axes(ax)
         return finalize_plot(fig, save_path, dpi, show)
@@ -1703,6 +1773,7 @@ def plot_interface_metrics(
     bar_labels = [f"Segment {i}" for i in range(n)]
 
     from matplotlib.colors import Normalize
+
     cm_obj = plt.get_cmap("YlOrRd")
     v_min, v_max = float(vals.min()), float(vals.max())
     if v_min == v_max:
