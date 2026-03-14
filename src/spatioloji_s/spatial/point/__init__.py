@@ -41,6 +41,9 @@ from .._gradient_types import GradientResult
 from .._infiltration_types import InfiltrationResult
 from .._interface_types import InterfaceResult
 
+# Motifs
+from .._motif_types import AssemblyCatalog, MotifCatalog, MotifResult, StructureMatches
+
 # Gradient
 from .gradient import compute_gradient
 from .graph import (
@@ -55,6 +58,7 @@ from .infiltration import score_infiltration
 
 # Interface
 from .interface import identify_interface
+from .motifs import detect_assemblies, discover_motifs, match_known_structures, run_motif_pipeline
 
 # --- Neighborhood analysis ---
 from .neighborhoods import (
@@ -127,4 +131,13 @@ __all__ = [
     # Infiltration
     "score_infiltration",
     "InfiltrationResult",
+    # Motifs
+    "discover_motifs",
+    "detect_assemblies",
+    "match_known_structures",
+    "run_motif_pipeline",
+    "MotifCatalog",
+    "AssemblyCatalog",
+    "MotifResult",
+    "StructureMatches",
 ]

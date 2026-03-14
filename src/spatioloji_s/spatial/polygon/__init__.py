@@ -50,6 +50,9 @@ Typical workflow
 from .._gradient_types import GradientResult
 from .._infiltration_types import InfiltrationResult
 from .._interface_types import InterfaceResult
+
+# Motifs
+from .._motif_types import AssemblyCatalog, MotifCatalog, MotifResult, StructureMatches
 from .boundaries import (
     contact_fraction,
     contact_length,
@@ -79,6 +82,7 @@ from .morphology import (
     morphology_by_group,
     morphology_gene_correlation,
 )
+from .motifs import detect_assemblies, discover_motifs, match_known_structures, run_motif_pipeline
 
 # Neighborhoods
 from .neighborhoods import (
@@ -139,6 +143,15 @@ __all__ = [
     # Infiltration
     "score_infiltration",
     "InfiltrationResult",
+    # Motifs
+    "discover_motifs",
+    "detect_assemblies",
+    "match_known_structures",
+    "run_motif_pipeline",
+    "MotifCatalog",
+    "AssemblyCatalog",
+    "MotifResult",
+    "StructureMatches",
     # Statistics
     "contact_permutation_test",
     "morphology_association_test",

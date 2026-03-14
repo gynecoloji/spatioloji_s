@@ -73,6 +73,7 @@ from .point_plots import (
     plot_spatially_variable_genes,
 )
 from .polygon_plots import (
+    plot_assembly_map,
     plot_boundary_cells_map,
     plot_boundary_enrichment,
     plot_contact_degree_distribution,
@@ -89,6 +90,8 @@ from .polygon_plots import (
     plot_morphology_correlation,
     plot_morphology_distribution,
     plot_morphology_map,
+    plot_motif_composition,
+    plot_motif_map,
     plot_polygon_graph,
     plot_polygon_hotspot_map,
     plot_polygon_neighborhood_composition,
@@ -96,6 +99,7 @@ from .polygon_plots import (
     plot_polygon_niches,
     plot_spatial_autocorrelation,
     plot_spatial_distance,
+    plot_structure_matches,
 )
 
 __all__ = [
@@ -178,4 +182,8 @@ __all__ = [
     "plot_gradient_curve",
     "plot_spatial_distance",
     "plot_infiltration_summary",
+    "plot_motif_map",
+    "plot_motif_composition",
+    "plot_assembly_map",
+    "plot_structure_matches",
 ]
