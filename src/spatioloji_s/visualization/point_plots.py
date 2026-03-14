@@ -1402,8 +1402,21 @@ __all__ = [
     "plot_permutation_test",
     "plot_interface_point_map",
     "plot_interface_point_metrics",
+    "plot_gradient_curve",
+    "plot_spatial_distance",
+    "plot_infiltration_summary",
 ]
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Gradient & infiltration plots (delegates to polygon_plots)
+# ══════════════════════════════════════════════════════════════════════════════
+
+from spatioloji_s.visualization.polygon_plots import (  # noqa: E402
+    plot_gradient_curve,
+    plot_infiltration_summary,
+    plot_spatial_distance,
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Interface map (point/scatter mode)

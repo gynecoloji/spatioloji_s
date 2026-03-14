@@ -165,3 +165,127 @@ class TestPointGradientReExport:
         from spatioloji_s.spatial.point.gradient import compute_gradient as point_cg
         from spatioloji_s.spatial.polygon.gradient import compute_gradient as poly_cg
         assert point_cg is poly_cg
+
+
+class TestPlotGradientCurve:
+    """Tests for plot_gradient_curve."""
+
+    @pytest.fixture
+    def gradient_result(self, sp_gradient):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.gradient import compute_gradient
+        from spatioloji_s.spatial.polygon.interface import identify_interface
+
+        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
+        iface = identify_interface(
+            sp_gradient, graph, group_col="cell_type",
+            region_a="TypeA", region_b="TypeB", method="graph",
+            min_interface_cells=1,
+        )
+        return compute_gradient(sp_gradient, iface, genes=["gene_0", "gene_1"])
+
+    def test_returns_figure(self, gradient_result):
+        import matplotlib
+        import matplotlib.pyplot as plt
+        from spatioloji_s.visualization.polygon_plots import plot_gradient_curve
+
+        fig = plot_gradient_curve(gradient_result, genes=["gene_0", "gene_1"], show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+    def test_programs_plot(self, sp_gradient):
+        import matplotlib
+        import matplotlib.pyplot as plt
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.gradient import compute_gradient
+        from spatioloji_s.spatial.polygon.interface import identify_interface
+        from spatioloji_s.visualization.polygon_plots import plot_gradient_curve
+
+        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
+        iface = identify_interface(
+            sp_gradient, graph, group_col="cell_type",
+            region_a="TypeA", region_b="TypeB", method="graph",
+            min_interface_cells=1,
+        )
+        result = compute_gradient(
+            sp_gradient, iface, genes=["gene_0"],
+            programs={"test_prog": ["gene_0", "gene_1"]},
+        )
+        fig = plot_gradient_curve(result, programs=["test_prog"], show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+
+class TestPlotSpatialDistance:
+    """Tests for plot_spatial_distance."""
+
+    def test_returns_figure(self, sp_gradient):
+        import matplotlib
+        import matplotlib.pyplot as plt
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.gradient import compute_gradient
+        from spatioloji_s.spatial.polygon.interface import identify_interface
+        from spatioloji_s.visualization.polygon_plots import plot_spatial_distance
+
+        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
+        iface = identify_interface(
+            sp_gradient, graph, group_col="cell_type",
+            region_a="TypeA", region_b="TypeB", method="graph",
+            min_interface_cells=1,
+        )
+        result = compute_gradient(sp_gradient, iface, genes=["gene_0"])
+        fig = plot_spatial_distance(sp_gradient, result.distances, show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+    def test_with_contour_overlay(self, sp_gradient):
+        import matplotlib
+        import matplotlib.pyplot as plt
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.gradient import compute_gradient
+        from spatioloji_s.spatial.polygon.interface import identify_interface
+        from spatioloji_s.visualization.polygon_plots import plot_spatial_distance
+
+        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
+        iface = identify_interface(
+            sp_gradient, graph, group_col="cell_type",
+            region_a="TypeA", region_b="TypeB", method="graph",
+            min_interface_cells=1,
+        )
+        result = compute_gradient(sp_gradient, iface, genes=["gene_0"])
+        fig = plot_spatial_distance(sp_gradient, result.distances, interface_result=iface, show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+
+class TestIntegration:
+    """End-to-end integration tests."""
+
+    def test_full_gradient_workflow(self, sp_gradient):
+        """Full workflow: interface -> gradient -> plot."""
+        import matplotlib.pyplot as plt
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.gradient import compute_gradient
+        from spatioloji_s.spatial.polygon.interface import identify_interface
+        from spatioloji_s.visualization.polygon_plots import plot_gradient_curve, plot_spatial_distance
+
+        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
+        iface = identify_interface(
+            sp_gradient, graph, group_col="cell_type",
+            region_a="TypeA", region_b="TypeB", method="graph",
+            min_interface_cells=1,
+        )
+        result = compute_gradient(
+            sp_gradient, iface,
+            genes=["gene_0", "gene_1"],
+            programs={"test": ["gene_0", "gene_1"]},
+        )
+
+        assert isinstance(result, GradientResult)
+        assert result.gene_gradients.shape[0] == 2
+        assert result.program_gradients.shape[0] == 1
+
+        fig1 = plot_gradient_curve(result, genes=["gene_0"], show=False)
+        fig2 = plot_spatial_distance(sp_gradient, result.distances, iface, show=False)
+        plt.close(fig1)
+        plt.close(fig2)

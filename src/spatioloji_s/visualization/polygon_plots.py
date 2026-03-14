@@ -1611,6 +1611,9 @@ __all__ = [
     "plot_morphology_association",
     "plot_interface_polygon_map",
     "plot_interface_polygon_metrics",
+    "plot_gradient_curve",
+    "plot_spatial_distance",
+    "plot_infiltration_summary",
 ]
 
 
@@ -1792,4 +1795,230 @@ def plot_interface_polygon_metrics(
     ax.set_xlabel(metric)
     ax.set_title(title or f"Interface segments — {metric}")
     clean_axes(ax)
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Gradient & infiltration plots
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def plot_gradient_curve(
+    gradient_result,
+    genes: list[str] | None = None,
+    programs: list[str] | None = None,
+    n_cols: int = 3,
+    figsize: tuple[float, float] | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure:
+    """Expression vs distance-from-interface curve plot.
+
+    Args:
+        gradient_result: GradientResult from ``compute_gradient``.
+        genes: Genes to plot (from gene_gradients). None = all.
+        programs: Programs to plot (from program_gradients). None = skip.
+        n_cols: Number of columns in subplot grid.
+        figsize: Figure size. Auto-calculated if None.
+        show: Whether to display the figure.
+        save_path: Save figure to path if provided.
+        dpi: DPI for saved figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    import numpy as np
+
+    bins = gradient_result.bins
+    items = []
+
+    if genes is None and programs is None:
+        genes = list(gradient_result.gene_gradients.index)
+    if genes:
+        for g in genes:
+            if g in gradient_result.gene_gradients.index:
+                items.append(("gene", g))
+    if programs:
+        for p in programs:
+            if p in gradient_result.program_gradients.index:
+                items.append(("program", p))
+
+    if not items:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+        ax.text(0.5, 0.5, "No items to plot", ha="center", va="center", transform=ax.transAxes)
+        return finalize_plot(fig, save_path, dpi, show)
+
+    n_items = len(items)
+    n_rows = int(np.ceil(n_items / n_cols))
+    if figsize is None:
+        figsize = (4 * n_cols, 3.5 * n_rows)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
+
+    for idx, (item_type, name) in enumerate(items):
+        ax = axes[idx // n_cols, idx % n_cols]
+
+        if item_type == "gene":
+            subset = bins[bins["gene"] == name]
+            grad_row = gradient_result.gene_gradients.loc[name]
+        else:
+            subset = bins[bins["gene"] == name] if name in bins["gene"].values else None
+            grad_row = gradient_result.program_gradients.loc[name]
+
+        if subset is not None and not subset.empty:
+            x = subset["distance_bin"].values
+            y = subset["mean_expr"].values
+            std = subset["std_expr"].values
+            ax.plot(x, y, "-o", markersize=3, color="steelblue")
+            ax.fill_between(x, y - std, y + std, alpha=0.2, color="steelblue")
+
+        ax.axvline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.7)
+        coef = grad_row.get("coef", np.nan)
+        r2 = grad_row.get("r2", np.nan)
+        pval = grad_row.get("pvalue", np.nan)
+        ax.set_title(name, fontsize=10)
+        ax.annotate(
+            f"slope={coef:.3f}\nR²={r2:.3f}\np={pval:.2e}",
+            xy=(0.02, 0.98),
+            xycoords="axes fraction",
+            va="top",
+            fontsize=7,
+            family="monospace",
+        )
+        ax.set_xlabel("Distance from interface")
+        ax.set_ylabel("Expression")
+        clean_axes(ax)
+
+    for idx in range(n_items, n_rows * n_cols):
+        axes[idx // n_cols, idx % n_cols].set_visible(False)
+
+    fig.tight_layout()
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+def plot_spatial_distance(
+    sp,
+    distances,
+    interface_result=None,
+    coord_type: str = "global",
+    cmap: str = "RdBu_r",
+    figsize: tuple[float, float] | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure:
+    """Spatial map colored by signed distance from interface.
+
+    Args:
+        sp: spatioloji object.
+        distances: Series of signed distances indexed by cell ID.
+        interface_result: Optional InterfaceResult to overlay contour.
+        coord_type: ``'global'`` or ``'local'`` coordinates.
+        cmap: Diverging colormap name.
+        figsize: Figure size.
+        show: Whether to display the figure.
+        save_path: Save figure to path if provided.
+        dpi: DPI for saved figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    import numpy as np
+    from matplotlib.colors import TwoSlopeNorm
+
+    if figsize is None:
+        figsize = (10, 8)
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+
+    if coord_type == "global":
+        x = np.asarray(sp.spatial.x_global)
+        y = np.asarray(sp.spatial.y_global)
+    else:
+        x = np.asarray(sp.spatial.x_local)
+        y = np.asarray(sp.spatial.y_local)
+
+    d_vals = distances.reindex(sp.cell_index).values
+
+    vmax = max(abs(np.nanmin(d_vals)), abs(np.nanmax(d_vals)))
+    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+
+    sc = ax.scatter(x, y, c=d_vals, cmap=cmap, norm=norm, s=8, edgecolors="none")
+    fig.colorbar(sc, ax=ax, label="Signed distance from interface")
+
+    if interface_result is not None and interface_result.contour is not None:
+        for geom in interface_result.contour.geoms:
+            coords = np.array(geom.coords)
+            ax.plot(coords[:, 0], coords[:, 1], "k-", linewidth=1.5, alpha=0.8)
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_title("Signed Distance from Interface")
+    ax.set_aspect("equal")
+    clean_axes(ax)
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+def plot_infiltration_summary(
+    infiltration_result,
+    figsize: tuple[float, float] | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure:
+    """Bar chart summarizing infiltration metrics per immune type.
+
+    Three side-by-side panels: penetration depth, density slope,
+    infiltration fraction.
+
+    Args:
+        infiltration_result: InfiltrationResult from ``score_infiltration``.
+        figsize: Figure size.
+        show: Whether to display the figure.
+        save_path: Save figure to path if provided.
+        dpi: DPI for saved figure.
+
+    Returns:
+        matplotlib Figure.
+    """
+    import numpy as np
+
+    metrics = infiltration_result.per_type_metrics
+    if figsize is None:
+        figsize = (12, 4)
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    types = metrics.index.tolist()
+    y_pos = np.arange(len(types))
+
+    ax = axes[0]
+    ax.barh(y_pos, metrics["median_depth"].values, color="steelblue")
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(types)
+    ax.set_xlabel("Median depth")
+    ax.set_title("Penetration Depth")
+    clean_axes(ax)
+
+    ax = axes[1]
+    vals = metrics["density_slope"].values
+    colors = ["salmon" if v < 0 else "steelblue" for v in vals]
+    ax.barh(y_pos, vals, color=colors)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(types)
+    ax.set_xlabel("Density slope")
+    ax.set_title("Density Gradient")
+    clean_axes(ax)
+
+    ax = axes[2]
+    ax.barh(y_pos, metrics["infiltration_fraction"].values, color="steelblue")
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(types)
+    ax.set_xlabel("Fraction")
+    ax.set_title("Infiltration Fraction")
+    ax.set_xlim(0, 1)
+    clean_axes(ax)
+
+    fig.suptitle(f"Immune Infiltration into {infiltration_result.target_region}", fontsize=12)
+    fig.tight_layout()
     return finalize_plot(fig, save_path, dpi, show)

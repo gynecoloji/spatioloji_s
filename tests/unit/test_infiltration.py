@@ -186,3 +186,62 @@ class TestPointInfiltrationReExport:
         from spatioloji_s.spatial.polygon.infiltration import score_infiltration as poly_si
 
         assert point_si is poly_si
+
+
+class TestPlotInfiltrationSummary:
+    """Tests for plot_infiltration_summary."""
+
+    def test_returns_figure(self, sp_gradient):
+        import matplotlib
+        import matplotlib.pyplot as plt
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
+        from spatioloji_s.spatial.polygon.interface import identify_interface
+        from spatioloji_s.visualization.polygon_plots import plot_infiltration_summary
+
+        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
+        iface = identify_interface(
+            sp_gradient, graph, group_col="cell_type",
+            region_a="TypeA", region_b="TypeB", method="graph",
+            min_interface_cells=1,
+        )
+        result = score_infiltration(
+            sp_gradient, iface,
+            immune_col="immune_type",
+            immune_types=["CD8_T", "Macrophage"],
+            target_region="TypeA",
+        )
+        fig = plot_infiltration_summary(result, show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+
+class TestIntegration:
+    """End-to-end integration tests."""
+
+    def test_full_infiltration_workflow(self, sp_gradient):
+        """Full workflow: interface -> infiltration -> plot."""
+        import matplotlib.pyplot as plt
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
+        from spatioloji_s.spatial.polygon.interface import identify_interface
+        from spatioloji_s.visualization.polygon_plots import plot_infiltration_summary
+
+        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
+        iface = identify_interface(
+            sp_gradient, graph, group_col="cell_type",
+            region_a="TypeA", region_b="TypeB", method="graph",
+            min_interface_cells=1,
+        )
+        result = score_infiltration(
+            sp_gradient, iface,
+            immune_col="immune_type",
+            immune_types=["CD8_T", "Macrophage"],
+            target_region="TypeA",
+        )
+
+        assert isinstance(result, InfiltrationResult)
+        assert "CD8_T" in result.per_type_metrics.index
+
+        fig = plot_infiltration_summary(result, show=False)
+        plt.close(fig)
