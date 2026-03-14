@@ -17,6 +17,35 @@ from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 
 
+def _get_expression_matrix(spatioloji_obj, layer: str | None) -> np.ndarray:
+    """Extract dense expression matrix from the specified layer."""
+    if layer is None:
+        return spatioloji_obj.expression.get_dense()
+    X = spatioloji_obj.get_layer(layer)
+    if sparse.issparse(X):
+        X = X.toarray()
+    return X
+
+
+def _subset_hvg(spatioloji_obj, X: np.ndarray) -> np.ndarray:
+    """Subset to highly variable genes if available."""
+    if "highly_variable" not in spatioloji_obj.gene_meta.columns:
+        warnings.warn(
+            "No 'highly_variable' column in gene_meta. "
+            "Run highly_variable_genes() first or set use_highly_variable=False. "
+            "Using all genes.",
+            stacklevel=2,
+        )
+        return X
+    hvg_mask = spatioloji_obj.gene_meta["highly_variable"].values
+    n_hvg = int(hvg_mask.sum())
+    if n_hvg == 0:
+        warnings.warn("No highly variable genes found. Using all genes.", stacklevel=2)
+        return X
+    print(f"  Using {n_hvg} highly variable genes (out of {hvg_mask.shape[0]} total)")
+    return X[:, hvg_mask]
+
+
 def _compute_umap_connectivities(
     knn_distances: np.ndarray,
     knn_indices: np.ndarray,
@@ -88,6 +117,39 @@ def _compute_umap_connectivities(
     return W
 
 
+def _build_knn(
+    X_reduced: np.ndarray,
+    n_neighbors: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute k-nearest neighbours, using pynndescent (approximate) if available.
+
+    Parameters
+    ----------
+    X_reduced : np.ndarray
+        Cell × feature matrix.
+    n_neighbors : int
+        Number of nearest neighbours (self excluded).
+
+    Returns
+    -------
+    knn_distances : np.ndarray, shape (n_cells, n_neighbors)
+    knn_indices : np.ndarray, shape (n_cells, n_neighbors)
+    """
+    try:
+        from pynndescent import NNDescent
+
+        print("    Using pynndescent (approximate KNN)...")
+        index = NNDescent(X_reduced, n_neighbors=n_neighbors + 1, metric="euclidean", n_jobs=-1)
+        knn_indices_full, knn_distances_full = index.neighbor_graph
+        # Drop self (index 0)
+        return knn_distances_full[:, 1:], knn_indices_full[:, 1:]
+    except ImportError:
+        print("    Using sklearn NearestNeighbors (install pynndescent for ~10x speedup)...")
+        nbrs = NearestNeighbors(n_neighbors=n_neighbors + 1, metric="euclidean", n_jobs=-1).fit(X_reduced)
+        knn_distances_full, knn_indices_full = nbrs.kneighbors(X_reduced)
+        return knn_distances_full[:, 1:], knn_indices_full[:, 1:]
+
+
 def _build_leiden_graph(
     X_reduced: np.ndarray,
     n_neighbors: int,
@@ -121,27 +183,21 @@ def _build_leiden_graph(
 
     n_cells = X_reduced.shape[0]
 
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors + 1, metric="euclidean").fit(X_reduced)
-    knn_distances_full, knn_indices_full = nbrs.kneighbors(X_reduced)
-    # Drop self (index 0)
-    knn_distances = knn_distances_full[:, 1:]
-    knn_indices = knn_indices_full[:, 1:]
+    knn_distances, knn_indices = _build_knn(X_reduced, n_neighbors)
 
     if graph_method == "umap":
         W = _compute_umap_connectivities(knn_distances, knn_indices)
-        W = W.tocoo()
-        # Keep only upper triangle to avoid duplicate undirected edges
-        mask = W.row < W.col
-        edges = list(zip(W.row[mask].tolist(), W.col[mask].tolist(), strict=True))
-        weights = W.data[mask].tolist()
-    else:  # simple — vectorised edge construction
-        row_ids = np.repeat(np.arange(n_cells), n_neighbors)
-        col_ids = knn_indices.ravel()
-        edges = list(zip(row_ids.tolist(), col_ids.tolist(), strict=True))
-        weights = (1.0 / (1.0 + knn_distances.ravel())).tolist()
+        # Build igraph from sparse adjacency matrix directly (avoids slow .tolist())
+        W_sym = (W + W.T) / 2  # ensure symmetric
+        g = ig.Graph.Weighted_Adjacency(W_sym, mode="undirected", loops=False)
+    else:  # simple — build sparse adjacency, then convert
+        row_ids = np.repeat(np.arange(n_cells, dtype=np.int32), n_neighbors)
+        col_ids = knn_indices.ravel().astype(np.int32)
+        weights_arr = (1.0 / (1.0 + knn_distances.ravel())).astype(np.float32)
+        W = sparse.csr_matrix((weights_arr, (row_ids, col_ids)), shape=(n_cells, n_cells))
+        W_sym = (W + W.T) / 2
+        g = ig.Graph.Weighted_Adjacency(W_sym, mode="undirected", loops=False)
 
-    g = ig.Graph(n=n_cells, edges=edges, directed=False)
-    g.es["weight"] = weights
     return g, knn_distances, knn_indices
 
 
@@ -228,43 +284,23 @@ def leiden_clustering(
 
     print(f"\nLeiden clustering (resolution={resolution}, n_neighbors={n_neighbors}, graph={graph_method})")
 
-    # ── Get expression data ───────────────────────────────────────────────────
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
-
-    # ── Subset to HVGs ────────────────────────────────────────────────────────
-    if use_highly_variable:
-        if "highly_variable" not in spatioloji_obj.gene_meta.columns:
-            warnings.warn(
-                "No 'highly_variable' column in gene_meta. "
-                "Run highly_variable_genes() first or set use_highly_variable=False. "
-                "Using all genes.",
-                stacklevel=2,
-            )
-        else:
-            hvg_mask = spatioloji_obj.gene_meta["highly_variable"].values
-            n_hvg = int(hvg_mask.sum())
-            if n_hvg == 0:
-                warnings.warn("No highly variable genes found. Using all genes.", stacklevel=2)
-            else:
-                X = X[:, hvg_mask]
-                print(f"  Using {n_hvg} highly variable genes (out of {hvg_mask.shape[0]} total)")
-
-    # ── PCA ───────────────────────────────────────────────────────────────────
+    # ── PCA / feature matrix ──────────────────────────────────────────────────
     if use_pca:
         if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
             X_reduced = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
             print(f"  Using stored PCA (first {n_pcs} PCs)")
         else:
             print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
+            X = _get_expression_matrix(spatioloji_obj, layer)
+            if use_highly_variable:
+                X = _subset_hvg(spatioloji_obj, X)
             pca_model = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
             X_reduced = pca_model.fit_transform(X)
             print(f"    Variance explained: {pca_model.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
+        X = _get_expression_matrix(spatioloji_obj, layer)
+        if use_highly_variable:
+            X = _subset_hvg(spatioloji_obj, X)
         X_reduced = X
 
     # ── Build cell graph ──────────────────────────────────────────────────────
@@ -350,22 +386,19 @@ def kmeans_clustering(
     """
     print(f"\nK-means clustering (n_clusters={n_clusters})")
 
-    # Get expression data
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
-
-    # Apply PCA if requested
+    # PCA / feature matrix
     if use_pca:
-        print(f"  Computing PCA (n_pcs={n_pcs})...")
-        pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
-        X_reduced = pca.fit_transform(X)
-        print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X_reduced = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
+            print(f"  Using stored PCA (first {n_pcs} PCs)")
+        else:
+            print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
+            X = _get_expression_matrix(spatioloji_obj, layer)
+            pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
+            X_reduced = pca.fit_transform(X)
+            print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
-        X_reduced = X
+        X_reduced = _get_expression_matrix(spatioloji_obj, layer)
 
     # Run k-means
     print("  Running k-means...")
@@ -439,22 +472,19 @@ def hierarchical_clustering(
     """
     print(f"\nHierarchical clustering (linkage={linkage})")
 
-    # Get expression data
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
-
-    # Apply PCA if requested
+    # PCA / feature matrix
     if use_pca:
-        print(f"  Computing PCA (n_pcs={n_pcs})...")
-        pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]))
-        X_reduced = pca.fit_transform(X)
-        print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X_reduced = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
+            print(f"  Using stored PCA (first {n_pcs} PCs)")
+        else:
+            print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
+            X = _get_expression_matrix(spatioloji_obj, layer)
+            pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]))
+            X_reduced = pca.fit_transform(X)
+            print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
-        X_reduced = X
+        X_reduced = _get_expression_matrix(spatioloji_obj, layer)
 
     # Run hierarchical clustering
     print("  Running hierarchical clustering...")
@@ -626,21 +656,19 @@ def spatially_constrained_clustering(
     """
     print(f"\nSpatially constrained clustering (spatial_weight={spatial_weight})")
 
-    # Get expression data
-    if layer is None:
-        X_expr = spatioloji_obj.expression.get_dense()
-    else:
-        X_expr = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X_expr):
-            X_expr = X_expr.toarray()
-
-    # Apply PCA if requested
+    # PCA / feature matrix
     if use_pca:
-        print(f"  Computing PCA (n_pcs={n_pcs})...")
-        pca = PCA(n_components=min(n_pcs, X_expr.shape[0], X_expr.shape[1]), random_state=random_state)
-        X_expr_reduced = pca.fit_transform(X_expr)
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X_expr_reduced = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
+            print(f"  Using stored PCA (first {n_pcs} PCs)")
+        else:
+            print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
+            X_expr = _get_expression_matrix(spatioloji_obj, layer)
+            pca = PCA(n_components=min(n_pcs, X_expr.shape[0], X_expr.shape[1]), random_state=random_state)
+            X_expr_reduced = pca.fit_transform(X_expr)
+            print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
-        X_expr_reduced = X_expr
+        X_expr_reduced = _get_expression_matrix(spatioloji_obj, layer)
 
     # Get spatial coordinates
     X_spatial = spatioloji_obj.get_spatial_coords(coord_type=coord_type)
@@ -732,20 +760,19 @@ def find_optimal_clusters(
     print(f"\nFinding optimal number of clusters (method={method})")
     print(f"  Testing k from {k_range[0]} to {k_range[1]}")
 
-    # Get expression data
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
-
-    # Apply PCA if requested
+    # PCA / feature matrix
     if use_pca:
-        pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
-        X_reduced = pca.fit_transform(X)
+        if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
+            X_reduced = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
+            print(f"  Using stored PCA (first {n_pcs} PCs)")
+        else:
+            print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
+            X = _get_expression_matrix(spatioloji_obj, layer)
+            pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
+            X_reduced = pca.fit_transform(X)
+            print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
-        X_reduced = X
+        X_reduced = _get_expression_matrix(spatioloji_obj, layer)
 
     k_values = range(k_range[0], k_range[1] + 1)
     scores = []
@@ -957,26 +984,16 @@ def assess_clustering_quality(
     if n_clusters < 2:
         raise ValueError(f"Need at least 2 clusters to compute quality metrics, found {n_clusters}.")
 
-    # Get feature matrix
+    # PCA / feature matrix
     if use_pca:
         if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
-            X = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
+            X = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
         else:
-            if layer is None:
-                X_raw = spatioloji_obj.expression.get_dense()
-            else:
-                X_raw = spatioloji_obj.get_layer(layer)
-                if sparse.issparse(X_raw):
-                    X_raw = X_raw.toarray()
+            X_raw = _get_expression_matrix(spatioloji_obj, layer)
             pca = PCA(n_components=min(n_pcs, X_raw.shape[0], X_raw.shape[1]), random_state=random_state)
             X = pca.fit_transform(X_raw)
     else:
-        if layer is None:
-            X = spatioloji_obj.expression.get_dense()
-        else:
-            X = spatioloji_obj.get_layer(layer)
-            if sparse.issparse(X):
-                X = X.toarray()
+        X = _get_expression_matrix(spatioloji_obj, layer)
 
     # Subsample for silhouette if needed
     if sample_size is not None and X.shape[0] > sample_size:
@@ -1037,8 +1054,10 @@ def leiden_resolution_sweep(
             ``[0.1, 0.2, ..., 2.0]`` if None.
         n_runs: Number of Leiden runs per resolution for stability estimation,
             by default 5.
-        layer: Expression layer to use, by default 'normalized'.
-        use_highly_variable: Use only highly variable genes if available, by default True.
+        layer: Expression layer to use when no stored PCA is available,
+            by default 'normalized'. Ignored if ``X_pca`` exists in embeddings.
+        use_highly_variable: Use only highly variable genes when computing
+            PCA on the fly, by default True. Ignored if ``X_pca`` exists.
         n_pcs: Number of PCs to use, by default 50.
         n_neighbors: k for the k-NN graph, by default 15.
         graph_method: Edge-weight method — ``'umap'`` (default, fuzzy simplicial
@@ -1080,24 +1099,27 @@ def leiden_resolution_sweep(
     if resolutions is None:
         resolutions = [round(r, 1) for r in np.arange(0.1, 2.1, 0.1)]
 
-    # --- Build feature matrix once ---
-    if layer is None:
-        X = spatioloji_obj.expression.get_dense()
-    else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
-
-    if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
-        hvg_mask = spatioloji_obj.gene_meta["highly_variable"].values
-        if hvg_mask.sum() > 0:
-            X = X[:, hvg_mask]
-
+    # --- PCA embeddings (prefer stored, fall back to computing) ---
     if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
-        X_reduced = spatioloji_obj._embeddings["X_pca"][:, :n_pcs]
+        X_reduced = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
+        print(f"  Using stored PCA (first {n_pcs} PCs)")
     else:
+        print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
+        if layer is None:
+            X = spatioloji_obj.expression.get_dense()
+        else:
+            X = spatioloji_obj.get_layer(layer)
+            if sparse.issparse(X):
+                X = X.toarray()
+
+        if use_highly_variable and "highly_variable" in spatioloji_obj.gene_meta.columns:
+            hvg_mask = spatioloji_obj.gene_meta["highly_variable"].values
+            if hvg_mask.sum() > 0:
+                X = X[:, hvg_mask]
+
         pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
         X_reduced = pca.fit_transform(X)
+        print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
 
     # --- Build cell graph once (shared across all resolutions) ---
     print(f"  Building {graph_method} connectivity graph...")
@@ -1129,7 +1151,7 @@ def leiden_resolution_sweep(
             seed=seed,
         )
         mem = np.array(partition.membership)
-        mod = g.modularity(mem.tolist())
+        mod = partition.modularity
         return res, seed, mem, mod
 
     tasks = [(res, random_state + run) for res in resolutions for run in range(n_runs)]

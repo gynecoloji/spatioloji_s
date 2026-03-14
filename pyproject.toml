@@ -47,6 +47,7 @@ spatial = [
 clustering = [
     "leidenalg",
     "igraph",
+    "pynndescent",
 ]
 
 reduction = [
@@ -67,6 +68,10 @@ deg = [
 anndata = [
     "anndata",
     "scanpy",
+]
+
+ripley = [
+    "pointpats",
 ]
 
 imputation = [
