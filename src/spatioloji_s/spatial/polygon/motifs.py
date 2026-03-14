@@ -13,7 +13,14 @@ import pandas as pd
 import scipy.sparse as sp_sparse
 from sklearn.preprocessing import normalize
 
-from spatioloji_s.spatial._motif_types import AssemblyCatalog, MotifCatalog, _get_cell_ids, _get_sparse_adjacency
+from spatioloji_s.spatial._motif_types import (
+    AssemblyCatalog,
+    MotifCatalog,
+    MotifResult,
+    StructureMatches,
+    _get_cell_ids,
+    _get_sparse_adjacency,
+)
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
@@ -414,7 +421,7 @@ def detect_assemblies(
     y_coords = np.asarray(sp.spatial.y_global)[idx_in_sp]
 
     for motif_id in unique_motifs:
-        mask = (motif_labels.values == motif_id)
+        mask = motif_labels.values == motif_id
         indices = np.where(mask)[0]
         if len(indices) == 0:
             continue
@@ -431,14 +438,16 @@ def detect_assemblies(
             cx = float(x_coords[comp_cell_indices].mean())
             cy = float(y_coords[comp_cell_indices].mean())
 
-            instance_records.append({
-                "instance_id": instance_id_counter,
-                "motif_id": motif_id,
-                "n_cells": n_comp_cells,
-                "centroid_x": cx,
-                "centroid_y": cy,
-                "_cell_indices": comp_cell_indices,
-            })
+            instance_records.append(
+                {
+                    "instance_id": instance_id_counter,
+                    "motif_id": motif_id,
+                    "n_cells": n_comp_cells,
+                    "centroid_x": cx,
+                    "centroid_y": cy,
+                    "_cell_indices": comp_cell_indices,
+                }
+            )
 
             cell_instance_map[comp_cell_indices] = instance_id_counter
             instance_id_counter += 1
@@ -551,17 +560,19 @@ def detect_assemblies(
     full_labels = labels_series.reindex(sp.cell_index, fill_value=-1)
 
     # ---- instances DataFrame -----------------------------------------------
-    instances_df = pd.DataFrame([
-        {
-            "instance_id": rec["instance_id"],
-            "assembly_id": rec["assembly_id"],
-            "motif_id": rec["motif_id"],
-            "n_cells": rec["n_cells"],
-            "centroid_x": rec["centroid_x"],
-            "centroid_y": rec["centroid_y"],
-        }
-        for rec in instance_records
-    ])
+    instances_df = pd.DataFrame(
+        [
+            {
+                "instance_id": rec["instance_id"],
+                "assembly_id": rec["assembly_id"],
+                "motif_id": rec["motif_id"],
+                "n_cells": rec["n_cells"],
+                "centroid_x": rec["centroid_x"],
+                "centroid_y": rec["centroid_y"],
+            }
+            for rec in instance_records
+        ]
+    )
 
     # ---- composition DataFrame ---------------------------------------------
     if instances_df.empty or (instances_df["assembly_id"] == -1).all():
@@ -592,18 +603,20 @@ def detect_assemblies(
                     if instance_adj[ii, jj] > 0:
                         ma = instance_records[ii]["motif_id"]
                         mb = instance_records[jj]["motif_id"]
-                        adj_rows.append({
-                            "assembly_id": aid,
-                            "motif_a": min(ma, mb),
-                            "motif_b": max(ma, mb),
-                            "frequency": 1,
-                        })
+                        adj_rows.append(
+                            {
+                                "assembly_id": aid,
+                                "motif_a": min(ma, mb),
+                                "motif_b": max(ma, mb),
+                                "frequency": 1,
+                            }
+                        )
 
     if adj_rows:
         adjacency_pattern = pd.DataFrame(adj_rows)
-        adjacency_pattern = (
-            adjacency_pattern.groupby(["assembly_id", "motif_a", "motif_b"], as_index=False)["frequency"].sum()
-        )
+        adjacency_pattern = adjacency_pattern.groupby(["assembly_id", "motif_a", "motif_b"], as_index=False)[
+            "frequency"
+        ].sum()
     else:
         adjacency_pattern = pd.DataFrame(columns=["assembly_id", "motif_a", "motif_b", "frequency"])
 
@@ -624,5 +637,358 @@ def detect_assemblies(
         composition=composition,
         instances=instances_df,
         adjacency_pattern=adjacency_pattern,
+        params=params,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Built-in structure signatures
+# ---------------------------------------------------------------------------
+
+_BUILTIN_SIGNATURES: dict[str, dict[str, dict[str, float]]] = {
+    "TME": {
+        "TLS": {"B_cell": 0.25, "T_cell": 0.15, "DC": 0.05},
+        "immune_aggregate": {"CD8_T": 0.2, "CD4_T": 0.15, "Macrophage": 0.15},
+        "tumor_bud": {"Tumor": 0.8},
+        "perivascular_niche": {"Endothelial": 0.2, "Pericyte": 0.15},
+        "immune_desert": {"Tumor": 0.9, "T_cell": 0.0},
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# match_known_structures
+# ---------------------------------------------------------------------------
+
+
+def match_known_structures(
+    sp: spatioloji,
+    motif_catalog: MotifCatalog,
+    assembly_catalog: AssemblyCatalog | None = None,
+    signatures: dict[str, dict[str, float]] | None = None,
+    builtin: str | None = None,
+    threshold: float = 0.5,
+    absence_threshold: float = 0.05,
+    coord_type: Literal["global", "local"] = "global",
+) -> StructureMatches:
+    """Match discovered motifs (and optionally assemblies) to known tissue structure signatures.
+
+    Computes cosine similarity between each discovered motif/assembly composition
+    and a set of reference structure signatures.  Signatures with a ``0.0`` value
+    for a cell type enforce an *absence* constraint: the motif is rejected if that
+    type exceeds *absence_threshold*.
+
+    Args:
+        sp: spatioloji object with spatial coordinates.
+        motif_catalog: Result of :func:`discover_motifs`.
+        assembly_catalog: Optional result of :func:`detect_assemblies`.
+        signatures: User-provided dict ``{structure_name: {cell_type: proportion}}``.
+        builtin: Name of a built-in signature set (e.g. ``"TME"``).
+        threshold: Minimum cosine similarity for a match.
+        absence_threshold: Maximum allowed proportion for cell types with ``0.0``
+            in the reference signature.
+        coord_type: Which coordinates to use for centroids (``"global"`` or ``"local"``).
+
+    Returns:
+        StructureMatches with per-match rows and per-cell labels.
+
+    Raises:
+        ValueError: If neither *signatures* nor *builtin* is provided, or if
+            *builtin* is not a recognised name.
+
+    Example:
+        >>> from spatioloji_s.spatial.polygon.motifs import discover_motifs, match_known_structures
+        >>> catalog = discover_motifs(sp, graph, group_col="cell_type", n_motifs=5)
+        >>> sigs = {"tumor_core": {"Tumor": 0.6}}
+        >>> result = match_known_structures(sp, catalog, signatures=sigs)
+        >>> result.matches
+    """
+    from sklearn.metrics.pairwise import cosine_similarity as _cosine_similarity
+
+    # ---- merge signatures --------------------------------------------------
+    merged: dict[str, dict[str, float]] = {}
+    if builtin is not None:
+        if builtin not in _BUILTIN_SIGNATURES:
+            raise ValueError(
+                f"Unknown builtin signature set '{builtin}'. Available: {list(_BUILTIN_SIGNATURES.keys())}"
+            )
+        merged.update(_BUILTIN_SIGNATURES[builtin])
+    if signatures is not None:
+        merged.update(signatures)
+    if not merged:
+        raise ValueError("Provide at least one of 'signatures' or 'builtin'.")
+
+    # ---- align reference vectors to motif signature columns ----------------
+    columns = motif_catalog.signatures.columns.tolist()
+
+    def _ref_vector(sig: dict[str, float]) -> np.ndarray:
+        return np.array([sig.get(c, 0.0) for c in columns], dtype=np.float64)
+
+    def _absence_mask(sig: dict[str, float]) -> list[int]:
+        """Return column indices where the signature demands absence (value == 0.0)."""
+        return [i for i, c in enumerate(columns) if c in sig and sig[c] == 0.0]
+
+    # ---- match against motifs ----------------------------------------------
+    match_rows: list[dict] = []
+
+    motif_sigs = motif_catalog.signatures.values  # (n_motifs, n_types)
+
+    for struct_name, sig in merged.items():
+        ref = _ref_vector(sig).reshape(1, -1)
+        ref_norm = np.linalg.norm(ref)
+        if ref_norm == 0:
+            continue
+        absent_cols = _absence_mask(sig)
+
+        sims = _cosine_similarity(ref, motif_sigs).flatten()
+
+        for motif_id, sim_val in zip(motif_catalog.signatures.index, sims, strict=True):
+            # Absence filter
+            reject = False
+            for ci in absent_cols:
+                if motif_sigs[motif_catalog.signatures.index.get_loc(motif_id), ci] > absence_threshold:
+                    reject = True
+                    break
+            if reject:
+                continue
+            if sim_val < threshold:
+                continue
+
+            # Centroid computation
+            cell_idx = motif_catalog.labels[motif_catalog.labels == motif_id].index
+            pos_idx = sp.cell_index.get_indexer(cell_idx)
+            valid = pos_idx >= 0
+            pos_idx = pos_idx[valid]
+            if coord_type == "global":
+                cx = float(np.asarray(sp.spatial.x_global)[pos_idx].mean()) if len(pos_idx) > 0 else 0.0
+                cy = float(np.asarray(sp.spatial.y_global)[pos_idx].mean()) if len(pos_idx) > 0 else 0.0
+            else:
+                cx = float(np.asarray(sp.spatial.x_local)[pos_idx].mean()) if len(pos_idx) > 0 else 0.0
+                cy = float(np.asarray(sp.spatial.y_local)[pos_idx].mean()) if len(pos_idx) > 0 else 0.0
+
+            match_rows.append(
+                {
+                    "structure_name": struct_name,
+                    "target_type": "motif",
+                    "target_id": motif_id,
+                    "similarity": float(sim_val),
+                    "n_cells": int((motif_catalog.labels == motif_id).sum()),
+                    "centroid_x": cx,
+                    "centroid_y": cy,
+                }
+            )
+
+    # ---- match against assemblies (optional) -------------------------------
+    if assembly_catalog is not None and not assembly_catalog.composition.empty:
+        # Weighted-average assembly composition aligned to columns
+        assembly_comp = assembly_catalog.composition.reindex(columns=columns, fill_value=0.0).values
+
+        for struct_name, sig in merged.items():
+            ref = _ref_vector(sig).reshape(1, -1)
+            ref_norm = np.linalg.norm(ref)
+            if ref_norm == 0:
+                continue
+            absent_cols = _absence_mask(sig)
+
+            sims = _cosine_similarity(ref, assembly_comp).flatten()
+
+            for aid, sim_val in zip(assembly_catalog.composition.index, sims, strict=True):
+                reject = False
+                for ci in absent_cols:
+                    if assembly_comp[assembly_catalog.composition.index.get_loc(aid), ci] > absence_threshold:
+                        reject = True
+                        break
+                if reject:
+                    continue
+                if sim_val < threshold:
+                    continue
+
+                cell_idx = assembly_catalog.labels[assembly_catalog.labels == aid].index
+                pos_idx = sp.cell_index.get_indexer(cell_idx)
+                valid = pos_idx >= 0
+                pos_idx = pos_idx[valid]
+                if coord_type == "global":
+                    cx = float(np.asarray(sp.spatial.x_global)[pos_idx].mean()) if len(pos_idx) > 0 else 0.0
+                    cy = float(np.asarray(sp.spatial.y_global)[pos_idx].mean()) if len(pos_idx) > 0 else 0.0
+                else:
+                    cx = float(np.asarray(sp.spatial.x_local)[pos_idx].mean()) if len(pos_idx) > 0 else 0.0
+                    cy = float(np.asarray(sp.spatial.y_local)[pos_idx].mean()) if len(pos_idx) > 0 else 0.0
+
+                match_rows.append(
+                    {
+                        "structure_name": struct_name,
+                        "target_type": "assembly",
+                        "target_id": aid,
+                        "similarity": float(sim_val),
+                        "n_cells": int((assembly_catalog.labels == aid).sum()),
+                        "centroid_x": cx,
+                        "centroid_y": cy,
+                    }
+                )
+
+    matches_df = pd.DataFrame(
+        match_rows,
+        columns=["structure_name", "target_type", "target_id", "similarity", "n_cells", "centroid_x", "centroid_y"],
+    )
+
+    # ---- per-cell labels ---------------------------------------------------
+    per_cell = pd.Series("unmatched", index=sp.cell_index, name="structure_label")
+
+    if not matches_df.empty:
+        # For each cell, pick the highest-similarity match
+        # First build cell → (structure_name, similarity) from motif matches
+        motif_matches = matches_df[matches_df["target_type"] == "motif"]
+        for _, row in motif_matches.iterrows():
+            cell_mask = motif_catalog.labels == row["target_id"]
+            cells = motif_catalog.labels[cell_mask].index
+            for c in cells:
+                if c in per_cell.index:
+                    if per_cell[c] == "unmatched" or row["similarity"] > 0:
+                        per_cell[c] = row["structure_name"]
+
+        # Assembly matches override if higher similarity
+        if assembly_catalog is not None:
+            assembly_matches = matches_df[matches_df["target_type"] == "assembly"]
+            for _, row in assembly_matches.iterrows():
+                cell_mask = assembly_catalog.labels == row["target_id"]
+                cells = assembly_catalog.labels[cell_mask].index
+                for c in cells:
+                    if c in per_cell.index:
+                        per_cell[c] = row["structure_name"]
+
+    return StructureMatches(
+        matches=matches_df,
+        per_cell=per_cell,
+        signatures_used=merged,
+    )
+
+
+# ---------------------------------------------------------------------------
+# run_motif_pipeline
+# ---------------------------------------------------------------------------
+
+
+def run_motif_pipeline(
+    sp: spatioloji,
+    graph: PolygonSpatialGraph | PointSpatialGraph,
+    group_col: str = "cell_type",
+    method: Literal["kmeans", "leiden"] = "kmeans",
+    n_motifs: int | None = None,
+    resolution: float = 1.0,
+    k_hops: int = 1,
+    include_morphology: bool = False,
+    include_density: bool = False,
+    detect_assemblies_flag: bool = True,
+    assembly_method: str = "leiden",
+    assembly_resolution: float = 0.5,
+    n_assemblies: int | None = None,
+    min_assembly_cells: int = 10,
+    match_signatures: dict[str, dict[str, float]] | None = None,
+    match_builtin: str | None = None,
+    match_threshold: float = 0.5,
+    coord_type: Literal["global", "local"] = "global",
+    random_state: int = 42,
+    n_jobs: int = 1,
+    store: bool = True,
+) -> MotifResult:
+    """Run the full spatial motif discovery pipeline in one call.
+
+    Convenience wrapper that chains :func:`discover_motifs`,
+    :func:`detect_assemblies`, and :func:`match_known_structures`.
+
+    Args:
+        sp: spatioloji object.
+        graph: Pre-built spatial graph (polygon or point).
+        group_col: Cell-type column in ``sp.cell_meta``.
+        method: Clustering method for motif discovery (``"kmeans"`` or ``"leiden"``).
+        n_motifs: Number of motifs (``None`` for auto-selection).
+        resolution: Leiden resolution for motif discovery.
+        k_hops: Neighbourhood radius in graph hops.
+        include_morphology: Append morphology features (polygon graph only).
+        include_density: Append density features (polygon graph only).
+        detect_assemblies_flag: Whether to run assembly detection.
+        assembly_method: Clustering method for assemblies.
+        assembly_resolution: Leiden resolution for assemblies.
+        n_assemblies: Number of assemblies for kmeans.
+        min_assembly_cells: Minimum cells per assembly.
+        match_signatures: User-provided structure signatures for matching.
+        match_builtin: Built-in signature set name for matching.
+        match_threshold: Minimum cosine similarity for structure matching.
+        coord_type: Coordinate type for centroids (``"global"`` or ``"local"``).
+        random_state: Random seed.
+        n_jobs: Number of parallel jobs (reserved for future use).
+        store: Write labels into ``sp.cell_meta``.
+
+    Returns:
+        MotifResult containing motif_catalog, assembly_catalog, and structure_matches.
+
+    Example:
+        >>> from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        >>> from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+        >>> graph = build_buffer_graph(sp, buffer_distance=30)
+        >>> result = run_motif_pipeline(sp, graph, group_col="cell_type", n_motifs=5)
+    """
+    # ---- Step 1: discover motifs -------------------------------------------
+    motif_catalog = discover_motifs(
+        sp,
+        graph,
+        group_col=group_col,
+        n_motifs=n_motifs,
+        method=method,
+        k_hops=k_hops,
+        use_morphology=include_morphology,
+        use_density=include_density,
+        store=store,
+        random_state=random_state,
+        leiden_resolution=resolution,
+    )
+
+    # Store motif labels with a clearer column name
+    if store:
+        sp.cell_meta["motif_label"] = motif_catalog.labels.reindex(sp.cell_meta.index)
+
+    # ---- Step 2: detect assemblies -----------------------------------------
+    assembly_catalog: AssemblyCatalog | None = None
+    if detect_assemblies_flag:
+        assembly_catalog = detect_assemblies(
+            sp,
+            graph,
+            motif_catalog,
+            method=assembly_method,
+            resolution=assembly_resolution,
+            n_assemblies=n_assemblies,
+            min_assembly_cells=min_assembly_cells,
+            random_state=random_state,
+            store=store,
+        )
+
+    # ---- Step 3: match known structures ------------------------------------
+    structure_matches: StructureMatches | None = None
+    if match_signatures is not None or match_builtin is not None:
+        structure_matches = match_known_structures(
+            sp,
+            motif_catalog,
+            assembly_catalog=assembly_catalog,
+            signatures=match_signatures,
+            builtin=match_builtin,
+            threshold=match_threshold,
+            coord_type=coord_type,
+        )
+
+    params = {
+        "group_col": group_col,
+        "method": method,
+        "n_motifs": n_motifs,
+        "resolution": resolution,
+        "k_hops": k_hops,
+        "detect_assemblies": detect_assemblies_flag,
+        "assembly_method": assembly_method,
+        "random_state": random_state,
+    }
+
+    return MotifResult(
+        motif_catalog=motif_catalog,
+        assembly_catalog=assembly_catalog,
+        structure_matches=structure_matches,
         params=params,
     )

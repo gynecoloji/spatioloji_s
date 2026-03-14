@@ -246,3 +246,157 @@ class TestPointMotifReExport:
         from spatioloji_s.spatial.polygon.motifs import discover_motifs as polygon_discover
 
         assert point_discover is polygon_discover
+
+
+class TestMatchKnownStructures:
+    """Tests for match_known_structures."""
+
+    @pytest.fixture
+    def graph(self, sp_motif):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
+        return build_buffer_graph(sp_motif, buffer_distance=30)
+
+    @pytest.fixture
+    def motif_catalog(self, sp_motif, graph):
+        from spatioloji_s.spatial.polygon.motifs import discover_motifs
+
+        return discover_motifs(sp_motif, graph, group_col="cell_type", n_motifs=5)
+
+    def test_returns_structure_matches(self, sp_motif, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import match_known_structures
+
+        sigs = {"tumor_core": {"Tumor": 0.6}}
+        result = match_known_structures(sp_motif, motif_catalog, signatures=sigs)
+        assert isinstance(result, StructureMatches)
+
+    def test_matches_columns(self, sp_motif, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import match_known_structures
+
+        sigs = {"tumor_core": {"Tumor": 0.6}}
+        result = match_known_structures(sp_motif, motif_catalog, signatures=sigs)
+        expected = {"structure_name", "target_type", "target_id", "similarity", "n_cells", "centroid_x", "centroid_y"}
+        assert expected.issubset(set(result.matches.columns))
+
+    def test_per_cell_covers_all(self, sp_motif, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import match_known_structures
+
+        sigs = {"tumor_core": {"Tumor": 0.6}}
+        result = match_known_structures(sp_motif, motif_catalog, signatures=sigs)
+        assert len(result.per_cell) == len(sp_motif.cell_index)
+
+    def test_no_matches_below_threshold(self, sp_motif, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import match_known_structures
+
+        sigs = {"impossible": {"Nonexistent_type": 0.99}}
+        result = match_known_structures(sp_motif, motif_catalog, signatures=sigs, threshold=0.99)
+        assert result.matches.empty
+        assert (result.per_cell == "unmatched").all()
+
+    def test_absence_filter(self, sp_motif, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import match_known_structures
+
+        sigs = {"no_tumor": {"T_cell": 0.3, "Tumor": 0.0}}
+        result = match_known_structures(sp_motif, motif_catalog, signatures=sigs)
+        for _, row in result.matches.iterrows():
+            if row["target_type"] == "motif":
+                motif_sig = motif_catalog.signatures.loc[row["target_id"]]
+                if "Tumor" in motif_sig.index:
+                    assert motif_sig["Tumor"] <= 0.05
+
+    def test_builtin_tme(self, sp_motif, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import match_known_structures
+
+        result = match_known_structures(sp_motif, motif_catalog, builtin="TME")
+        assert isinstance(result, StructureMatches)
+        assert "TLS" in result.signatures_used
+
+    def test_invalid_builtin(self, sp_motif, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import match_known_structures
+
+        with pytest.raises(ValueError, match="builtin"):
+            match_known_structures(sp_motif, motif_catalog, builtin="nonexistent")
+
+    def test_with_assembly_catalog(self, sp_motif, graph, motif_catalog):
+        from spatioloji_s.spatial.polygon.motifs import detect_assemblies, match_known_structures
+
+        assembly_cat = detect_assemblies(sp_motif, graph, motif_catalog)
+        sigs = {"tumor_core": {"Tumor": 0.6}}
+        result = match_known_structures(
+            sp_motif,
+            motif_catalog,
+            assembly_catalog=assembly_cat,
+            signatures=sigs,
+        )
+        assert isinstance(result, StructureMatches)
+
+
+class TestRunMotifPipeline:
+    """Tests for run_motif_pipeline convenience wrapper."""
+
+    @pytest.fixture
+    def graph(self, sp_motif):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
+        return build_buffer_graph(sp_motif, buffer_distance=30)
+
+    def test_returns_motif_result(self, sp_motif, graph):
+        from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+
+        result = run_motif_pipeline(sp_motif, graph, group_col="cell_type", n_motifs=5)
+        assert isinstance(result, MotifResult)
+        assert isinstance(result.motif_catalog, MotifCatalog)
+        assert isinstance(result.assembly_catalog, AssemblyCatalog)
+
+    def test_skip_assemblies(self, sp_motif, graph):
+        from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+
+        result = run_motif_pipeline(
+            sp_motif,
+            graph,
+            group_col="cell_type",
+            n_motifs=5,
+            detect_assemblies_flag=False,
+        )
+        assert result.assembly_catalog is None
+
+    def test_with_matching(self, sp_motif, graph):
+        from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+
+        result = run_motif_pipeline(
+            sp_motif,
+            graph,
+            group_col="cell_type",
+            n_motifs=5,
+            match_builtin="TME",
+        )
+        assert result.structure_matches is not None
+
+    def test_full_pipeline_point_graph(self, sp_motif):
+        from spatioloji_s.spatial.point.graph import build_knn_graph
+        from spatioloji_s.spatial.point.motifs import run_motif_pipeline
+
+        pg = build_knn_graph(sp_motif, k=10)
+        result = run_motif_pipeline(sp_motif, pg, group_col="cell_type", n_motifs=5)
+        assert isinstance(result, MotifResult)
+
+
+class TestIntegration:
+    """End-to-end integration tests."""
+
+    def test_full_workflow(self, sp_motif):
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+
+        graph = build_buffer_graph(sp_motif, buffer_distance=30)
+        result = run_motif_pipeline(
+            sp_motif,
+            graph,
+            group_col="cell_type",
+            n_motifs=5,
+            match_signatures={"tumor_core": {"Tumor": 0.6}},
+        )
+        assert isinstance(result, MotifResult)
+        assert result.motif_catalog.labels.nunique() == 5
+        assert "motif_label" in sp_motif.cell_meta.columns
+        assert "assembly_label" in sp_motif.cell_meta.columns
