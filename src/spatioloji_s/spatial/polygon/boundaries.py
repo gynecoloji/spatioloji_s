@@ -22,11 +22,43 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from shapely.ops import unary_union
 
 from .graph import PolygonSpatialGraph, _get_gdf
+
+# ========== Proximity helpers ==========
+
+
+def _is_buffer_graph(graph: PolygonSpatialGraph) -> bool:
+    """Check if graph was built with buffer distance (proximity mode)."""
+    return getattr(graph, "method", None) == "buffer"
+
+
+def _get_buffered_polys(gdf, graph: PolygonSpatialGraph) -> dict | None:
+    """Build a cache of buffered polygons if graph is a buffer graph.
+
+    Returns None for non-buffer graphs. For buffer graphs, returns
+    ``{cell_id: buffered_polygon}`` using the graph's buffer_distance.
+    """
+    if not _is_buffer_graph(graph):
+        return None
+
+    buffer_distance = graph.params.get("buffer_distance")
+    if buffer_distance is None:
+        warnings.warn(
+            "Buffer graph missing 'buffer_distance' in params. "
+            "Falling back to direct contact mode.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return None
+
+    return {cell_id: geom.buffer(buffer_distance) for cell_id, geom in gdf.geometry.items()}
+
 
 # ========== Helper ==========
 
@@ -87,9 +119,13 @@ def contact_length(sp: spatioloji, graph: PolygonSpatialGraph, coord_type: str =
         contact_length_a = length of cell_a's boundary inside cell_b
         contact_length_b = length of cell_b's boundary inside cell_a
     """
-    print("\n[Boundaries] Computing contact lengths...")
-
     gdf = _get_gdf(sp, coord_type=coord_type)
+    buffered = _get_buffered_polys(gdf, graph)
+    mode_str = ""
+    if buffered is not None:
+        bd = graph.params.get("buffer_distance", "?")
+        mode_str = f" (proximity mode, buffer={bd})"
+    print(f"\n[Boundaries] Computing contact lengths{mode_str}...")
     geom = gdf.geometry
     edges = graph.to_edge_list()
 
@@ -114,9 +150,13 @@ def contact_length(sp: spatioloji, graph: PolygonSpatialGraph, coord_type: str =
         if poly_a.is_empty or poly_b.is_empty:
             continue
 
+        # Proximity mode: use buffered neighbor polygons
+        nbr_b = buffered[cell_b] if buffered is not None else poly_b
+        nbr_a = buffered[cell_a] if buffered is not None else poly_a
+
         # Asymmetric: each cell's own boundary measured separately
-        len_a[i], _ = _boundary_intersection_length(poly_a, poly_b)
-        len_b[i], _ = _boundary_intersection_length(poly_b, poly_a)
+        len_a[i], _ = _boundary_intersection_length(poly_a, nbr_b)
+        len_b[i], _ = _boundary_intersection_length(poly_b, nbr_a)
 
     edges = edges.copy()
     edges["contact_length_a"] = len_a
@@ -139,13 +179,18 @@ def _collect_contact_segments(sp, graph, gdf):
     """
     For each cell, collect all boundary-intersection geometries with neighbors.
 
+    When graph is a buffer graph, uses buffered neighbor polygons for
+    intersection (proximity mode).
+
     Returns
     -------
     dict : cell_id → list of shapely geometries
-        Each geometry is the portion of that cell's boundary touching a neighbor.
+        Each geometry is the portion of that cell's boundary touching
+        (or facing, in proximity mode) a neighbor.
     """
     geom = gdf.geometry
     edges = graph.to_edge_list()
+    buffered = _get_buffered_polys(gdf, graph)
 
     shared_geoms = {cell_id: [] for cell_id in gdf.index}
 
@@ -163,8 +208,11 @@ def _collect_contact_segments(sp, graph, gdf):
         if poly_a.is_empty or poly_b.is_empty:
             continue
 
-        _, seg_a = _boundary_intersection_length(poly_a, poly_b)
-        _, seg_b = _boundary_intersection_length(poly_b, poly_a)
+        nbr_b = buffered[cell_b] if buffered is not None else poly_b
+        nbr_a = buffered[cell_a] if buffered is not None else poly_a
+
+        _, seg_a = _boundary_intersection_length(poly_a, nbr_b)
+        _, seg_b = _boundary_intersection_length(poly_b, nbr_a)
 
         if seg_a is not None:
             shared_geoms[cell_a].append(seg_a)
