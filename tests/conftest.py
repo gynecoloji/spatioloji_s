@@ -521,16 +521,12 @@ def sp_motif():
 
     expression = np.random.poisson(2.0, (n_cells, n_genes)).astype(float)
 
-    spatial = pd.DataFrame(
-        {
-            "x_global": x_global,
-            "y_global": y_global,
-            "x_local": x_global,
-            "y_local": y_global,
-            "fov": 1,
-        },
-        index=cell_ids,
-    )
+    spatial = {
+        "x_global": x_global,
+        "y_global": y_global,
+        "x_local": x_global,
+        "y_local": y_global,
+    }
 
     rows = []
     for i, cid in enumerate(cell_ids):
