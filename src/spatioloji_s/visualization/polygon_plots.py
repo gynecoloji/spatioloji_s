@@ -2275,7 +2275,6 @@ def plot_structure_matches(
 
     per_cell = motif_result.structure_matches.per_cell.reindex(pos_df.index).fillna("unmatched")
     mask = per_cell == structure_name
-    cell_colors = np.where(mask, highlight_color, "lightgrey")
 
     if figsize is None:
         figsize = (9, 8)
