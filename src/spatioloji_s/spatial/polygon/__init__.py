@@ -47,18 +47,30 @@ Typical workflow
 
 # Graph construction
 # Boundaries
+from .._gradient_types import GradientResult
+from .._infiltration_types import InfiltrationResult
+from .._interface_types import InterfaceResult
 from .boundaries import (
     contact_fraction,
     contact_length,
     contact_summary,
     free_boundary_fraction,
 )
+
+# Gradient
+from .gradient import compute_gradient
 from .graph import (
     PolygonSpatialGraph,
     build_buffer_graph,
     build_contact_graph,
     build_knn_graph,
 )
+
+# Infiltration
+from .infiltration import score_infiltration
+
+# Interface
+from .interface import identify_interface
 
 # Morphology
 from .morphology import (
@@ -83,10 +95,6 @@ from .patterns import (
     hotspot_detection,
     spatial_autocorrelation,
 )
-
-# Interface
-from .interface import identify_interface
-from .._interface_types import InterfaceResult
 
 # Statistics
 from .statistics import (
@@ -125,6 +133,12 @@ __all__ = [
     # Interface
     "identify_interface",
     "InterfaceResult",
+    # Gradient
+    "compute_gradient",
+    "GradientResult",
+    # Infiltration
+    "score_infiltration",
+    "InfiltrationResult",
     # Statistics
     "contact_permutation_test",
     "morphology_association_test",

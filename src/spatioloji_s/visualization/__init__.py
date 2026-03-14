@@ -80,6 +80,8 @@ from .polygon_plots import (
     plot_contact_summary,
     plot_density_map,
     plot_free_boundary_map,
+    plot_gradient_curve,
+    plot_infiltration_summary,
     plot_interface_polygon_map,
     plot_interface_polygon_metrics,
     plot_morphology_association,
@@ -93,6 +95,7 @@ from .polygon_plots import (
     plot_polygon_neighborhood_enrichment,
     plot_polygon_niches,
     plot_spatial_autocorrelation,
+    plot_spatial_distance,
 )
 
 __all__ = [
@@ -172,4 +175,7 @@ __all__ = [
     "plot_spatial_autocorrelation",
     "plot_interface_polygon_map",
     "plot_interface_polygon_metrics",
+    "plot_gradient_curve",
+    "plot_spatial_distance",
+    "plot_infiltration_summary",
 ]

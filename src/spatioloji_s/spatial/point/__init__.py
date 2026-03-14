@@ -37,12 +37,24 @@ Examples
 """
 
 # --- Graph construction ---
+from .._gradient_types import GradientResult
+from .._infiltration_types import InfiltrationResult
+from .._interface_types import InterfaceResult
+
+# Gradient
+from .gradient import compute_gradient
 from .graph import (
     PointSpatialGraph,
     build_delaunay_graph,
     build_knn_graph,
     build_radius_graph,
 )
+
+# Infiltration
+from .infiltration import score_infiltration
+
+# Interface
+from .interface import identify_interface
 
 # --- Neighborhood analysis ---
 from .neighborhoods import (
@@ -78,10 +90,6 @@ from .statistics import (
     proximity_score,
 )
 
-# Interface
-from .interface import identify_interface
-from .._interface_types import InterfaceResult
-
 __all__ = [
     # Graph
     "PointSpatialGraph",
@@ -113,4 +121,10 @@ __all__ = [
     # Interface
     "identify_interface",
     "InterfaceResult",
+    # Gradient
+    "compute_gradient",
+    "GradientResult",
+    # Infiltration
+    "score_infiltration",
+    "InfiltrationResult",
 ]
