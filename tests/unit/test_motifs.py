@@ -400,3 +400,78 @@ class TestIntegration:
         assert result.motif_catalog.labels.nunique() == 5
         assert "motif_label" in sp_motif.cell_meta.columns
         assert "assembly_label" in sp_motif.cell_meta.columns
+
+
+# ---------------------------------------------------------------------------
+# Visualization tests
+# ---------------------------------------------------------------------------
+
+
+class TestPlotMotifMap:
+    def test_returns_figure(self, sp_motif):
+        import matplotlib
+        import matplotlib.pyplot as plt
+
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+        from spatioloji_s.visualization.polygon_plots import plot_motif_map
+
+        graph = build_buffer_graph(sp_motif, buffer_distance=30)
+        result = run_motif_pipeline(sp_motif, graph, group_col="cell_type", n_motifs=5)
+        fig = plot_motif_map(sp_motif, result, show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+
+class TestPlotMotifComposition:
+    def test_returns_figure(self, sp_motif):
+        import matplotlib
+        import matplotlib.pyplot as plt
+
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+        from spatioloji_s.visualization.polygon_plots import plot_motif_composition
+
+        graph = build_buffer_graph(sp_motif, buffer_distance=30)
+        result = run_motif_pipeline(sp_motif, graph, group_col="cell_type", n_motifs=5)
+        fig = plot_motif_composition(result, show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+
+class TestPlotAssemblyMap:
+    def test_returns_figure(self, sp_motif):
+        import matplotlib
+        import matplotlib.pyplot as plt
+
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+        from spatioloji_s.visualization.polygon_plots import plot_assembly_map
+
+        graph = build_buffer_graph(sp_motif, buffer_distance=30)
+        result = run_motif_pipeline(sp_motif, graph, group_col="cell_type", n_motifs=5)
+        fig = plot_assembly_map(sp_motif, result, show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)
+
+
+class TestPlotStructureMatches:
+    def test_returns_figure(self, sp_motif):
+        import matplotlib
+        import matplotlib.pyplot as plt
+
+        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        from spatioloji_s.spatial.polygon.motifs import run_motif_pipeline
+        from spatioloji_s.visualization.polygon_plots import plot_structure_matches
+
+        graph = build_buffer_graph(sp_motif, buffer_distance=30)
+        result = run_motif_pipeline(
+            sp_motif,
+            graph,
+            group_col="cell_type",
+            n_motifs=5,
+            match_signatures={"tumor_core": {"Tumor": 0.6}},
+        )
+        fig = plot_structure_matches(sp_motif, result, "tumor_core", show=False)
+        assert isinstance(fig, matplotlib.figure.Figure)
+        plt.close(fig)

@@ -1405,6 +1405,10 @@ __all__ = [
     "plot_gradient_curve",
     "plot_spatial_distance",
     "plot_infiltration_summary",
+    "plot_motif_map",
+    "plot_motif_composition",
+    "plot_assembly_map",
+    "plot_structure_matches",
 ]
 
 
@@ -1412,10 +1416,14 @@ __all__ = [
 # Gradient & infiltration plots (delegates to polygon_plots)
 # ══════════════════════════════════════════════════════════════════════════════
 
-from spatioloji_s.visualization.polygon_plots import (  # noqa: E402
+from spatioloji_s.visualization.polygon_plots import (  # noqa: E402  # noqa: E402
+    plot_assembly_map,
     plot_gradient_curve,
     plot_infiltration_summary,
+    plot_motif_composition,
+    plot_motif_map,
     plot_spatial_distance,
+    plot_structure_matches,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -1614,6 +1614,10 @@ __all__ = [
     "plot_gradient_curve",
     "plot_spatial_distance",
     "plot_infiltration_summary",
+    "plot_motif_map",
+    "plot_motif_composition",
+    "plot_assembly_map",
+    "plot_structure_matches",
 ]
 
 
@@ -2021,4 +2025,288 @@ def plot_infiltration_summary(
 
     fig.suptitle(f"Immune Infiltration into {infiltration_result.target_region}", fontsize=12)
     fig.tight_layout()
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Motif plots
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def plot_motif_map(
+    sp,
+    motif_result,
+    coord_type: str = "global",
+    point_size: float = 8,
+    palette: str = "tab20",
+    figsize: tuple[float, float] | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure:
+    """Spatial scatter map coloured by motif label.
+
+    Args:
+        sp: A ``spatioloji`` object.
+        motif_result: ``MotifResult`` from ``run_motif_pipeline``.
+        coord_type: ``'global'`` or ``'local'`` coordinate system.
+        point_size: Marker size for scatter points.
+        palette: Colour palette name for motif categories.
+        figsize: Figure size ``(width, height)``.
+        show: If ``True``, call ``plt.show()``.
+        save_path: File path to save the figure.
+        dpi: Resolution for saved figure.
+
+    Returns:
+        matplotlib Figure.
+
+    Example:
+        >>> result = run_motif_pipeline(sp, graph, group_col="cell_type", n_motifs=5)
+        >>> plot_motif_map(sp, result, show=False)
+    """
+    pos_df = sp.get_spatial_coords(coord_type=coord_type, as_dataframe=True)
+    x_col, y_col = pos_df.columns[0], pos_df.columns[1]
+
+    labels = motif_result.motif_catalog.labels.reindex(pos_df.index).astype(str)
+    colors, _, handles = categorical_colors(labels, palette)
+
+    if figsize is None:
+        figsize = (9, 8)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.scatter(
+        np.asarray(pos_df[x_col]),
+        np.asarray(pos_df[y_col]),
+        s=point_size,
+        c=colors,
+        linewidths=0,
+    )
+    ax.set_aspect("equal")
+    ax.set_title("Spatial Motif Map")
+    ax.legend(
+        handles=handles,
+        title="Motif",
+        bbox_to_anchor=(1.01, 1),
+        loc="upper left",
+        fontsize=7,
+        title_fontsize=8,
+        frameon=False,
+    )
+    clean_axes(ax)
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+def plot_motif_composition(
+    motif_result,
+    figsize: tuple[float, float] | None = None,
+    palette: str = "tab20",
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure:
+    """Stacked horizontal bar chart showing cell-type fractions per motif.
+
+    Args:
+        motif_result: ``MotifResult`` from ``run_motif_pipeline``.
+        figsize: Figure size ``(width, height)``.
+        palette: Colour palette name for cell types.
+        show: If ``True``, call ``plt.show()``.
+        save_path: File path to save the figure.
+        dpi: Resolution for saved figure.
+
+    Returns:
+        matplotlib Figure.
+
+    Example:
+        >>> result = run_motif_pipeline(sp, graph, group_col="cell_type", n_motifs=5)
+        >>> plot_motif_composition(result, show=False)
+    """
+    sigs = motif_result.motif_catalog.signatures
+    cell_types = sigs.columns.tolist()
+    n_motifs = sigs.shape[0]
+
+    if figsize is None:
+        figsize = (8, max(3, n_motifs * 0.6))
+
+    pal = sns.color_palette(palette, len(cell_types))
+    color_dict = dict(zip(cell_types, pal, strict=False))
+
+    fig, ax = plt.subplots(figsize=figsize)
+    left = np.zeros(n_motifs)
+    motif_labels = [str(m) for m in sigs.index]
+
+    for ct in cell_types:
+        vals = sigs[ct].values
+        ax.barh(motif_labels, vals, left=left, color=color_dict[ct], label=ct)
+        left += vals
+
+    ax.set_xlabel("Fraction")
+    ax.set_ylabel("Motif")
+    ax.set_title("Motif Composition")
+    ax.legend(
+        title="Cell type",
+        bbox_to_anchor=(1.01, 1),
+        loc="upper left",
+        fontsize=7,
+        title_fontsize=8,
+        frameon=False,
+    )
+    clean_axes(ax)
+    fig.tight_layout()
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+def plot_assembly_map(
+    sp,
+    motif_result,
+    coord_type: str = "global",
+    point_size: float = 8,
+    palette: str = "Set2",
+    figsize: tuple[float, float] | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure:
+    """Spatial map coloured by assembly label.
+
+    Args:
+        sp: A ``spatioloji`` object.
+        motif_result: ``MotifResult`` from ``run_motif_pipeline``.
+        coord_type: ``'global'`` or ``'local'`` coordinate system.
+        point_size: Marker size for scatter points.
+        palette: Colour palette name for assembly categories.
+        figsize: Figure size ``(width, height)``.
+        show: If ``True``, call ``plt.show()``.
+        save_path: File path to save the figure.
+        dpi: Resolution for saved figure.
+
+    Returns:
+        matplotlib Figure.
+
+    Raises:
+        ValueError: If ``motif_result.assembly_catalog`` is None.
+
+    Example:
+        >>> result = run_motif_pipeline(sp, graph, group_col="cell_type", n_motifs=5)
+        >>> plot_assembly_map(sp, result, show=False)
+    """
+    if motif_result.assembly_catalog is None:
+        raise ValueError("motif_result.assembly_catalog is None — run the pipeline with detect_assemblies_flag=True.")
+
+    pos_df = sp.get_spatial_coords(coord_type=coord_type, as_dataframe=True)
+    x_col, y_col = pos_df.columns[0], pos_df.columns[1]
+
+    raw_labels = motif_result.assembly_catalog.labels.reindex(pos_df.index)
+    str_labels = raw_labels.astype(str).replace("-1", "unassigned")
+    colors, _, handles = categorical_colors(str_labels, palette)
+
+    if figsize is None:
+        figsize = (9, 8)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.scatter(
+        np.asarray(pos_df[x_col]),
+        np.asarray(pos_df[y_col]),
+        s=point_size,
+        c=colors,
+        linewidths=0,
+    )
+    ax.set_aspect("equal")
+    ax.set_title("Spatial Assembly Map")
+    ax.legend(
+        handles=handles,
+        title="Assembly",
+        bbox_to_anchor=(1.01, 1),
+        loc="upper left",
+        fontsize=7,
+        title_fontsize=8,
+        frameon=False,
+    )
+    clean_axes(ax)
+    return finalize_plot(fig, save_path, dpi, show)
+
+
+def plot_structure_matches(
+    sp,
+    motif_result,
+    structure_name: str,
+    coord_type: str = "global",
+    point_size: float = 8,
+    highlight_color: str = "#d62728",
+    figsize: tuple[float, float] | None = None,
+    show: bool = True,
+    save_path: str | None = None,
+    dpi: int = 150,
+) -> plt.Figure:
+    """Highlight cells matching a known structure on the spatial map.
+
+    Matched cells are shown in ``highlight_color``; all other cells
+    are rendered in grey.
+
+    Args:
+        sp: A ``spatioloji`` object.
+        motif_result: ``MotifResult`` from ``run_motif_pipeline``.
+        structure_name: Name of the structure to highlight (must exist
+            in ``motif_result.structure_matches``).
+        coord_type: ``'global'`` or ``'local'`` coordinate system.
+        point_size: Marker size for scatter points.
+        highlight_color: Colour for matched cells.
+        figsize: Figure size ``(width, height)``.
+        show: If ``True``, call ``plt.show()``.
+        save_path: File path to save the figure.
+        dpi: Resolution for saved figure.
+
+    Returns:
+        matplotlib Figure.
+
+    Raises:
+        ValueError: If ``motif_result.structure_matches`` is None.
+
+    Example:
+        >>> result = run_motif_pipeline(sp, graph, group_col="cell_type",
+        ...     n_motifs=5, match_signatures={"tumor_core": {"Tumor": 0.6}})
+        >>> plot_structure_matches(sp, result, "tumor_core", show=False)
+    """
+    if motif_result.structure_matches is None:
+        raise ValueError("motif_result.structure_matches is None — run the pipeline with match_signatures or builtin.")
+
+    pos_df = sp.get_spatial_coords(coord_type=coord_type, as_dataframe=True)
+    x_col, y_col = pos_df.columns[0], pos_df.columns[1]
+
+    per_cell = motif_result.structure_matches.per_cell.reindex(pos_df.index).fillna("unmatched")
+    mask = per_cell == structure_name
+    cell_colors = np.where(mask, highlight_color, "lightgrey")
+
+    if figsize is None:
+        figsize = (9, 8)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    # Draw non-matched first, then matched on top
+    ax.scatter(
+        np.asarray(pos_df[x_col])[~mask],
+        np.asarray(pos_df[y_col])[~mask],
+        s=point_size,
+        c="lightgrey",
+        linewidths=0,
+        label="other",
+        zorder=1,
+    )
+    ax.scatter(
+        np.asarray(pos_df[x_col])[mask],
+        np.asarray(pos_df[y_col])[mask],
+        s=point_size,
+        c=highlight_color,
+        linewidths=0,
+        label=structure_name,
+        zorder=2,
+    )
+    ax.set_aspect("equal")
+    ax.set_title(f"Structure Match: {structure_name}")
+    ax.legend(
+        bbox_to_anchor=(1.01, 1),
+        loc="upper left",
+        fontsize=7,
+        frameon=False,
+    )
+    clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
