@@ -286,7 +286,8 @@ def umap(
     n_neighbors: int = 15,
     min_dist: float = 0.1,
     metric: str = "euclidean",
-    random_state: int = 42,
+    random_state: int | None = 42,
+    n_jobs: int = 1,
     output_key: str = "X_umap",
     inplace: bool = True,
 ):
@@ -319,8 +320,14 @@ def umap(
         Lower values = tighter clusters
     metric : str, optional
         Distance metric, by default 'euclidean'
-    random_state : int, optional
-        Random seed, by default 42
+    random_state : int or None, optional
+        Random seed, by default 42. Note: umap-learn forces ``n_jobs=1``
+        when a seed is set. Pass ``random_state=None`` to enable parallel
+        execution with ``n_jobs > 1``.
+    n_jobs : int, optional
+        Number of parallel threads for UMAP, by default 1.
+        Set to -1 to use all available CPUs.  Only effective when
+        ``random_state=None`` (umap-learn limitation).
     output_key : str, optional
         Key name for storing results, by default 'X_umap'
     inplace : bool, optional
@@ -337,6 +344,9 @@ def umap(
     >>> sp.processing.pca(sp, n_comps=50)
     >>> sp.processing.umap(sp, use_pca=True, n_neighbors=15)
     >>>
+    >>> # Fast parallel UMAP (non-reproducible)
+    >>> sp.processing.umap(sp, n_jobs=-1, random_state=None)
+    >>>
     >>> # UMAP with more global structure
     >>> sp.processing.umap(sp, n_neighbors=30, min_dist=0.5)
     >>>
@@ -346,12 +356,29 @@ def umap(
     >>> # Access results
     >>> umap_coords = sp.embeddings['X_umap']
     """
+    import os
+    import warnings
+
     try:
         import umap as umap_package
     except ImportError as err:
         raise ImportError("UMAP requires umap-learn package. Install with: pip install umap-learn") from err
 
-    print(f"\nUMAP (n_components={n_components}, n_neighbors={n_neighbors}, min_dist={min_dist})")
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 1
+
+    # umap-learn overrides n_jobs=1 when random_state is set.
+    # Auto-drop the seed when the user explicitly asks for parallelism.
+    if n_jobs > 1 and random_state is not None:
+        warnings.warn(
+            f"random_state={random_state} forces n_jobs=1 in umap-learn. "
+            "Dropping random_state for parallel execution (results will not be reproducible).",
+            UserWarning,
+            stacklevel=2,
+        )
+        random_state = None
+
+    print(f"\nUMAP (n_components={n_components}, n_neighbors={n_neighbors}, min_dist={min_dist}, n_jobs={n_jobs})")
 
     # Get input data
     if use_pca:
@@ -387,6 +414,8 @@ def umap(
         min_dist=min_dist,
         metric=metric,
         random_state=random_state,
+        n_jobs=n_jobs,
+        low_memory=X.shape[0] > 50_000,
         verbose=False,
     )
 
