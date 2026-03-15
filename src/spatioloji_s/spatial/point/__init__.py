@@ -51,6 +51,7 @@ from .graph import (
     build_delaunay_graph,
     build_knn_graph,
     build_radius_graph,
+    build_weighted_knn_graph,
 )
 
 # Infiltration
@@ -98,6 +99,7 @@ __all__ = [
     # Graph
     "PointSpatialGraph",
     "build_knn_graph",
+    "build_weighted_knn_graph",
     "build_radius_graph",
     "build_delaunay_graph",
     # Neighborhoods

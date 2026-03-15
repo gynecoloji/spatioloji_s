@@ -168,6 +168,119 @@ def build_knn_graph(
     )
 
 
+def build_weighted_knn_graph(
+    sj: spatioloji,
+    k: int = 10,
+    coord_type: str = "global",
+    kernel: str = "gaussian",
+    bandwidth: float | None = None,
+) -> PointSpatialGraph:
+    """
+    Build K-nearest neighbors graph with distance-based edge weights.
+
+    Like :func:`build_knn_graph`, but the adjacency matrix stores
+    continuous weights instead of binary 1/0.  Closer cells receive
+    higher weight, which improves spatial statistics (Moran's I,
+    Getis-Ord Gi*, neighborhood enrichment) by letting proximity
+    modulate influence.
+
+    Parameters
+    ----------
+    sj : spatioloji
+        spatioloji object.
+    k : int
+        Number of neighbors, by default 10.
+    coord_type : str
+        'global' or 'local', by default 'global'.
+    kernel : {'gaussian', 'bisquare', 'inverse'}
+        Weight function applied to distances.
+
+        - ``'gaussian'``  — ``exp(-d² / (2 * bw²))``.  Smooth decay,
+          most common in spatial statistics.
+        - ``'bisquare'``  — ``(1 - (d/bw)²)²`` for ``d < bw``, else 0.
+          Compact support (hard cutoff at bandwidth).
+        - ``'inverse'``   — ``1 / (1 + d / bw)``.  Gentle decay.
+    bandwidth : float or None
+        Kernel bandwidth.  Controls how fast weight decays with distance.
+        If None (default), set to the median of all neighbor distances
+        (adaptive bandwidth).
+
+    Returns
+    -------
+    PointSpatialGraph
+        ``adjacency`` contains the kernel weights (not binary).
+        ``distances`` contains raw Euclidean distances.
+
+    Examples
+    --------
+    >>> # Gaussian-weighted graph (adaptive bandwidth)
+    >>> g = sj.spatial.point.build_weighted_knn_graph(sp, k=15)
+    >>>
+    >>> # Fixed bandwidth, bisquare kernel
+    >>> g = sj.spatial.point.build_weighted_knn_graph(
+    ...     sp, k=10, kernel='bisquare', bandwidth=50.0)
+    """
+    coords = sj.get_spatial_coords(coord_type=coord_type)
+    n_cells = coords.shape[0]
+
+    nn = NearestNeighbors(n_neighbors=min(k + 1, n_cells), metric="euclidean")
+    nn.fit(coords)
+    dist_matrix, idx_matrix = nn.kneighbors(coords)
+
+    # Build sparse distance matrix (asymmetric)
+    rows = np.repeat(np.arange(n_cells), k)
+    cols = idx_matrix[:, 1:].flatten()
+    dists = dist_matrix[:, 1:].flatten()
+
+    dist_sparse = sparse.csr_matrix((dists, (rows, cols)), shape=(n_cells, n_cells))
+
+    # Symmetrize distances (same logic as build_knn_graph)
+    dist_sym = (dist_sparse + dist_sparse.T) / 2
+    mask_one_way = (dist_sparse != 0).astype(float) - (dist_sparse.T != 0).astype(float)
+    dist_sym = dist_sym + dist_sparse.multiply(mask_one_way > 0) / 2 + dist_sparse.T.multiply(mask_one_way < 0) / 2
+
+    # Resolve bandwidth
+    all_dists = dist_sym.data
+    if bandwidth is None:
+        bandwidth = float(np.median(all_dists))
+        print(f"  Adaptive bandwidth: {bandwidth:.2f} (median neighbor distance)")
+
+    # Compute kernel weights
+    if kernel == "gaussian":
+        weight_data = np.exp(-(all_dists**2) / (2 * bandwidth**2))
+    elif kernel == "bisquare":
+        ratio = all_dists / bandwidth
+        weight_data = np.where(ratio < 1.0, (1 - ratio**2) ** 2, 0.0)
+    elif kernel == "inverse":
+        weight_data = 1.0 / (1.0 + all_dists / bandwidth)
+    else:
+        raise ValueError(f"Unknown kernel '{kernel}'. Choose from: gaussian, bisquare, inverse")
+
+    # Build weighted adjacency (same sparsity as dist_sym)
+    adjacency = dist_sym.copy()
+    adjacency.data = weight_data.astype(np.float32)
+    # Remove zero-weight entries (bisquare can produce them)
+    adjacency.eliminate_zeros()
+
+    n_edges = adjacency.nnz // 2
+    mean_deg = np.array((adjacency != 0).astype(float).sum(1)).mean()
+    mean_weight = float(adjacency.data.mean()) if adjacency.nnz > 0 else 0.0
+
+    print(
+        f"  ✓ Weighted KNN graph: k={k}, kernel={kernel}, bw={bandwidth:.2f}, "
+        f"{n_edges} edges, mean degree={mean_deg:.1f}, mean weight={mean_weight:.3f}"
+    )
+
+    return PointSpatialGraph(
+        adjacency=adjacency.tocsr(),
+        distances=dist_sym.tocsr(),
+        cell_ids=sj.cell_index,
+        method="weighted_knn",
+        params={"k": k, "kernel": kernel, "bandwidth": bandwidth},
+        coord_type=coord_type,
+    )
+
+
 def build_radius_graph(
     sj: spatioloji,
     radius: float,

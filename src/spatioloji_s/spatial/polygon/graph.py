@@ -461,3 +461,169 @@ def build_knn_graph(
     print(f"    Mean degree: {graph.mean_degree:.1f} (≥{k} due to symmetrization)")
 
     return graph
+
+
+def build_weighted_knn_graph(
+    sp: spatioloji,
+    k: int = 6,
+    coord_type: str = "global",
+    kernel: str = "gaussian",
+    bandwidth: float | None = None,
+    candidate_multiplier: int = 3,
+) -> PolygonSpatialGraph:
+    """
+    Build KNN graph with distance-based edge weights from polygon geometry.
+
+    Like :func:`build_knn_graph`, but the adjacency matrix stores continuous
+    kernel weights instead of binary 1/0.  Closer cells receive higher weight,
+    improving spatial statistics (hotspot detection, autocorrelation) by
+    letting proximity modulate influence.
+
+    Strategy:
+    1. Use centroid KNN to find candidate neighbors (k * multiplier)
+    2. Compute exact polygon-to-polygon distance for each candidate pair
+    3. Keep the k nearest by true polygon distance
+    4. Apply kernel function to convert distances → weights
+
+    Parameters
+    ----------
+    sp : spatioloji
+        spatioloji object with polygon data.
+    k : int
+        Number of nearest neighbors per cell, by default 6.
+    coord_type : str
+        'global' or 'local' coordinates, by default 'global'.
+    kernel : {'gaussian', 'bisquare', 'inverse'}
+        Weight function applied to distances.
+
+        - ``'gaussian'``  — ``exp(-d² / (2 * bw²))``.
+        - ``'bisquare'``  — ``(1 - (d/bw)²)²`` for ``d < bw``, else 0.
+        - ``'inverse'``   — ``1 / (1 + d / bw)``.
+    bandwidth : float or None
+        Kernel bandwidth.  If None (default), set to the median of all
+        neighbor distances (adaptive bandwidth).
+    candidate_multiplier : int
+        How many candidates to consider per cell (k * multiplier).
+        Higher = more accurate but slower, by default 3.
+
+    Returns
+    -------
+    PolygonSpatialGraph
+        ``adjacency`` contains the kernel weights (not binary).
+        ``distances`` contains raw polygon-to-polygon distances.
+
+    Examples
+    --------
+    >>> # Gaussian-weighted polygon graph
+    >>> g = sj.spatial.polygon.build_weighted_knn_graph(sp, k=6)
+    >>>
+    >>> # Fixed bandwidth, inverse kernel
+    >>> g = sj.spatial.polygon.build_weighted_knn_graph(
+    ...     sp, k=6, kernel='inverse', bandwidth=20.0)
+    """
+    from scipy.spatial import cKDTree
+
+    print(f"\n[Polygon Graph] Building weighted KNN graph (k={k}, kernel={kernel})...")
+
+    gdf = _get_gdf(sp, coord_type=coord_type)
+
+    # Drop invalid geometries
+    from shapely.validation import make_valid
+
+    null_mask = gdf.geometry.isna()
+    if null_mask.any():
+        print(f"  ⚠ Dropping {null_mask.sum()} cells with null geometry")
+        gdf = gdf[~null_mask]
+
+    invalid_mask = ~gdf.geometry.is_valid
+    if invalid_mask.any():
+        print(f"  → Repairing {invalid_mask.sum()} invalid geometries...")
+        gdf.loc[invalid_mask, "geometry"] = gdf.loc[invalid_mask, "geometry"].apply(make_valid)
+
+    cell_index = gdf.index
+    n_cells = len(gdf)
+
+    if k >= n_cells:
+        raise ValueError(f"k={k} must be less than n_cells={n_cells}")
+
+    # Step 1: Centroid-based candidate search
+    n_candidates = min(k * candidate_multiplier, n_cells - 1)
+    centroids = np.column_stack([gdf.geometry.centroid.x, gdf.geometry.centroid.y])
+
+    print(f"  → Finding {n_candidates} candidates per cell via centroid KDTree...")
+    tree = cKDTree(centroids)
+    _, candidate_indices = tree.query(centroids, k=n_candidates + 1)
+
+    # Step 2: Compute exact polygon distances for candidates
+    print(f"  → Computing exact polygon distances for {n_cells} × {n_candidates} pairs...")
+    geom = gdf.geometry.values
+
+    rows_list = []
+    cols_list = []
+    dist_list = []
+
+    for i in range(n_cells):
+        candidates = candidate_indices[i, 1:]
+        poly_i = geom[i]
+        cand_dists = np.array([poly_i.distance(geom[j]) for j in candidates])
+
+        nearest_order = np.argsort(cand_dists)[:k]
+        nearest_indices = candidates[nearest_order]
+        nearest_dists = cand_dists[nearest_order]
+
+        rows_list.append(np.full(k, i, dtype=np.int32))
+        cols_list.append(nearest_indices.astype(np.int32))
+        dist_list.append(nearest_dists.astype(np.float32))
+
+    rows = np.concatenate(rows_list)
+    cols = np.concatenate(cols_list)
+    dists = np.concatenate(dist_list)
+
+    # Step 3: Symmetrize distances
+    dist_directed = sparse.csr_matrix((dists, (rows, cols)), shape=(n_cells, n_cells))
+    dist_sym = dist_directed.maximum(dist_directed.T)
+    dist_sym = sparse.csr_matrix(dist_sym)
+
+    # Step 4: Resolve bandwidth
+    all_dists = dist_sym.data
+    if bandwidth is None:
+        bandwidth = float(np.median(all_dists))
+        print(f"  Adaptive bandwidth: {bandwidth:.2f} (median polygon distance)")
+
+    # Step 5: Apply kernel
+    if kernel == "gaussian":
+        weight_data = np.exp(-(all_dists**2) / (2 * bandwidth**2))
+    elif kernel == "bisquare":
+        ratio = all_dists / bandwidth
+        weight_data = np.where(ratio < 1.0, (1 - ratio**2) ** 2, 0.0)
+    elif kernel == "inverse":
+        weight_data = 1.0 / (1.0 + all_dists / bandwidth)
+    else:
+        raise ValueError(f"Unknown kernel '{kernel}'. Choose from: gaussian, bisquare, inverse")
+
+    adjacency = dist_sym.copy()
+    adjacency.data = weight_data.astype(np.float32)
+    adjacency.eliminate_zeros()
+    adjacency = sparse.csr_matrix(adjacency)
+
+    n_edges = adjacency.nnz // 2
+    mean_deg = np.array((adjacency != 0).astype(float).sum(1)).mean()
+    mean_weight = float(adjacency.data.mean()) if adjacency.nnz > 0 else 0.0
+
+    graph = PolygonSpatialGraph(
+        adjacency=adjacency,
+        distances=dist_sym,
+        cell_index=cell_index,
+        method="weighted_knn",
+        params={
+            "coord_type": coord_type,
+            "k": k,
+            "kernel": kernel,
+            "bandwidth": bandwidth,
+            "candidate_multiplier": candidate_multiplier,
+        },
+    )
+
+    print(f"  ✓ Weighted KNN graph: {n_edges} edges, mean degree={mean_deg:.1f}, mean weight={mean_weight:.3f}")
+
+    return graph

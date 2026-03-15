@@ -21,8 +21,73 @@ if TYPE_CHECKING:
 
 import numpy as np
 import pandas as pd
+from scipy import sparse
 
 from .graph import PolygonSpatialGraph, _get_gdf
+
+
+def _resolve_values(
+    sp: spatioloji,
+    values: str | np.ndarray,
+    graph: PolygonSpatialGraph,
+    layer: str | None = None,
+) -> tuple[np.ndarray, str]:
+    """
+    Resolve values to a 1D numpy array aligned to graph.cell_index.
+
+    Priority order when ``values`` is a string:
+    1. If ``layer`` is given → pull gene from ``sp.layers[layer]``
+    2. If name found in ``cell_meta`` → use that column
+    3. Otherwise → pull gene from raw expression
+
+    Parameters
+    ----------
+    sp : spatioloji
+    values : str or np.ndarray
+        Gene name, cell_meta column, or pre-computed array.
+    graph : PolygonSpatialGraph
+        Graph whose ``cell_index`` defines alignment.
+    layer : str, optional
+        Layer name for gene lookup (e.g. 'log_normalized', 'scaled').
+
+    Returns
+    -------
+    arr : np.ndarray (1D, float64)
+        Values aligned to ``graph.cell_index``.
+    label : str
+        Human-readable label for the values source.
+    """
+    if isinstance(values, np.ndarray):
+        if len(values) != len(graph.cell_index):
+            raise ValueError(f"Array length ({len(values)}) does not match graph cell count ({len(graph.cell_index)})")
+        return values.flatten().astype(np.float64), "custom"
+
+    # String: try layer → cell_meta → raw expression
+    if layer is not None:
+        layer_data = sp.get_layer(layer)
+        gene_indices = sp._get_gene_indices([values])
+        if len(gene_indices) == 0:
+            raise ValueError(f"Gene '{values}' not found in gene index")
+        if sparse.issparse(layer_data):
+            arr = np.array(layer_data[:, gene_indices[0]].todense()).flatten().astype(np.float64)
+        else:
+            arr = layer_data[:, gene_indices[0]].flatten().astype(np.float64)
+        # Full cell order → reindex to graph
+        full_series = pd.Series(arr, index=sp.cell_index)
+        return full_series.reindex(graph.cell_index).values.astype(np.float64), values
+
+    if values in sp.cell_meta.columns:
+        return sp.cell_meta[values].reindex(graph.cell_index).values.astype(np.float64), values
+
+    # Try raw expression
+    gene_indices = sp._get_gene_indices([values])
+    if len(gene_indices) > 0:
+        raw = sp.expression.get_dense()[:, gene_indices[0]].flatten().astype(np.float64)
+        full_series = pd.Series(raw, index=sp.cell_index)
+        return full_series.reindex(graph.cell_index).values.astype(np.float64), values
+
+    raise ValueError(f"'{values}' not found as gene name or cell_meta column")
+
 
 # ========== Density ==========
 
@@ -111,12 +176,18 @@ def cell_density_map(
 # ========== Hotspot Detection ==========
 
 
-def hotspot_detection(sp: spatioloji, graph: PolygonSpatialGraph, metric: str, store: bool = True) -> pd.DataFrame:
+def hotspot_detection(
+    sp: spatioloji,
+    graph: PolygonSpatialGraph,
+    values: str | np.ndarray,
+    layer: str | None = None,
+    store: bool = True,
+) -> pd.DataFrame:
     """
     Detect spatial hotspots using Getis-Ord Gi* statistic.
 
     Identifies clusters of cells with significantly high or low
-    values of a given metric, using the polygon adjacency graph
+    values of a given metric or gene, using the polygon adjacency graph
     as spatial weights.
 
     Gi* > 0: hot spot (high values cluster together)
@@ -128,8 +199,11 @@ def hotspot_detection(sp: spatioloji, graph: PolygonSpatialGraph, metric: str, s
         spatioloji object
     graph : PolygonSpatialGraph
         Pre-built polygon graph
-    metric : str
-        Column in cell_meta to analyze
+    values : str or np.ndarray
+        Gene name, cell_meta column, or pre-computed array.
+    layer : str, optional
+        Expression layer for gene lookup (e.g. 'log_normalized', 'scaled').
+        If None, checks cell_meta first, then raw expression.
     store : bool
         If True, store Gi* z-scores and p-values in sp.cell_meta
 
@@ -142,33 +216,32 @@ def hotspot_detection(sp: spatioloji, graph: PolygonSpatialGraph, metric: str, s
     Examples
     --------
     >>> graph = build_contact_graph(sp)
-    >>> hotspots = hotspot_detection(sp, graph, metric='total_counts')
+    >>> # Hotspots on cell_meta column
+    >>> hotspots = hotspot_detection(sp, graph, values='total_counts')
+    >>> # Hotspots on gene expression
+    >>> hotspots = hotspot_detection(sp, graph, values='FOXP3', layer='log_normalized')
     >>> # Find significant hot spots
     >>> hot_mask = (hotspots['p_value'] < 0.05) & (hotspots['z_score'] > 0)
     >>> hot_cells = sp.cell_index[hot_mask]
     """
     from scipy import stats as scipy_stats
 
-    print(f"\n[Patterns] Hotspot detection (Getis-Ord Gi*) for '{metric}'...")
-
-    if metric not in sp.cell_meta.columns:
-        raise ValueError(f"'{metric}' not found in cell_meta")
-
-    # Get values aligned to graph
-    values = sp.cell_meta[metric].reindex(graph.cell_index).values.astype(np.float64)
+    vals, label = _resolve_values(sp, values, graph, layer=layer)
+    layer_str = f", layer='{layer}'" if layer else ""
+    print(f"\n[Patterns] Hotspot detection (Getis-Ord Gi*) for '{label}'{layer_str}...")
 
     # Handle NaN: replace with global mean
-    nan_mask = np.isnan(values)
+    nan_mask = np.isnan(vals)
     if nan_mask.any():
-        values[nan_mask] = np.nanmean(values)
+        vals[nan_mask] = np.nanmean(vals)
         print(f"  ⚠ {nan_mask.sum()} NaN values replaced with mean")
 
-    n = len(values)
-    x_mean = values.mean()
-    x_var = values.var()
+    n = len(vals)
+    x_mean = vals.mean()
+    x_var = vals.var()
 
     if x_var == 0:
-        print("  ⚠ Zero variance in metric, cannot compute Gi*")
+        print("  ⚠ Zero variance, cannot compute Gi*")
         result = pd.DataFrame(
             {"gi_star": np.zeros(n), "z_score": np.zeros(n), "p_value": np.ones(n)}, index=graph.cell_index
         )
@@ -186,8 +259,8 @@ def hotspot_detection(sp: spatioloji, graph: PolygonSpatialGraph, metric: str, s
         w_indices = np.append(neighbor_indices, i)
         w_count = len(w_indices)
 
-        # Numerator: sum of values in neighborhood - expected
-        local_sum = values[w_indices].sum()
+        # Numerator: sum of vals in neighborhood - expected
+        local_sum = vals[w_indices].sum()
         expected = w_count * x_mean
 
         # Denominator
@@ -212,9 +285,9 @@ def hotspot_detection(sp: spatioloji, graph: PolygonSpatialGraph, metric: str, s
     result = result.reindex(sp.cell_index)
 
     if store:
-        sp.cell_meta[f"gi_star_{metric}"] = result["gi_star"].values
-        sp.cell_meta[f"gi_star_{metric}_pval"] = result["p_value"].values
-        print(f"  ✓ Stored 'gi_star_{metric}' and p-values in cell_meta")
+        sp.cell_meta[f"gi_star_{label}"] = result["gi_star"].values
+        sp.cell_meta[f"gi_star_{label}_pval"] = result["p_value"].values
+        print(f"  ✓ Stored 'gi_star_{label}' and p-values in cell_meta")
 
     n_hot = ((result["p_value"] < 0.05) & (result["z_score"] > 0)).sum()
     n_cold = ((result["p_value"] < 0.05) & (result["z_score"] < 0)).sum()
@@ -228,13 +301,18 @@ def hotspot_detection(sp: spatioloji, graph: PolygonSpatialGraph, metric: str, s
 
 
 def spatial_autocorrelation(
-    sp: spatioloji, graph: PolygonSpatialGraph, metric: str, method: str = "moran", store: bool = True
+    sp: spatioloji,
+    graph: PolygonSpatialGraph,
+    values: str | np.ndarray,
+    layer: str | None = None,
+    method: str = "moran",
+    store: bool = True,
 ) -> dict[str, float]:
     """
     Compute global spatial autocorrelation on polygon adjacency graph.
 
-    Tests whether a metric is spatially clustered (positive autocorrelation),
-    dispersed (negative), or random.
+    Tests whether a metric or gene is spatially clustered (positive
+    autocorrelation), dispersed (negative), or random.
 
     Parameters
     ----------
@@ -242,8 +320,11 @@ def spatial_autocorrelation(
         spatioloji object
     graph : PolygonSpatialGraph
         Pre-built polygon graph
-    metric : str
-        Column in cell_meta to analyze
+    values : str or np.ndarray
+        Gene name, cell_meta column, or pre-computed array.
+    layer : str, optional
+        Expression layer for gene lookup (e.g. 'log_normalized', 'scaled').
+        If None, checks cell_meta first, then raw expression.
     method : str
         'moran': Moran's I (-1 to 1, positive = clustered)
         'geary': Geary's C (0 to ~2, <1 = clustered, >1 = dispersed)
@@ -258,31 +339,30 @@ def spatial_autocorrelation(
     Examples
     --------
     >>> graph = build_contact_graph(sp)
-    >>> result = spatial_autocorrelation(sp, graph, metric='total_counts')
+    >>> # On cell_meta column
+    >>> result = spatial_autocorrelation(sp, graph, values='total_counts')
+    >>> # On gene expression
+    >>> result = spatial_autocorrelation(sp, graph, values='EPCAM', layer='log_normalized')
     >>> print(f"Moran's I = {result['statistic']:.3f}, p = {result['p_value']:.2e}")
     """
     from scipy import stats as scipy_stats
 
-    print(f"\n[Patterns] Spatial autocorrelation ({method}) for '{metric}'...")
-
-    if metric not in sp.cell_meta.columns:
-        raise ValueError(f"'{metric}' not found in cell_meta")
+    vals, label = _resolve_values(sp, values, graph, layer=layer)
+    layer_str = f", layer='{layer}'" if layer else ""
+    print(f"\n[Patterns] Spatial autocorrelation ({method}) for '{label}'{layer_str}...")
 
     if method not in ("moran", "geary"):
         raise ValueError(f"method must be 'moran' or 'geary', got '{method}'")
 
-    # Get values aligned to graph
-    values = sp.cell_meta[metric].reindex(graph.cell_index).values.astype(np.float64)
-
     # Handle NaN
-    nan_mask = np.isnan(values)
+    nan_mask = np.isnan(vals)
     if nan_mask.any():
-        values[nan_mask] = np.nanmean(values)
+        vals[nan_mask] = np.nanmean(vals)
         print(f"  ⚠ {nan_mask.sum()} NaN values replaced with mean")
 
-    n = len(values)
-    x_mean = values.mean()
-    x_dev = values - x_mean
+    n = len(vals)
+    x_mean = vals.mean()
+    x_dev = vals - x_mean
 
     # Build weight matrix from adjacency (binary weights)
     adj = graph.adjacency.astype(np.float64).toarray()
@@ -336,7 +416,7 @@ def spatial_autocorrelation(
     else:  # geary
         # Geary's C = ((n-1)/(2*S0)) * sum w_ij(x_i - x_j)^2 / sum(x_i - x_mean)^2
         rows, cols = graph.adjacency.nonzero()
-        sq_diffs = (values[rows] - values[cols]) ** 2
+        sq_diffs = (vals[rows] - vals[cols]) ** 2
         weights = np.array([adj[r, c] for r, c in zip(rows, cols, strict=True)])
 
         numerator = (weights * sq_diffs).sum()

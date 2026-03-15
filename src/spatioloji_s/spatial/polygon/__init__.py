@@ -67,6 +67,7 @@ from .graph import (
     build_buffer_graph,
     build_contact_graph,
     build_knn_graph,
+    build_weighted_knn_graph,
 )
 
 # Infiltration
@@ -78,6 +79,7 @@ from .interface import identify_interface
 # Morphology
 from .morphology import (
     classify_morphology,
+    compute_context_morphology,
     compute_morphology,
     morphology_by_group,
     morphology_gene_correlation,
@@ -114,8 +116,10 @@ __all__ = [
     "build_contact_graph",
     "build_buffer_graph",
     "build_knn_graph",
+    "build_weighted_knn_graph",
     # Morphology
     "compute_morphology",
+    "compute_context_morphology",
     "classify_morphology",
     "morphology_by_group",
     "morphology_gene_correlation",
