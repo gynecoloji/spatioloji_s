@@ -181,11 +181,20 @@ def neighborhood_enrichment(
         if pd.notna(lbl) and lbl in type_to_idx:
             label_array[i] = type_to_idx[lbl]
 
-    # Get edges as integer pairs (upper triangle)
+    # Detect whether graph is undirected (symmetric) or directed
+    is_symmetric = graph.params.get("symmetrize", True) or graph.method in ("contact", "buffer")
+
     rows, cols = graph.adjacency.nonzero()
-    mask = rows < cols
-    edge_rows = rows[mask]
-    edge_cols = cols[mask]
+
+    if is_symmetric:
+        # Undirected: use upper triangle to avoid double-counting
+        mask = rows < cols
+        edge_rows = rows[mask]
+        edge_cols = cols[mask]
+    else:
+        # Directed: use all edges as-is
+        edge_rows = rows
+        edge_cols = cols
 
     # Function to count contacts for a given label assignment
     def _count_contacts(lab_arr):
@@ -195,7 +204,8 @@ def neighborhood_enrichment(
             t_c = lab_arr[c]
             if t_r >= 0 and t_c >= 0:
                 counts[t_r, t_c] += 1
-                counts[t_c, t_r] += 1  # symmetric
+                if is_symmetric:
+                    counts[t_c, t_r] += 1  # mirror for undirected
         return counts
 
     # Observed contacts

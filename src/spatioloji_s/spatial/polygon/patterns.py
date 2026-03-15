@@ -547,11 +547,20 @@ def colocalization(
     if type_b not in unique_types:
         raise ValueError(f"'{type_b}' not found in '{group_col}'")
 
-    # Get edges (upper triangle)
+    # Detect whether graph is undirected (symmetric) or directed
+    is_symmetric = graph.params.get("symmetrize", True) or graph.method in ("contact", "buffer")
+
     rows, cols = graph.adjacency.nonzero()
-    mask = rows < cols
-    edge_rows = rows[mask]
-    edge_cols = cols[mask]
+
+    if is_symmetric:
+        # Undirected: use upper triangle to avoid double-counting
+        mask = rows < cols
+        edge_rows = rows[mask]
+        edge_cols = cols[mask]
+    else:
+        # Directed: use all edges as-is
+        edge_rows = rows
+        edge_cols = cols
 
     label_values = labels.values
 
@@ -562,8 +571,14 @@ def colocalization(
             lr, lc = lab[r], lab[c]
             if pd.isna(lr) or pd.isna(lc):
                 continue
-            if (lr == type_a and lc == type_b) or (lr == type_b and lc == type_a):
-                count += 1
+            if is_symmetric:
+                # Undirected: match either ordering
+                if (lr == type_a and lc == type_b) or (lr == type_b and lc == type_a):
+                    count += 1
+            else:
+                # Directed: only A→B direction
+                if lr == type_a and lc == type_b:
+                    count += 1
         return count
 
     observed = _count_ab(label_values)
