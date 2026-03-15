@@ -41,9 +41,16 @@ class TestBuildWeightedKnnGraph:
         assert g.distances.nnz > 0
         assert np.all(g.distances.data > 0)
 
-    def test_symmetry(self, sp_basic):
-        """Both adjacency and distances should be symmetric."""
+    def test_directed_by_default(self, sp_basic):
+        """Default (symmetrize=False) should produce asymmetric graph with fixed degree."""
         g = build_weighted_knn_graph(sp_basic, k=5)
+        degrees = np.array((g.adjacency != 0).astype(float).sum(axis=1)).flatten()
+        # Each cell should have exactly k outgoing edges
+        assert np.all(degrees == 5)
+
+    def test_symmetry_when_requested(self, sp_basic):
+        """symmetrize=True should produce symmetric adjacency and distances."""
+        g = build_weighted_knn_graph(sp_basic, k=5, symmetrize=True)
         adj_diff = abs(g.adjacency - g.adjacency.T).sum()
         dist_diff = abs(g.distances - g.distances.T).sum()
         assert adj_diff < 1e-6, "adjacency not symmetric"

@@ -56,8 +56,9 @@ class PointSpatialGraph:
 
     @property
     def n_edges(self) -> int:
-        """Undirected edge count."""
-        return self.adjacency.nnz // 2
+        """Edge count.  For symmetric graphs divides by 2 (undirected)."""
+        is_sym = self.params.get("symmetrize", True) or self.method in ("radius", "delaunay")
+        return self.adjacency.nnz // 2 if is_sym else self.adjacency.nnz
 
     @property
     def mean_degree(self) -> float:
@@ -108,16 +109,27 @@ class PointSpatialGraph:
         )
 
 
+def _symmetrize_sparse(mat: sparse.csr_matrix) -> sparse.csr_matrix:
+    """Symmetrize a sparse matrix: union of A→B and B→A, averaging shared entries."""
+    sym = (mat + mat.T) / 2
+    mask_one_way = (mat != 0).astype(float) - (mat.T != 0).astype(float)
+    sym = sym + mat.multiply(mask_one_way > 0) / 2 + mat.T.multiply(mask_one_way < 0) / 2
+    return sym.tocsr()
+
+
 def build_knn_graph(
     sj: spatioloji,
     k: int = 10,
     coord_type: str = "global",
+    symmetrize: bool = False,
 ) -> PointSpatialGraph:
     """
     Build K-nearest neighbors graph.
 
-    Each cell connects to its k closest neighbors. The resulting graph
-    is symmetrized (if A is neighbor of B, B is also neighbor of A).
+    Each cell connects to its k closest neighbors.  By default the
+    graph is **directed** (asymmetric): A→B does not imply B→A.
+    This preserves a fixed degree of k per cell and is standard for
+    spatial statistics (Moran's I, Gi*).
 
     Parameters
     ----------
@@ -127,6 +139,10 @@ def build_knn_graph(
         Number of neighbors.
     coord_type : str
         'global' or 'local'.
+    symmetrize : bool
+        If True, symmetrize edges (union of A→B and B→A, averaging
+        distances).  Increases degree above k for some cells.
+        Default False (directed, fixed degree = k).
 
     Returns
     -------
@@ -140,30 +156,29 @@ def build_knn_graph(
     nn.fit(coords)
     dist_matrix, idx_matrix = nn.kneighbors(coords)
 
-    # Build sparse distance matrix (asymmetric at this point)
+    # Build sparse distance matrix (directed)
     rows = np.repeat(np.arange(n_cells), k)
     cols = idx_matrix[:, 1:].flatten()  # skip self (column 0)
     dists = dist_matrix[:, 1:].flatten()
 
-    dist_sparse = sparse.csr_matrix((dists, (rows, cols)), shape=(n_cells, n_cells))
+    dist_out = sparse.csr_matrix((dists, (rows, cols)), shape=(n_cells, n_cells))
 
-    # Symmetrize: union of A->B and B->A
-    dist_sym = (dist_sparse + dist_sparse.T) / 2  # average distance
-    # Some entries only exist in one direction — fill those
-    mask_one_way = (dist_sparse != 0).astype(float) - (dist_sparse.T != 0).astype(float)
-    # Where only one direction exists, keep that distance
-    dist_sym = dist_sym + dist_sparse.multiply(mask_one_way > 0) / 2 + dist_sparse.T.multiply(mask_one_way < 0) / 2
+    if symmetrize:
+        dist_out = _symmetrize_sparse(dist_out)
 
-    adjacency = (dist_sym != 0).astype(np.float32)
+    adjacency = (dist_out != 0).astype(np.float32)
+    n_edges = adjacency.nnz if not symmetrize else adjacency.nnz // 2
+    mean_deg = np.array(adjacency.sum(1)).mean()
+    sym_label = "symmetric" if symmetrize else "directed"
 
-    print(f"  ✓ KNN graph: k={k}, {adjacency.nnz // 2} edges, mean degree={np.array(adjacency.sum(1)).mean():.1f}")
+    print(f"  ✓ KNN graph: k={k}, {n_edges} edges ({sym_label}), mean degree={mean_deg:.1f}")
 
     return PointSpatialGraph(
         adjacency=adjacency,
-        distances=dist_sym.tocsr(),
+        distances=dist_out.tocsr(),
         cell_ids=sj.cell_index,
         method="knn",
-        params={"k": k},
+        params={"k": k, "symmetrize": symmetrize},
         coord_type=coord_type,
     )
 
@@ -174,6 +189,7 @@ def build_weighted_knn_graph(
     coord_type: str = "global",
     kernel: str = "gaussian",
     bandwidth: float | None = None,
+    symmetrize: bool = False,
 ) -> PointSpatialGraph:
     """
     Build K-nearest neighbors graph with distance-based edge weights.
@@ -204,6 +220,9 @@ def build_weighted_knn_graph(
         Kernel bandwidth.  Controls how fast weight decays with distance.
         If None (default), set to the median of all neighbor distances
         (adaptive bandwidth).
+    symmetrize : bool
+        If True, symmetrize edges before applying kernel weights.
+        Default False (directed, fixed degree = k).
 
     Returns
     -------
@@ -227,20 +246,18 @@ def build_weighted_knn_graph(
     nn.fit(coords)
     dist_matrix, idx_matrix = nn.kneighbors(coords)
 
-    # Build sparse distance matrix (asymmetric)
+    # Build sparse distance matrix (directed)
     rows = np.repeat(np.arange(n_cells), k)
     cols = idx_matrix[:, 1:].flatten()
     dists = dist_matrix[:, 1:].flatten()
 
-    dist_sparse = sparse.csr_matrix((dists, (rows, cols)), shape=(n_cells, n_cells))
+    dist_out = sparse.csr_matrix((dists, (rows, cols)), shape=(n_cells, n_cells))
 
-    # Symmetrize distances (same logic as build_knn_graph)
-    dist_sym = (dist_sparse + dist_sparse.T) / 2
-    mask_one_way = (dist_sparse != 0).astype(float) - (dist_sparse.T != 0).astype(float)
-    dist_sym = dist_sym + dist_sparse.multiply(mask_one_way > 0) / 2 + dist_sparse.T.multiply(mask_one_way < 0) / 2
+    if symmetrize:
+        dist_out = _symmetrize_sparse(dist_out)
 
     # Resolve bandwidth
-    all_dists = dist_sym.data
+    all_dists = dist_out.data
     if bandwidth is None:
         bandwidth = float(np.median(all_dists))
         print(f"  Adaptive bandwidth: {bandwidth:.2f} (median neighbor distance)")
@@ -256,27 +273,27 @@ def build_weighted_knn_graph(
     else:
         raise ValueError(f"Unknown kernel '{kernel}'. Choose from: gaussian, bisquare, inverse")
 
-    # Build weighted adjacency (same sparsity as dist_sym)
-    adjacency = dist_sym.copy()
+    # Build weighted adjacency
+    adjacency = dist_out.copy()
     adjacency.data = weight_data.astype(np.float32)
-    # Remove zero-weight entries (bisquare can produce them)
     adjacency.eliminate_zeros()
 
-    n_edges = adjacency.nnz // 2
+    n_edges = adjacency.nnz if not symmetrize else adjacency.nnz // 2
     mean_deg = np.array((adjacency != 0).astype(float).sum(1)).mean()
     mean_weight = float(adjacency.data.mean()) if adjacency.nnz > 0 else 0.0
+    sym_label = "symmetric" if symmetrize else "directed"
 
     print(
         f"  ✓ Weighted KNN graph: k={k}, kernel={kernel}, bw={bandwidth:.2f}, "
-        f"{n_edges} edges, mean degree={mean_deg:.1f}, mean weight={mean_weight:.3f}"
+        f"{n_edges} edges ({sym_label}), mean degree={mean_deg:.1f}, mean weight={mean_weight:.3f}"
     )
 
     return PointSpatialGraph(
         adjacency=adjacency.tocsr(),
-        distances=dist_sym.tocsr(),
+        distances=dist_out.tocsr(),
         cell_ids=sj.cell_index,
         method="weighted_knn",
-        params={"k": k, "kernel": kernel, "bandwidth": bandwidth},
+        params={"k": k, "kernel": kernel, "bandwidth": bandwidth, "symmetrize": symmetrize},
         coord_type=coord_type,
     )
 
