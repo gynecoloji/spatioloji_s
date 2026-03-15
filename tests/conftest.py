@@ -282,9 +282,7 @@ def sp_deg():
     )
 
     spatial = {
-        "x_global": np.concatenate(
-            [np.random.uniform(0, 500, n_fg), np.random.uniform(500, 1000, n_fg)]
-        ),
+        "x_global": np.concatenate([np.random.uniform(0, 500, n_fg), np.random.uniform(500, 1000, n_fg)]),
         "y_global": np.random.uniform(0, 1000, n_cells),
         "x_local": np.random.uniform(0, 500, n_cells),
         "y_local": np.random.uniform(0, 500, n_cells),
@@ -324,14 +322,18 @@ def sp_interface():
 
     # TypeA: x in [50, 450] with a few cells near 490-500
     # TypeB: x in [550, 950] with a few cells near 500-510
-    x_a = np.concatenate([
-        np.random.uniform(50, 450, n_per_region - 5),
-        np.random.uniform(460, 500, 5),  # interface cells
-    ])
-    x_b = np.concatenate([
-        np.random.uniform(550, 950, n_per_region - 5),
-        np.random.uniform(500, 540, 5),  # interface cells
-    ])
+    x_a = np.concatenate(
+        [
+            np.random.uniform(50, 450, n_per_region - 5),
+            np.random.uniform(460, 500, 5),  # interface cells
+        ]
+    )
+    x_b = np.concatenate(
+        [
+            np.random.uniform(550, 950, n_per_region - 5),
+            np.random.uniform(500, 540, 5),  # interface cells
+        ]
+    )
     x_global = np.concatenate([x_a, x_b])
     y_global = np.random.uniform(0, 1000, n_cells)
 
@@ -351,8 +353,10 @@ def sp_interface():
     rows = []
     for cid, cx, cy in zip(cell_ids, x_global, y_global, strict=True):
         for vx, vy in [
-            (cx - 2, cy - 2), (cx + 2, cy - 2),
-            (cx + 2, cy + 2), (cx - 2, cy + 2),
+            (cx - 2, cy - 2),
+            (cx + 2, cy - 2),
+            (cx + 2, cy + 2),
+            (cx - 2, cy + 2),
             (cx - 2, cy - 2),
         ]:
             rows.append({"cell": cid, "x_global_px": vx, "y_global_px": vy})
@@ -400,14 +404,18 @@ def sp_gradient():
     n_per_region = 100
 
     # Spatial layout — two regions with interface at x=500
-    x_a = np.concatenate([
-        np.random.uniform(50, 460, n_per_region - 10),
-        np.random.uniform(460, 490, 10),
-    ])
-    x_b = np.concatenate([
-        np.random.uniform(510, 540, 10),
-        np.random.uniform(540, 950, n_per_region - 10),
-    ])
+    x_a = np.concatenate(
+        [
+            np.random.uniform(50, 460, n_per_region - 10),
+            np.random.uniform(460, 490, 10),
+        ]
+    )
+    x_b = np.concatenate(
+        [
+            np.random.uniform(510, 540, 10),
+            np.random.uniform(540, 950, n_per_region - 10),
+        ]
+    )
     x_global = np.concatenate([x_a, x_b])
     y_global = np.random.uniform(0, 1000, n_cells)
 
@@ -448,8 +456,10 @@ def sp_gradient():
     rows = []
     for cid, cx, cy in zip(cell_ids, x_global, y_global, strict=True):
         for vx, vy in [
-            (cx - 2, cy - 2), (cx + 2, cy - 2),
-            (cx + 2, cy + 2), (cx - 2, cy + 2),
+            (cx - 2, cy - 2),
+            (cx + 2, cy - 2),
+            (cx + 2, cy + 2),
+            (cx - 2, cy + 2),
             (cx - 2, cy - 2),
         ]:
             rows.append({"cell": cid, "x_global_px": vx, "y_global_px": vy})

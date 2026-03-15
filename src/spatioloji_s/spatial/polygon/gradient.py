@@ -32,7 +32,7 @@ def _fit_gradient(values: np.ndarray, distances: np.ndarray) -> dict:
     return {
         "coef": result.slope,
         "pvalue": result.pvalue,
-        "r2": result.rvalue ** 2,
+        "r2": result.rvalue**2,
         "trend": trend,
     }
 
@@ -65,12 +65,14 @@ def _bin_expression(
             mask = bin_labels == b
             if mask.sum() == 0:
                 continue
-            rows.append({
-                "distance_bin": bin_centers[b],
-                "gene": gene,
-                "mean_expr": float(np.mean(gene_vals[mask])),
-                "std_expr": float(np.std(gene_vals[mask])),
-            })
+            rows.append(
+                {
+                    "distance_bin": bin_centers[b],
+                    "gene": gene,
+                    "mean_expr": float(np.mean(gene_vals[mask])),
+                    "std_expr": float(np.std(gene_vals[mask])),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -89,8 +91,7 @@ def _discover_programs_nmf(expr_matrix: np.ndarray, gene_names: list[str], n_pro
         from sklearn.decomposition import NMF
     except ImportError as err:
         raise ImportError(
-            "scikit-learn is required for auto_programs='nmf'. "
-            "Install with: pip install scikit-learn"
+            "scikit-learn is required for auto_programs='nmf'. Install with: pip install scikit-learn"
         ) from err
 
     X = np.maximum(expr_matrix, 0)
@@ -121,8 +122,7 @@ def _discover_programs_pca(expr_matrix: np.ndarray, gene_names: list[str], n_pro
         from sklearn.decomposition import PCA
     except ImportError as err:
         raise ImportError(
-            "scikit-learn is required for auto_programs='pca'. "
-            "Install with: pip install scikit-learn"
+            "scikit-learn is required for auto_programs='pca'. Install with: pip install scikit-learn"
         ) from err
 
     n_programs = min(n_programs, min(expr_matrix.shape))
@@ -180,7 +180,10 @@ def compute_gradient(
         raise ValueError(f"auto_programs must be 'nmf', 'pca', or None, got '{auto_programs}'")
 
     distances = signed_distance_to_interface(
-        sp, interface_result, coord_type=coord_type, unsigned=unsigned,
+        sp,
+        interface_result,
+        coord_type=coord_type,
+        unsigned=unsigned,
     )
 
     expr_df = sp.expression.to_dataframe()
@@ -204,12 +207,16 @@ def compute_gradient(
 
     if auto_programs == "nmf":
         auto = _discover_programs_nmf(
-            sp.expression.get_dense(), all_genes, n_auto_programs,
+            sp.expression.get_dense(),
+            all_genes,
+            n_auto_programs,
         )
         all_programs.update(auto)
     elif auto_programs == "pca":
         auto = _discover_programs_pca(
-            sp.expression.get_dense(), all_genes, n_auto_programs,
+            sp.expression.get_dense(),
+            all_genes,
+            n_auto_programs,
         )
         all_programs.update(auto)
 

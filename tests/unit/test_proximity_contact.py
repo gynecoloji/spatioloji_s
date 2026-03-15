@@ -16,11 +16,13 @@ class TestProximityContactLength:
         cell_ids = ["cell_a", "cell_b"]
         # Two 10x10 squares, 20px apart (gap = 20)
         # cell_a at (0, 0), cell_b at (30, 0)
-        polygons = pd.DataFrame({
-            "cell": ["cell_a"] * 5 + ["cell_b"] * 5,
-            "x_global_px": [0, 10, 10, 0, 0, 30, 40, 40, 30, 30],
-            "y_global_px": [0, 0, 10, 10, 0, 0, 0, 10, 10, 0],
-        })
+        polygons = pd.DataFrame(
+            {
+                "cell": ["cell_a"] * 5 + ["cell_b"] * 5,
+                "x_global_px": [0, 10, 10, 0, 0, 30, 40, 40, 30, 30],
+                "y_global_px": [0, 0, 10, 10, 0, 0, 0, 10, 10, 0],
+            }
+        )
 
         return spatioloji(
             expression=np.array([[1.0, 2.0], [3.0, 4.0]]),
@@ -28,8 +30,11 @@ class TestProximityContactLength:
             gene_names=["gene_0", "gene_1"],
             cell_metadata=pd.DataFrame({"cell_type": ["A", "B"]}, index=cell_ids),
             spatial_coords={
-                "x_global": [5.0, 35.0], "y_global": [5.0, 5.0],
-                "x_local": [5.0, 35.0], "y_local": [5.0, 5.0], "fov": [1, 1],
+                "x_global": [5.0, 35.0],
+                "y_global": [5.0, 5.0],
+                "x_local": [5.0, 35.0],
+                "y_local": [5.0, 5.0],
+                "fov": [1, 1],
             },
             polygons=polygons,
         )

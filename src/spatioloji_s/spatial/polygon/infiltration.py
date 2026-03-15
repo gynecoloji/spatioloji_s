@@ -52,10 +52,7 @@ def score_infiltration(
         ... )
     """
     if immune_col not in sp.cell_meta.columns:
-        raise ValueError(
-            f"'{immune_col}' not found in cell_meta. "
-            f"Available: {list(sp.cell_meta.columns)}"
-        )
+        raise ValueError(f"'{immune_col}' not found in cell_meta. Available: {list(sp.cell_meta.columns)}")
 
     cell_types = sp.cell_meta[immune_col]
     labels = interface_result.cell_labels
@@ -67,10 +64,7 @@ def score_infiltration(
 
     if target_region is not None:
         if target_region not in a_list + b_list:
-            raise ValueError(
-                f"target_region '{target_region}' not in region_a={region_a} "
-                f"or region_b={region_b}"
-            )
+            raise ValueError(f"target_region '{target_region}' not in region_a={region_a} or region_b={region_b}")
         target_is_a = target_region in a_list
     else:
         immune_mask = cell_types.isin(immune_types)

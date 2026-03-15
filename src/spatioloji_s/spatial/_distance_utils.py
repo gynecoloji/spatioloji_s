@@ -55,9 +55,7 @@ def signed_distance_to_interface(
     cell_ids = sp.cell_index
 
     # Compute unsigned distances
-    raw_distances = np.array([
-        Point(xi, yi).distance(contour) for xi, yi in zip(x, y, strict=True)
-    ])
+    raw_distances = np.array([Point(xi, yi).distance(contour) for xi, yi in zip(x, y, strict=True)])
 
     if unsigned:
         return pd.Series(raw_distances, index=cell_ids, name="distance_to_interface")

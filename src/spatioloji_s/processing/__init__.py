@@ -33,6 +33,14 @@ from .clustering import (
     spatial_clustering,
     spatially_constrained_clustering,
 )
+from .DEG import (
+    deg_deseq2,
+    deg_mast,
+    deg_nb_glm,
+    deg_ttest,
+    deg_wilcoxon,
+    run_deg,
+)
 from .dimension_reduction import (
     diffusion_map,
     pca,
@@ -51,14 +59,6 @@ from .imputation import (
     knn_smooth,
     magic_impute,
     scvi_impute,
-)
-from .DEG import (
-    deg_deseq2,
-    deg_mast,
-    deg_nb_glm,
-    deg_ttest,
-    deg_wilcoxon,
-    run_deg,
 )
 from .normalization import (
     log_transform,

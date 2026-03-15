@@ -44,8 +44,7 @@ def _validate_inputs(
         ValueError: On invalid inputs.
     """
     if group_col not in sp.cell_meta.columns:
-        raise ValueError(f"'{group_col}' not found in cell_meta. "
-                         f"Available: {list(sp.cell_meta.columns)}")
+        raise ValueError(f"'{group_col}' not found in cell_meta. Available: {list(sp.cell_meta.columns)}")
 
     a_list = [region_a] if isinstance(region_a, str) else list(region_a)
     b_list = [region_b] if isinstance(region_b, str) else list(region_b)
@@ -53,8 +52,7 @@ def _validate_inputs(
     col_vals = set(sp.cell_meta[group_col].dropna().unique())
     for label in a_list + b_list:
         if label not in col_vals:
-            raise ValueError(f"Label '{label}' not found in '{group_col}'. "
-                             f"Available: {sorted(col_vals)}")
+            raise ValueError(f"Label '{label}' not found in '{group_col}'. Available: {sorted(col_vals)}")
 
     overlap = set(a_list) & set(b_list)
     if overlap:
@@ -72,15 +70,17 @@ def _validate_inputs(
         raise ValueError("graph is required for method='graph'")
 
     if method == "density" and graph is None and distance_threshold is None:
-        raise ValueError(
-            "distance_threshold must be set when method='density' and graph=None"
-        )
+        raise ValueError("distance_threshold must be set when method='density' and graph=None")
 
     return a_list, b_list
 
 
 def _empty_result(
-    sp, a_list: list[str], b_list: list[str], group_col: str, method: str,
+    sp,
+    a_list: list[str],
+    b_list: list[str],
+    group_col: str,
+    method: str,
 ) -> InterfaceResult:
     """Build an empty InterfaceResult when no interface is found.
 
@@ -100,15 +100,20 @@ def _empty_result(
     cell_labels[labels.isin(b_list)] = "interior_b"
 
     segs = gpd.GeoDataFrame(
-        {"segment_id": pd.Series(dtype=int), "length": pd.Series(dtype=float),
-         "tortuosity": pd.Series(dtype=float),
-         "n_cells_a": pd.Series(dtype=int), "n_cells_b": pd.Series(dtype=int)},
+        {
+            "segment_id": pd.Series(dtype=int),
+            "length": pd.Series(dtype=float),
+            "tortuosity": pd.Series(dtype=float),
+            "n_cells_a": pd.Series(dtype=int),
+            "n_cells_b": pd.Series(dtype=int),
+        },
         geometry=[],
     )
     return InterfaceResult(
-        cell_labels=cell_labels, contour=None, segments=segs,
-        summary={"total_length": 0.0, "n_segments": 0, "mean_tortuosity": 0.0,
-                 "n_interface_a": 0, "n_interface_b": 0},
+        cell_labels=cell_labels,
+        contour=None,
+        segments=segs,
+        summary={"total_length": 0.0, "n_segments": 0, "mean_tortuosity": 0.0, "n_interface_a": 0, "n_interface_b": 0},
         region_a=a_list if len(a_list) > 1 else a_list[0],
         region_b=b_list if len(b_list) > 1 else b_list[0],
         method=method,
@@ -174,8 +179,7 @@ def _graph_method(
     cross_mask = (mask_a[row] & mask_b[col]) | (mask_b[row] & mask_a[col])
 
     if not cross_mask.any():
-        warnings.warn("No cross-region edges found between the two regions.",
-                      UserWarning, stacklevel=3)
+        warnings.warn("No cross-region edges found between the two regions.", UserWarning, stacklevel=3)
         return _empty_result(sp, a_list, b_list, group_col, "graph")
 
     cross_rows = row[cross_mask]
@@ -208,17 +212,18 @@ def _graph_method(
     n_sub = len(all_cross_cells)
     sub_r = np.array([idx_map[r] for r in cr_r])
     sub_c = np.array([idx_map[c] for c in cr_c])
-    sub_adj = sparse.csr_matrix(
-        (np.ones(len(sub_r)), (sub_r, sub_c)), shape=(n_sub, n_sub)
-    )
+    sub_adj = sparse.csr_matrix((np.ones(len(sub_r)), (sub_r, sub_c)), shape=(n_sub, n_sub))
     sub_adj = sub_adj + sub_adj.T
 
     n_components, comp_labels = connected_components(sub_adj, directed=False)
 
     # --- Build contour from shared polygon edges ---
     gdf = sp.to_geopandas(coord_type=coord_type, include_metadata=False)
-    geom_dict = {cid: gdf.loc[cid, "geometry"] for cid in gdf.index
-                 if cid in set(cell_index[list(interface_a_idx | interface_b_idx)])}
+    geom_dict = {
+        cid: gdf.loc[cid, "geometry"]
+        for cid in gdf.index
+        if cid in set(cell_index[list(interface_a_idx | interface_b_idx)])
+    }
 
     shared_lines = []
     pair_component = []
@@ -260,16 +265,14 @@ def _graph_method(
     # --- Build segments GeoDataFrame ---
     seg_rows = []
     for comp_id in range(n_components):
-        comp_cell_indices = [all_cross_cells[i] for i in range(n_sub)
-                            if comp_labels[i] == comp_id]
+        comp_cell_indices = [all_cross_cells[i] for i in range(n_sub) if comp_labels[i] == comp_id]
         n_ca = sum(1 for i in comp_cell_indices if i in interface_a_idx)
         n_cb = sum(1 for i in comp_cell_indices if i in interface_b_idx)
 
         if n_ca < min_interface_cells or n_cb < min_interface_cells:
             continue
 
-        comp_lines = [shared_lines[i] for i in range(len(shared_lines))
-                      if pair_component[i] == comp_id]
+        comp_lines = [shared_lines[i] for i in range(len(shared_lines)) if pair_component[i] == comp_id]
         if not comp_lines:
             continue
 
@@ -279,19 +282,21 @@ def _graph_method(
         if merged.geom_type not in ("LineString", "MultiLineString"):
             continue
 
-        seg_rows.append({
-            "segment_id": len(seg_rows),
-            "geometry": merged,
-            "length": merged.length,
-            "tortuosity": _compute_tortuosity(merged) if merged.geom_type == "LineString"
-                          else np.mean([_compute_tortuosity(g) for g in merged.geoms]),
-            "n_cells_a": n_ca,
-            "n_cells_b": n_cb,
-        })
+        seg_rows.append(
+            {
+                "segment_id": len(seg_rows),
+                "geometry": merged,
+                "length": merged.length,
+                "tortuosity": _compute_tortuosity(merged)
+                if merged.geom_type == "LineString"
+                else np.mean([_compute_tortuosity(g) for g in merged.geoms]),
+                "n_cells_a": n_ca,
+                "n_cells_b": n_cb,
+            }
+        )
 
     if not seg_rows:
-        warnings.warn("All interface segments dropped by min_interface_cells filter.",
-                      UserWarning, stacklevel=3)
+        warnings.warn("All interface segments dropped by min_interface_cells filter.", UserWarning, stacklevel=3)
         # Reset interface labels back to interior since no segments survived
         cell_labels[cell_labels == "region_a_interface"] = "interior_a"
         cell_labels[cell_labels == "region_b_interface"] = "interior_b"
@@ -382,21 +387,15 @@ def identify_interface(
         >>> result = identify_interface(sp, g, "cell_type", "Tumor", "Stromal")
         >>> print(result.summary)
     """
-    a_list, b_list = _validate_inputs(
-        sp, graph, group_col, region_a, region_b, method, distance_threshold
-    )
+    a_list, b_list = _validate_inputs(sp, graph, group_col, region_a, region_b, method, distance_threshold)
 
-    print(f"\n[Interface] Identifying interface: "
-          f"{a_list} vs {b_list} (method={method})")
+    print(f"\n[Interface] Identifying interface: {a_list} vs {b_list} (method={method})")
 
     if method == "graph":
-        result = _graph_method(
-            sp, graph, group_col, a_list, b_list, min_interface_cells, coord_type
-        )
+        result = _graph_method(sp, graph, group_col, a_list, b_list, min_interface_cells, coord_type)
     else:
         result = _density_method(
-            sp, graph, group_col, a_list, b_list, min_interface_cells,
-            bandwidth, distance_threshold, coord_type
+            sp, graph, group_col, a_list, b_list, min_interface_cells, bandwidth, distance_threshold, coord_type
         )
 
     if store:
@@ -405,17 +404,22 @@ def identify_interface(
 
     n_a = result.summary.get("n_interface_a", 0)
     n_b = result.summary.get("n_interface_b", 0)
-    print(f"  {n_a + n_b} interface cells detected "
-          f"({n_a} region_a, {n_b} region_b)")
-    print(f"  {result.summary['n_segments']} segment(s), "
-          f"total length={result.summary['total_length']:.1f}")
+    print(f"  {n_a + n_b} interface cells detected ({n_a} region_a, {n_b} region_b)")
+    print(f"  {result.summary['n_segments']} segment(s), total length={result.summary['total_length']:.1f}")
 
     return result
 
 
 def _density_method(
-    sp, graph, group_col, a_list, b_list, min_interface_cells,
-    bandwidth, distance_threshold, coord_type,
+    sp,
+    graph,
+    group_col,
+    a_list,
+    b_list,
+    min_interface_cells,
+    bandwidth,
+    distance_threshold,
+    coord_type,
 ) -> InterfaceResult:
     """KDE density-based interface identification.
 
@@ -436,10 +440,7 @@ def _density_method(
     try:
         from skimage.measure import find_contours
     except ImportError as err:
-        raise ImportError(
-            "Density method requires scikit-image. "
-            "Install with: pip install scikit-image"
-        ) from err
+        raise ImportError("Density method requires scikit-image. Install with: pip install scikit-image") from err
 
     from scipy.stats import gaussian_kde
 
@@ -548,18 +549,19 @@ def _density_method(
         if n_ca < min_interface_cells or n_cb < min_interface_cells:
             continue
 
-        seg_rows.append({
-            "segment_id": len(seg_rows),
-            "geometry": line,
-            "length": line.length,
-            "tortuosity": _compute_tortuosity(line),
-            "n_cells_a": n_ca,
-            "n_cells_b": n_cb,
-        })
+        seg_rows.append(
+            {
+                "segment_id": len(seg_rows),
+                "geometry": line,
+                "length": line.length,
+                "tortuosity": _compute_tortuosity(line),
+                "n_cells_a": n_ca,
+                "n_cells_b": n_cb,
+            }
+        )
 
     if not seg_rows:
-        warnings.warn("All density segments dropped by min_interface_cells.",
-                      UserWarning, stacklevel=3)
+        warnings.warn("All density segments dropped by min_interface_cells.", UserWarning, stacklevel=3)
         return _empty_result(sp, a_list, b_list, group_col, "density")
 
     segments = gpd.GeoDataFrame(seg_rows, geometry="geometry")
@@ -576,7 +578,9 @@ def _density_method(
     }
 
     return InterfaceResult(
-        cell_labels=cell_labels, contour=contour, segments=segments,
+        cell_labels=cell_labels,
+        contour=contour,
+        segments=segments,
         summary=summary,
         region_a=a_list if len(a_list) > 1 else a_list[0],
         region_b=b_list if len(b_list) > 1 else b_list[0],

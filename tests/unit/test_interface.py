@@ -20,17 +20,26 @@ class TestInterfaceResult:
 
         labels = pd.Series(["interior_a", "interior_b"], index=["c0", "c1"])
         segs = gpd.GeoDataFrame(
-            {"segment_id": pd.Series(dtype=int), "length": pd.Series(dtype=float),
-             "tortuosity": pd.Series(dtype=float),
-             "n_cells_a": pd.Series(dtype=int), "n_cells_b": pd.Series(dtype=int)},
+            {
+                "segment_id": pd.Series(dtype=int),
+                "length": pd.Series(dtype=float),
+                "tortuosity": pd.Series(dtype=float),
+                "n_cells_a": pd.Series(dtype=int),
+                "n_cells_b": pd.Series(dtype=int),
+            },
             geometry=[],
         )
         result = InterfaceResult(
             cell_labels=labels,
             contour=None,
             segments=segs,
-            summary={"total_length": 0.0, "n_segments": 0, "mean_tortuosity": 0.0,
-                     "n_interface_a": 0, "n_interface_b": 0},
+            summary={
+                "total_length": 0.0,
+                "n_segments": 0,
+                "mean_tortuosity": 0.0,
+                "n_interface_a": 0,
+                "n_interface_b": 0,
+            },
             region_a="Tumor",
             region_b="Stromal",
             method="graph",
@@ -47,15 +56,23 @@ class TestInterfaceResult:
         contour = MultiLineString([line])
         labels = pd.Series(["region_a_interface", "region_b_interface"], index=["c0", "c1"])
         segs = gpd.GeoDataFrame(
-            {"segment_id": [0], "length": [1.414], "tortuosity": [1.0],
-             "n_cells_a": [1], "n_cells_b": [1]},
+            {"segment_id": [0], "length": [1.414], "tortuosity": [1.0], "n_cells_a": [1], "n_cells_b": [1]},
             geometry=[line],
         )
         result = InterfaceResult(
-            cell_labels=labels, contour=contour, segments=segs,
-            summary={"total_length": 1.414, "n_segments": 1,
-                     "mean_tortuosity": 1.0, "n_interface_a": 1, "n_interface_b": 1},
-            region_a="Tumor", region_b="Stromal", method="graph",
+            cell_labels=labels,
+            contour=contour,
+            segments=segs,
+            summary={
+                "total_length": 1.414,
+                "n_segments": 1,
+                "mean_tortuosity": 1.0,
+                "n_interface_a": 1,
+                "n_interface_b": 1,
+            },
+            region_a="Tumor",
+            region_b="Stromal",
+            method="graph",
         )
         assert isinstance(result.contour, MultiLineString)
         assert len(result.segments) == 1
@@ -71,30 +88,29 @@ class TestPolygonValidation:
     def test_invalid_group_col_raises(self, sp_interface):
         g = build_contact_graph(sp_interface)
         with pytest.raises(ValueError, match="not found in cell_meta"):
-            identify_interface(sp_interface, g, group_col="nonexistent",
-                               region_a="TypeA", region_b="TypeB")
+            identify_interface(sp_interface, g, group_col="nonexistent", region_a="TypeA", region_b="TypeB")
 
     def test_invalid_region_label_raises(self, sp_interface):
         g = build_contact_graph(sp_interface)
         with pytest.raises(ValueError, match="not found"):
-            identify_interface(sp_interface, g, group_col="cell_type",
-                               region_a="Tumor", region_b="TypeB")
+            identify_interface(sp_interface, g, group_col="cell_type", region_a="Tumor", region_b="TypeB")
 
     def test_overlapping_regions_raises(self, sp_interface):
         g = build_contact_graph(sp_interface)
         with pytest.raises(ValueError, match="overlap"):
-            identify_interface(sp_interface, g, group_col="cell_type",
-                               region_a=["TypeA", "TypeB"], region_b="TypeA")
+            identify_interface(sp_interface, g, group_col="cell_type", region_a=["TypeA", "TypeB"], region_b="TypeA")
 
     def test_graph_required_for_graph_method(self, sp_interface):
         with pytest.raises(ValueError, match="graph.*required"):
-            identify_interface(sp_interface, graph=None, group_col="cell_type",
-                               region_a="TypeA", region_b="TypeB", method="graph")
+            identify_interface(
+                sp_interface, graph=None, group_col="cell_type", region_a="TypeA", region_b="TypeB", method="graph"
+            )
 
     def test_density_without_graph_needs_threshold(self, sp_interface):
         with pytest.raises(ValueError, match="distance_threshold"):
-            identify_interface(sp_interface, graph=None, group_col="cell_type",
-                               region_a="TypeA", region_b="TypeB", method="density")
+            identify_interface(
+                sp_interface, graph=None, group_col="cell_type", region_a="TypeA", region_b="TypeB", method="density"
+            )
 
 
 class TestPolygonGraphMethod:
@@ -102,31 +118,27 @@ class TestPolygonGraphMethod:
 
     def test_returns_interface_result(self, sp_interface):
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         assert isinstance(result, InterfaceResult)
         assert result.method == "graph"
 
     def test_cell_labels_values(self, sp_interface):
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB")
-        valid = {"region_a_interface", "region_b_interface",
-                 "interior_a", "interior_b", "other"}
+        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        valid = {"region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"}
         assert set(result.cell_labels.unique()).issubset(valid)
 
     def test_cell_labels_index_matches_cells(self, sp_interface):
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         assert len(result.cell_labels) == len(sp_interface.cell_index)
 
     def test_interface_cells_detected(self, sp_interface):
         """With buffer_distance=50, cells near x=500 should be interface."""
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB",
-                                    min_interface_cells=1)
+        result = identify_interface(
+            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", min_interface_cells=1
+        )
         n_a = (result.cell_labels == "region_a_interface").sum()
         n_b = (result.cell_labels == "region_b_interface").sum()
         assert n_a > 0, "Should detect TypeA interface cells"
@@ -134,29 +146,26 @@ class TestPolygonGraphMethod:
 
     def test_store_writes_to_cell_meta(self, sp_interface):
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        identify_interface(sp_interface, g, group_col="cell_type",
-                           region_a="TypeA", region_b="TypeB", store=True)
+        identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=True)
         assert "interface_label" in sp_interface.cell_meta.columns
 
     def test_store_false_no_modification(self, sp_interface):
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        identify_interface(sp_interface, g, group_col="cell_type",
-                           region_a="TypeA", region_b="TypeB", store=False)
+        identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=False)
         assert "interface_label" not in sp_interface.cell_meta.columns
 
     def test_list_region_labels(self, sp_interface):
         """region_a as a list should work."""
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a=["TypeA"], region_b="TypeB")
+        result = identify_interface(sp_interface, g, group_col="cell_type", region_a=["TypeA"], region_b="TypeB")
         assert isinstance(result, InterfaceResult)
 
     def test_no_interface_returns_empty(self, sp_interface):
         """With no buffer (contact only), far-apart cells have no interface."""
         g = build_contact_graph(sp_interface)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB",
-                                    min_interface_cells=1)
+        result = identify_interface(
+            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", min_interface_cells=1
+        )
         assert isinstance(result, InterfaceResult)
         assert isinstance(result.summary, dict)
         assert "n_segments" in result.summary
@@ -167,43 +176,56 @@ class TestPolygonDensityMethod:
 
     def test_density_returns_interface_result(self, sp_interface):
         from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB",
-                                    method="density")
+        result = identify_interface(
+            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", method="density"
+        )
         assert isinstance(result, InterfaceResult)
         assert result.method == "density"
 
     def test_density_without_graph_explicit_threshold(self, sp_interface):
-        result = identify_interface(sp_interface, graph=None,
-                                    group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB",
-                                    method="density",
-                                    distance_threshold=30.0)
+        result = identify_interface(
+            sp_interface,
+            graph=None,
+            group_col="cell_type",
+            region_a="TypeA",
+            region_b="TypeB",
+            method="density",
+            distance_threshold=30.0,
+        )
         assert isinstance(result, InterfaceResult)
 
     def test_density_cell_labels_valid(self, sp_interface):
-        result = identify_interface(sp_interface, graph=None,
-                                    group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB",
-                                    method="density",
-                                    distance_threshold=30.0)
-        valid = {"region_a_interface", "region_b_interface",
-                 "interior_a", "interior_b", "other"}
+        result = identify_interface(
+            sp_interface,
+            graph=None,
+            group_col="cell_type",
+            region_a="TypeA",
+            region_b="TypeB",
+            method="density",
+            distance_threshold=30.0,
+        )
+        valid = {"region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"}
         assert set(result.cell_labels.unique()).issubset(valid)
 
     def test_density_contour_is_geometry(self, sp_interface):
-        result = identify_interface(sp_interface, graph=None,
-                                    group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB",
-                                    method="density",
-                                    distance_threshold=30.0)
+        result = identify_interface(
+            sp_interface,
+            graph=None,
+            group_col="cell_type",
+            region_a="TypeA",
+            region_b="TypeB",
+            method="density",
+            distance_threshold=30.0,
+        )
         if result.contour is not None:
             assert result.contour.geom_type in ("MultiLineString", "LineString")
 
     def test_density_scikit_image_missing_raises(self, sp_interface, monkeypatch):
         """Should raise ImportError if scikit-image not installed."""
         import builtins
+
         real_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
@@ -213,10 +235,15 @@ class TestPolygonDensityMethod:
 
         monkeypatch.setattr(builtins, "__import__", mock_import)
         with pytest.raises(ImportError, match="scikit-image"):
-            identify_interface(sp_interface, graph=None,
-                               group_col="cell_type",
-                               region_a="TypeA", region_b="TypeB",
-                               method="density", distance_threshold=30.0)
+            identify_interface(
+                sp_interface,
+                graph=None,
+                group_col="cell_type",
+                region_a="TypeA",
+                region_b="TypeB",
+                method="density",
+                distance_threshold=30.0,
+            )
 
 
 from spatioloji_s.spatial.point.graph import build_knn_graph  # noqa: E402
@@ -230,36 +257,31 @@ class TestPointGraphMethod:
 
     def test_returns_interface_result(self, sp_interface):
         g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g, group_col="cell_type",
-                                          region_a="TypeA", region_b="TypeB")
+        result = point_identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         assert isinstance(result, InterfaceResult)
 
     def test_cell_labels_valid(self, sp_interface):
         g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g, group_col="cell_type",
-                                          region_a="TypeA", region_b="TypeB")
-        valid = {"region_a_interface", "region_b_interface",
-                 "interior_a", "interior_b", "other"}
+        result = point_identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        valid = {"region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"}
         assert set(result.cell_labels.unique()).issubset(valid)
 
     def test_interface_cells_detected(self, sp_interface):
         g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g, group_col="cell_type",
-                                          region_a="TypeA", region_b="TypeB")
+        result = point_identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         assert result.summary["n_interface_a"] > 0 or result.summary["n_interface_b"] > 0
 
     def test_contour_geometry(self, sp_interface):
         g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g, group_col="cell_type",
-                                          region_a="TypeA", region_b="TypeB")
+        result = point_identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         if result.contour is not None:
             assert result.contour.geom_type in ("MultiLineString", "LineString")
 
     def test_validation_same_as_polygon(self, sp_interface):
         with pytest.raises(ValueError, match="not found in cell_meta"):
-            point_identify_interface(sp_interface, None, group_col="bad",
-                                     region_a="TypeA", region_b="TypeB",
-                                     method="graph")
+            point_identify_interface(
+                sp_interface, None, group_col="bad", region_a="TypeA", region_b="TypeB", method="graph"
+            )
 
 
 from spatioloji_s.visualization.polygon_plots import (  # noqa: E402
@@ -273,9 +295,9 @@ class TestPlotInterfaceMap:
 
     def test_returns_figure(self, sp_interface):
         from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         fig = plot_interface_polygon_map(sp_interface, result, show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
@@ -283,17 +305,30 @@ class TestPlotInterfaceMap:
     def test_empty_result_no_error(self, sp_interface):
         """Should handle empty InterfaceResult without crashing."""
         import geopandas as gpd
+
         empty = InterfaceResult(
             cell_labels=pd.Series("other", index=sp_interface.cell_index),
             contour=None,
             segments=gpd.GeoDataFrame(
-                {"segment_id": pd.Series(dtype=int), "length": pd.Series(dtype=float),
-                 "tortuosity": pd.Series(dtype=float),
-                 "n_cells_a": pd.Series(dtype=int), "n_cells_b": pd.Series(dtype=int)},
-                geometry=[]),
-            summary={"total_length": 0.0, "n_segments": 0, "mean_tortuosity": 0.0,
-                     "n_interface_a": 0, "n_interface_b": 0},
-            region_a="TypeA", region_b="TypeB", method="graph",
+                {
+                    "segment_id": pd.Series(dtype=int),
+                    "length": pd.Series(dtype=float),
+                    "tortuosity": pd.Series(dtype=float),
+                    "n_cells_a": pd.Series(dtype=int),
+                    "n_cells_b": pd.Series(dtype=int),
+                },
+                geometry=[],
+            ),
+            summary={
+                "total_length": 0.0,
+                "n_segments": 0,
+                "mean_tortuosity": 0.0,
+                "n_interface_a": 0,
+                "n_interface_b": 0,
+            },
+            region_a="TypeA",
+            region_b="TypeB",
+            method="graph",
         )
         fig = plot_interface_polygon_map(sp_interface, empty, show=False)
         assert isinstance(fig, plt.Figure)
@@ -301,9 +336,9 @@ class TestPlotInterfaceMap:
 
     def test_custom_ax(self, sp_interface):
         from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         fig, ax = plt.subplots()
         plot_interface_polygon_map(sp_interface, result, ax=ax, show=False)
         plt.close("all")
@@ -314,9 +349,9 @@ class TestPlotInterfaceMetrics:
 
     def test_returns_figure(self, sp_interface):
         from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         fig = plot_interface_polygon_metrics(result, metric="length", show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
@@ -324,17 +359,30 @@ class TestPlotInterfaceMetrics:
     def test_empty_segments(self):
         """Should handle empty segments without crashing."""
         import geopandas as gpd
+
         empty = InterfaceResult(
             cell_labels=pd.Series(dtype=str),
             contour=None,
             segments=gpd.GeoDataFrame(
-                {"segment_id": pd.Series(dtype=int), "length": pd.Series(dtype=float),
-                 "tortuosity": pd.Series(dtype=float),
-                 "n_cells_a": pd.Series(dtype=int), "n_cells_b": pd.Series(dtype=int)},
-                geometry=[]),
-            summary={"total_length": 0.0, "n_segments": 0, "mean_tortuosity": 0.0,
-                     "n_interface_a": 0, "n_interface_b": 0},
-            region_a="A", region_b="B", method="graph",
+                {
+                    "segment_id": pd.Series(dtype=int),
+                    "length": pd.Series(dtype=float),
+                    "tortuosity": pd.Series(dtype=float),
+                    "n_cells_a": pd.Series(dtype=int),
+                    "n_cells_b": pd.Series(dtype=int),
+                },
+                geometry=[],
+            ),
+            summary={
+                "total_length": 0.0,
+                "n_segments": 0,
+                "mean_tortuosity": 0.0,
+                "n_interface_a": 0,
+                "n_interface_b": 0,
+            },
+            region_a="A",
+            region_b="B",
+            method="graph",
         )
         fig = plot_interface_polygon_metrics(empty, show=False)
         assert isinstance(fig, plt.Figure)
@@ -347,10 +395,11 @@ class TestIntegration:
     def test_polygon_full_pipeline(self, sp_interface):
         """Full pipeline: build graph -> identify interface -> plot."""
         from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
         g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type",
-                                    region_a="TypeA", region_b="TypeB",
-                                    store=True)
+        result = identify_interface(
+            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=True
+        )
         assert "interface_label" in sp_interface.cell_meta.columns
         assert result.summary["n_segments"] >= 0
 
@@ -366,10 +415,9 @@ class TestIntegration:
     def test_point_full_pipeline(self, sp_interface):
         """Full pipeline with point-based graph."""
         g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g,
-                                          group_col="cell_type",
-                                          region_a="TypeA", region_b="TypeB",
-                                          store=True)
+        result = point_identify_interface(
+            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=True
+        )
         assert "interface_label" in sp_interface.cell_meta.columns
         assert isinstance(result, InterfaceResult)
 
@@ -378,6 +426,7 @@ class TestIntegration:
         from spatioloji_s.spatial.point import identify_interface as pi
         from spatioloji_s.spatial.polygon import InterfaceResult, identify_interface  # noqa: F401
         from spatioloji_s.visualization import plot_interface_polygon_map, plot_interface_polygon_metrics
+
         assert callable(identify_interface)
         assert callable(pi)
         assert callable(plot_interface_polygon_map)

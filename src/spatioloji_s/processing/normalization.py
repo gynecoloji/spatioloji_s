@@ -28,8 +28,6 @@ from typing import Literal
 
 import numpy as np
 from scipy import sparse
-from sklearn.preprocessing import RobustScaler, StandardScaler
-
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -305,14 +303,14 @@ def log_transform(
     X = _get_X(spatioloji_obj, layer)
     n_cells, n_genes = X.shape
 
-    use_log1p = (base is None and offset == 1.0)
+    use_log1p = base is None and offset == 1.0
     print(f"\nApplying log transformation (base={'e' if base is None else base})")
 
     if sparse.issparse(X) and use_log1p:
         # ── Sparse path: log1p(0)=0, so sparsity structure is preserved ─────
         # Copy only the sparse arrays (data / indices / indptr), not the full dense shape
         X_log = X.copy()
-        np.log1p(X_log.data, out=X_log.data)   # in-place on stored nonzeros only
+        np.log1p(X_log.data, out=X_log.data)  # in-place on stored nonzeros only
         X_log = X_log.tocsr()
 
     else:
@@ -332,7 +330,7 @@ def log_transform(
                 np.log(chunk + offset, out=chunk)
             else:
                 np.log(chunk + offset, out=chunk)
-                chunk /= _log_base           # change-of-base; no extra array
+                chunk /= _log_base  # change-of-base; no extra array
             X_log[s:e, :] = chunk
 
         starts = list(range(0, n_cells, cell_chunk_size))
@@ -453,11 +451,11 @@ def scale(
             # Compute per-gene std from sparse column sums
             # E[X] and E[X^2] from nnz values only (zeros contribute 0 to both)
             n = float(n_cells)
-            col_sum  = np.asarray(X_csc.sum(axis=0)).ravel()
+            col_sum = np.asarray(X_csc.sum(axis=0)).ravel()
             col_sum2 = np.asarray(X_csc.power(2).sum(axis=0)).ravel()
             gene_mean = col_sum / n
-            gene_var  = col_sum2 / n - gene_mean ** 2
-            gene_std  = np.sqrt(np.maximum(gene_var, 0.0)).astype(np.float32)
+            gene_var = col_sum2 / n - gene_mean**2
+            gene_std = np.sqrt(np.maximum(gene_var, 0.0)).astype(np.float32)
             gene_std[gene_std == 0] = 1.0
         else:  # robust
             gene_std = np.empty(n_genes, dtype=np.float32)
@@ -489,16 +487,16 @@ def scale(
         #   per-gene statistics → shape (n_genes,), negligible
         #   one tile   → n_cells × chunk_genes × float32 per iteration
         if sparse.issparse(X):
-            X = X.toarray()   # must densify: centering fills all zeros
+            X = X.toarray()  # must densify: centering fills all zeros
 
         # Step 1 — per-gene statistics (no n_cells × n_genes temporaries)
         if method == "standard":
             gene_center = X.mean(axis=0).astype(np.float32)
-            gene_scale  = X.std(axis=0, ddof=1).astype(np.float32)
+            gene_scale = X.std(axis=0, ddof=1).astype(np.float32)
             gene_scale[gene_scale == 0] = 1.0
         else:  # robust — chunk over genes to bound median sort memory
             gene_center = np.empty(n_genes, dtype=np.float32)
-            gene_scale  = np.empty(n_genes, dtype=np.float32)
+            gene_scale = np.empty(n_genes, dtype=np.float32)
 
             def _robust_stats_chunk(s):
                 e = min(s + chunk_genes, n_genes)
@@ -524,7 +522,7 @@ def scale(
         # Step 3 — apply gene-chunk by gene-chunk
         def _scale_chunk(s):
             e = min(s + chunk_genes, n_genes)
-            tile = X[:, s:e].astype(np.float32)   # explicit copy for in-place ops
+            tile = X[:, s:e].astype(np.float32)  # explicit copy for in-place ops
             if zero_center:
                 tile -= gene_center[s:e]
             tile /= gene_scale[s:e]
@@ -609,7 +607,7 @@ def scale_by_batch_normalization(
 
     X = _get_X(spatioloji_obj, layer)
     if sparse.issparse(X):
-        X = X.toarray()   # batch-wise centering; dense output unavoidable
+        X = X.toarray()  # batch-wise centering; dense output unavoidable
 
     n_cells, n_genes = X.shape
     batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
@@ -623,17 +621,17 @@ def scale_by_batch_normalization(
 
     for batch_id in batches:
         mask = batch == batch_id
-        B = X[mask, :]                      # view into the batch rows
+        B = X[mask, :]  # view into the batch rows
         n_b = int(mask.sum())
 
         # Per-gene statistics for this batch
         if method == "standard":
             g_center = B.mean(axis=0).astype(np.float32)
-            g_scale  = B.std(axis=0, ddof=1 if n_b > 1 else 0).astype(np.float32)
+            g_scale = B.std(axis=0, ddof=1 if n_b > 1 else 0).astype(np.float32)
             g_scale[g_scale == 0] = 1.0
         else:  # robust — chunk by gene
             g_center = np.empty(n_genes, dtype=np.float32)
-            g_scale  = np.empty(n_genes, dtype=np.float32)
+            g_scale = np.empty(n_genes, dtype=np.float32)
             for s in range(0, n_genes, chunk_genes):
                 e = min(s + chunk_genes, n_genes)
                 col_chunk = B[:, s:e]
@@ -743,27 +741,27 @@ def normalize_pearson_residuals(
     if sparse.issparse(X):
         X_csr = X.tocsr()
         X_csr.eliminate_zeros()
-        lib_size  = np.asarray(X_csr.sum(axis=1)).ravel().astype(np.float64)    # (n_cells,)
-        gene_sums = np.asarray(X_csr.sum(axis=0)).ravel().astype(np.float64)    # (n_genes,)
+        lib_size = np.asarray(X_csr.sum(axis=1)).ravel().astype(np.float64)  # (n_cells,)
+        gene_sums = np.asarray(X_csr.sum(axis=0)).ravel().astype(np.float64)  # (n_genes,)
     else:
         # Dense path: compute sums in chunks to avoid a transient copy
-        lib_size  = np.empty(n_cells, dtype=np.float64)
+        lib_size = np.empty(n_cells, dtype=np.float64)
         gene_sums = np.zeros(n_genes, dtype=np.float64)
         for s in range(0, n_cells, cell_chunk_size):
             e = min(s + cell_chunk_size, n_cells)
             chunk = X[s:e, :]
-            lib_size[s:e]  = chunk.sum(axis=1)
-            gene_sums     += chunk.sum(axis=0)
+            lib_size[s:e] = chunk.sum(axis=1)
+            gene_sums += chunk.sum(axis=0)
 
-    mean_lib   = float(lib_size.mean())
-    gene_means = gene_sums / n_cells                          # shape (n_genes,)
+    mean_lib = float(lib_size.mean())
+    gene_means = gene_sums / n_cells  # shape (n_genes,)
 
     # ── Allocate float32 output (optionally memory-mapped) ──────────────────
     residuals = _alloc_out((n_cells, n_genes), np.float32, out)
 
     # ── Compute residuals cell-chunk by cell-chunk ───────────────────────────
     gene_means_f32 = gene_means.astype(np.float32)
-    theta_f32      = np.float32(theta)
+    theta_f32 = np.float32(theta)
 
     for s in range(0, n_cells, cell_chunk_size):
         e = min(s + cell_chunk_size, n_cells)
@@ -776,10 +774,10 @@ def normalize_pearson_residuals(
 
         # mu_chunk: shape (n_chunk, n_genes) — broadcast lib_size over genes
         lib_chunk = lib_size[s:e].astype(np.float32)
-        mu_chunk  = lib_chunk[:, np.newaxis] * gene_means_f32[np.newaxis, :] / np.float32(mean_lib)
+        mu_chunk = lib_chunk[:, np.newaxis] * gene_means_f32[np.newaxis, :] / np.float32(mean_lib)
 
         # Pearson residual: (X - mu) / sqrt(mu + mu^2 / theta)
-        denom  = np.sqrt(mu_chunk + mu_chunk ** 2 / theta_f32)
+        denom = np.sqrt(mu_chunk + mu_chunk**2 / theta_f32)
         denom[denom == 0] = 1.0
         r_chunk = (X_chunk - mu_chunk) / denom
         np.clip(r_chunk, -clip_val, clip_val, out=r_chunk)
@@ -851,7 +849,8 @@ def normalize_standard_workflow(
 
     print("\nStep 1: Library-size normalization")
     X_norm = normalize_total(
-        spatioloji_obj, target_sum=target_sum,
+        spatioloji_obj,
+        target_sum=target_sum,
         cell_chunk_size=cell_chunk_size,
     )
 
@@ -859,7 +858,8 @@ def normalize_standard_workflow(
         print("\nStep 2: Log transformation")
         spatioloji_obj.add_layer("_temp_norm", X_norm, overwrite=True)
         X_norm = globals()["log_transform"](
-            spatioloji_obj, layer="_temp_norm",
+            spatioloji_obj,
+            layer="_temp_norm",
             cell_chunk_size=cell_chunk_size,
         )
         spatioloji_obj.remove_layer("_temp_norm")

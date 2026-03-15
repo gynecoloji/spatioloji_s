@@ -1838,7 +1838,7 @@ class spatioloji:
         matrix_type: str = "auto",
         pixel_size: float = 0.2125,
         lazy_load_image: bool = True,
-    ) -> "spatioloji":
+    ) -> spatioloji:
         """
         Create spatioloji from 10x Genomics Xenium output directory.
 
@@ -1905,12 +1905,12 @@ class spatioloji:
         print(f"[1] Cell metadata: {len(cells):,} cells loaded")
 
         # ── 2. Load expression matrix ─────────────────────────────────────────
-        zarr_zip   = xenium_path / "cell_feature_matrix.zarr.zip"
-        tar_gz     = xenium_path / "cell_feature_matrix.tar.gz"
+        zarr_zip = xenium_path / "cell_feature_matrix.zarr.zip"
+        tar_gz = xenium_path / "cell_feature_matrix.tar.gz"
         mtx_folder = xenium_path / "cell_feature_matrix"
 
         def _load_mtx(folder: Path):
-            matrix   = sio.mmread(str(folder / "matrix.mtx.gz")).T.tocsr()
+            matrix = sio.mmread(str(folder / "matrix.mtx.gz")).T.tocsr()
             barcodes = pd.read_csv(folder / "barcodes.tsv.gz", header=None, sep="\t")
             features = pd.read_csv(folder / "features.tsv.gz", header=None, sep="\t")
             barcodes.columns = ["cell_id"]
@@ -1919,16 +1919,17 @@ class spatioloji:
 
         def _load_zarr(path: Path):
             z = zarr.open(str(path), mode="r")
-            data    = z["X/data"][:]
+            data = z["X/data"][:]
             indices = z["X/indices"][:]
-            indptr  = z["X/indptr"][:]
-            shape   = tuple(z["X"].attrs["shape"])
+            indptr = z["X/indptr"][:]
+            shape = tuple(z["X"].attrs["shape"])
             import scipy.sparse as sp
+
             matrix = sp.csc_matrix((data, indices, indptr), shape=shape).T.tocsr()
-            cell_ids   = [str(c) for c in z["obs/cell_id"][:]]
+            cell_ids = [str(c) for c in z["obs/cell_id"][:]]
             gene_names = [str(g) for g in z["var/feature_name"][:]]
-            gene_ids   = [str(g) for g in z["var/gene_ids"][:]]
-            features   = pd.DataFrame({"gene_id": gene_ids, "gene_name": gene_names})
+            gene_ids = [str(g) for g in z["var/gene_ids"][:]]
+            features = pd.DataFrame({"gene_id": gene_ids, "gene_name": gene_names})
             return matrix, cell_ids, features
 
         def _load_tar(path: Path):
@@ -1962,8 +1963,8 @@ class spatioloji:
             matrix, expr_cell_ids, features = _load_mtx(mtx_folder)
             print(f"[2] Expression matrix (MTX folder): {matrix.shape}")
 
-        gene_names  = features["gene_name"].astype(str).tolist()
-        gene_meta   = features.set_index("gene_name")
+        gene_names = features["gene_name"].astype(str).tolist()
+        gene_meta = features.set_index("gene_name")
 
         # ── 3. Align cells metadata to expression cell order ──────────────────
         cells["cell_id"] = cells["cell_id"].astype(str)
@@ -1972,8 +1973,8 @@ class spatioloji:
 
         # ── 4. Spatial coordinates (µm, no FOV system → local == global) ──────
         spatial_coords = {
-            "x_local" : cells["x_centroid"].values,
-            "y_local" : cells["y_centroid"].values,
+            "x_local": cells["x_centroid"].values,
+            "y_local": cells["y_centroid"].values,
             "x_global": cells["x_centroid"].values,
             "y_global": cells["y_centroid"].values,
         }
@@ -1991,16 +1992,17 @@ class spatioloji:
 
                 # Rename Xenium vertex columns → spatioloji default coord names
                 # (vertex_x/y in µm; local == global for Xenium)
-                boundaries = boundaries.rename(columns={
-                    "vertex_x": config.x_local_col,   # "x_local_px"
-                    "vertex_y": config.y_local_col,   # "y_local_px"
-                })
+                boundaries = boundaries.rename(
+                    columns={
+                        "vertex_x": config.x_local_col,  # "x_local_px"
+                        "vertex_y": config.y_local_col,  # "y_local_px"
+                    }
+                )
                 boundaries[config.x_global_col] = boundaries[config.x_local_col]
                 boundaries[config.y_global_col] = boundaries[config.y_local_col]
 
                 polygons = boundaries
-                print(f"[5] Cell boundaries: {len(boundaries):,} vertices, "
-                      f"{boundaries['cell_id'].nunique():,} cells")
+                print(f"[5] Cell boundaries: {len(boundaries):,} vertices, {boundaries['cell_id'].nunique():,} cells")
             else:
                 print("[5] cell_boundaries.csv.gz not found — skipping polygons")
 
@@ -2008,32 +2010,31 @@ class spatioloji:
         image_path = xenium_path / "morphology.ome.tif"
         image_path_str = str(image_path) if image_path.exists() else None
         if image_path_str:
-            print(f"[6] OME-TIFF found: {image_path.name} "
-                  f"({'lazy' if lazy_load_image else 'path stored'})")
+            print(f"[6] OME-TIFF found: {image_path.name} ({'lazy' if lazy_load_image else 'path stored'})")
         else:
             print("[6] morphology.ome.tif not found")
 
         # ── 8. Assemble spatioloji object ─────────────────────────────────────
         print("=" * 70)
         obj = spatioloji(
-            expression    = matrix,
-            cell_ids      = expr_cell_ids,
-            gene_names    = gene_names,
-            cell_metadata = cells,
-            gene_metadata = gene_meta,
-            spatial_coords= spatial_coords,
-            polygons      = polygons,
-            config        = config,
+            expression=matrix,
+            cell_ids=expr_cell_ids,
+            gene_names=gene_names,
+            cell_metadata=cells,
+            gene_metadata=gene_meta,
+            spatial_coords=spatial_coords,
+            polygons=polygons,
+            config=config,
         )
 
         # ── 9. Store Xenium-specific extras ───────────────────────────────────
-        obj._xenium_dir        = str(xenium_path)
+        obj._xenium_dir = str(xenium_path)
         obj._xenium_image_path = image_path_str
         obj._xenium_pixel_size = pixel_size
 
         return obj
 
-    def get_xenium_image(self, level: str = "3") -> "np.ndarray":
+    def get_xenium_image(self, level: str = "3") -> np.ndarray:
         """
         Open the Xenium OME-TIFF as a lazy zarr store and return
         the image array at the requested pyramid level.
@@ -2059,14 +2060,16 @@ class spatioloji:
             raise FileNotFoundError("No OME-TIFF path stored. Was this loaded with from_xenium()?")
 
         store = tifffile.imread(self._xenium_image_path, aszarr=True)
-        z     = zarr.open(store, mode="r")
+        z = zarr.open(store, mode="r")
 
         available = list(z.keys())
         if level not in available:
             raise KeyError(f"Level '{level}' not found. Available: {available}")
 
-        print(f"Loading level '{level}': shape = {z[level].shape}  "
-              f"(pixel_size ≈ {self._xenium_pixel_size * (2 ** int(level)):.4f} µm/px)")
+        print(
+            f"Loading level '{level}': shape = {z[level].shape}  "
+            f"(pixel_size ≈ {self._xenium_pixel_size * (2 ** int(level)):.4f} µm/px)"
+        )
 
         return z[level][:]
 

@@ -517,10 +517,7 @@ def compare_hvg_methods(
 
     # ── Resolve layers list ──────────────────────────────────────────────────
     if layers is None:
-        layers = [
-            None if m in _RAW_COUNT_METHODS else "log_normalized"
-            for m in methods
-        ]
+        layers = [None if m in _RAW_COUNT_METHODS else "log_normalized" for m in methods]
     elif len(layers) != len(methods):
         raise ValueError(
             f"len(layers)={len(layers)} does not match len(methods)={len(methods)}. "
@@ -567,11 +564,7 @@ def compare_hvg_methods(
                 i = futures[fut]
                 ordered_results[i] = fut.result()
 
-    results: dict[str, np.ndarray] = {
-        method: arr
-        for method, arr in ordered_results
-        if arr is not None
-    }
+    results: dict[str, np.ndarray] = {method: arr for method, arr in ordered_results if arr is not None}
 
     if not results:
         raise RuntimeError("All methods failed. Cannot produce a comparison.")

@@ -201,12 +201,17 @@ class TestPlotInfiltrationSummary:
 
         graph = build_buffer_graph(sp_gradient, buffer_distance=50)
         iface = identify_interface(
-            sp_gradient, graph, group_col="cell_type",
-            region_a="TypeA", region_b="TypeB", method="graph",
+            sp_gradient,
+            graph,
+            group_col="cell_type",
+            region_a="TypeA",
+            region_b="TypeB",
+            method="graph",
             min_interface_cells=1,
         )
         result = score_infiltration(
-            sp_gradient, iface,
+            sp_gradient,
+            iface,
             immune_col="immune_type",
             immune_types=["CD8_T", "Macrophage"],
             target_region="TypeA",
@@ -229,12 +234,17 @@ class TestIntegration:
 
         graph = build_buffer_graph(sp_gradient, buffer_distance=50)
         iface = identify_interface(
-            sp_gradient, graph, group_col="cell_type",
-            region_a="TypeA", region_b="TypeB", method="graph",
+            sp_gradient,
+            graph,
+            group_col="cell_type",
+            region_a="TypeA",
+            region_b="TypeB",
+            method="graph",
             min_interface_cells=1,
         )
         result = score_infiltration(
-            sp_gradient, iface,
+            sp_gradient,
+            iface,
             immune_col="immune_type",
             immune_types=["CD8_T", "Macrophage"],
             target_region="TypeA",

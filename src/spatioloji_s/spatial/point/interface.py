@@ -24,7 +24,13 @@ from spatioloji_s.spatial.polygon.interface import (
 
 
 def _point_graph_method(
-    sp, graph, group_col, a_list, b_list, min_interface_cells, coord_type,
+    sp,
+    graph,
+    group_col,
+    a_list,
+    b_list,
+    min_interface_cells,
+    coord_type,
 ) -> InterfaceResult:
     """Graph-based interface for point data (uses midpoints for contour).
 
@@ -97,9 +103,7 @@ def _point_graph_method(
     n_sub = len(all_cross_cells)
     sub_r = np.array([idx_map[r] for r in cr_r])
     sub_c = np.array([idx_map[c] for c in cr_c])
-    sub_adj = sparse.csr_matrix(
-        (np.ones(len(sub_r)), (sub_r, sub_c)), shape=(n_sub, n_sub)
-    )
+    sub_adj = sparse.csr_matrix((np.ones(len(sub_r)), (sub_r, sub_c)), shape=(n_sub, n_sub))
     sub_adj = sub_adj + sub_adj.T
     n_components, comp_labels = connected_components(sub_adj, directed=False)
 
@@ -125,8 +129,7 @@ def _point_graph_method(
     # Build segments
     seg_rows = []
     for comp_id in range(n_components):
-        comp_cell_indices = [all_cross_cells[i] for i in range(n_sub)
-                            if comp_labels[i] == comp_id]
+        comp_cell_indices = [all_cross_cells[i] for i in range(n_sub) if comp_labels[i] == comp_id]
         n_ca = sum(1 for i in comp_cell_indices if i in interface_a_idx)
         n_cb = sum(1 for i in comp_cell_indices if i in interface_b_idx)
 
@@ -161,18 +164,19 @@ def _point_graph_method(
             ordered = pts_arr[visited]
             line = LineString(ordered)
 
-        seg_rows.append({
-            "segment_id": len(seg_rows),
-            "geometry": line,
-            "length": line.length,
-            "tortuosity": _compute_tortuosity(line),
-            "n_cells_a": n_ca,
-            "n_cells_b": n_cb,
-        })
+        seg_rows.append(
+            {
+                "segment_id": len(seg_rows),
+                "geometry": line,
+                "length": line.length,
+                "tortuosity": _compute_tortuosity(line),
+                "n_cells_a": n_ca,
+                "n_cells_b": n_cb,
+            }
+        )
 
     if not seg_rows:
-        warnings.warn("All segments dropped by min_interface_cells.",
-                      UserWarning, stacklevel=3)
+        warnings.warn("All segments dropped by min_interface_cells.", UserWarning, stacklevel=3)
         return _empty_result(sp, a_list, b_list, group_col, "graph")
 
     segments = gpd.GeoDataFrame(seg_rows, geometry="geometry")
@@ -189,7 +193,9 @@ def _point_graph_method(
     }
 
     return InterfaceResult(
-        cell_labels=cell_labels, contour=contour, segments=segments,
+        cell_labels=cell_labels,
+        contour=contour,
+        segments=segments,
         summary=summary,
         region_a=a_list if len(a_list) > 1 else a_list[0],
         region_b=b_list if len(b_list) > 1 else b_list[0],
@@ -198,8 +204,15 @@ def _point_graph_method(
 
 
 def _point_density_method(
-    sp, graph, group_col, a_list, b_list, min_interface_cells,
-    bandwidth, distance_threshold, coord_type,
+    sp,
+    graph,
+    group_col,
+    a_list,
+    b_list,
+    min_interface_cells,
+    bandwidth,
+    distance_threshold,
+    coord_type,
 ) -> InterfaceResult:
     """Density method for point data — delegates to polygon implementation.
 
@@ -220,9 +233,17 @@ def _point_density_method(
     # The density method is coordinate-based, not polygon-specific.
     # Reuse the polygon implementation directly.
     from spatioloji_s.spatial.polygon.interface import _density_method
+
     return _density_method(
-        sp, graph, group_col, a_list, b_list, min_interface_cells,
-        bandwidth, distance_threshold, coord_type,
+        sp,
+        graph,
+        group_col,
+        a_list,
+        b_list,
+        min_interface_cells,
+        bandwidth,
+        distance_threshold,
+        coord_type,
     )
 
 
@@ -265,21 +286,15 @@ def identify_interface(
         >>> g = build_knn_graph(sp, k=10)
         >>> result = identify_interface(sp, g, "cell_type", "Tumor", "Stromal")
     """
-    a_list, b_list = _validate_inputs(
-        sp, graph, group_col, region_a, region_b, method, distance_threshold
-    )
+    a_list, b_list = _validate_inputs(sp, graph, group_col, region_a, region_b, method, distance_threshold)
 
-    print(f"\n[Interface/Point] Identifying interface: "
-          f"{a_list} vs {b_list} (method={method})")
+    print(f"\n[Interface/Point] Identifying interface: {a_list} vs {b_list} (method={method})")
 
     if method == "graph":
-        result = _point_graph_method(
-            sp, graph, group_col, a_list, b_list, min_interface_cells, coord_type
-        )
+        result = _point_graph_method(sp, graph, group_col, a_list, b_list, min_interface_cells, coord_type)
     else:
         result = _point_density_method(
-            sp, graph, group_col, a_list, b_list, min_interface_cells,
-            bandwidth, distance_threshold, coord_type
+            sp, graph, group_col, a_list, b_list, min_interface_cells, bandwidth, distance_threshold, coord_type
         )
 
     if store:

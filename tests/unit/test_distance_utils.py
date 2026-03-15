@@ -14,15 +14,20 @@ def _make_interface_result(cell_labels, contour, region_a="TypeA", region_b="Typ
     import geopandas as gpd
 
     segments = gpd.GeoDataFrame(
-        {"segment_id": [0], "geometry": [contour.geoms[0] if contour else None],
-         "length": [1.0], "tortuosity": [1.0], "n_cells_a": [1], "n_cells_b": [1]},
+        {
+            "segment_id": [0],
+            "geometry": [contour.geoms[0] if contour else None],
+            "length": [1.0],
+            "tortuosity": [1.0],
+            "n_cells_a": [1],
+            "n_cells_b": [1],
+        },
     )
     return InterfaceResult(
         cell_labels=cell_labels,
         contour=contour,
         segments=segments,
-        summary={"total_length": 1.0, "n_segments": 1,
-                 "mean_tortuosity": 1.0, "n_interface_a": 1, "n_interface_b": 1},
+        summary={"total_length": 1.0, "n_segments": 1, "mean_tortuosity": 1.0, "n_interface_a": 1, "n_interface_b": 1},
         region_a=region_a,
         region_b=region_b,
         method="graph",
@@ -39,8 +44,12 @@ class TestSignedDistance:
 
         graph = build_buffer_graph(sp_interface, buffer_distance=50)
         iface = identify_interface(
-            sp_interface, graph, group_col="cell_type",
-            region_a="TypeA", region_b="TypeB", method="graph",
+            sp_interface,
+            graph,
+            group_col="cell_type",
+            region_a="TypeA",
+            region_b="TypeB",
+            method="graph",
             min_interface_cells=1,
         )
         distances = signed_distance_to_interface(sp_interface, iface, coord_type="global")
@@ -63,12 +72,19 @@ class TestSignedDistance:
 
         graph = build_buffer_graph(sp_interface, buffer_distance=50)
         iface = identify_interface(
-            sp_interface, graph, group_col="cell_type",
-            region_a="TypeA", region_b="TypeB", method="graph",
+            sp_interface,
+            graph,
+            group_col="cell_type",
+            region_a="TypeA",
+            region_b="TypeB",
+            method="graph",
             min_interface_cells=1,
         )
         distances = signed_distance_to_interface(
-            sp_interface, iface, coord_type="global", unsigned=True,
+            sp_interface,
+            iface,
+            coord_type="global",
+            unsigned=True,
         )
         assert (distances >= 0).all()
 

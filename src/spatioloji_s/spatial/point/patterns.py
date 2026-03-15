@@ -33,9 +33,9 @@ if TYPE_CHECKING:
 
 import numpy as np
 import pandas as pd
+from numba import njit, prange
 from scipy import sparse
 from scipy.stats import norm
-from numba import njit, prange
 
 from .graph import PointSpatialGraph
 
@@ -422,6 +422,7 @@ def getis_ord_gi(
 
 # ========== spatially_variable_genes ==========
 
+
 def spatially_variable_genes(
     sj,
     graph,
@@ -464,7 +465,7 @@ def spatially_variable_genes(
             x = X_data[:, g]
             mean_x = np.mean(x)
             z = x - mean_x
-            denom = np.sum(z ** 2) + 1e-12
+            denom = np.sum(z**2) + 1e-12
             numerator = 0.0
             for i in range(n_cells):
                 for j in neighbors_list[i]:
@@ -484,14 +485,17 @@ def spatially_variable_genes(
     # ── FDR correction ──────────────────────────────────────
     fdr = _benjamini_hochberg(pvalues)
 
-    result = pd.DataFrame({
-        "I": I_values,
-        "expected": expected_I,
-        "variance": variance_I,
-        "zscore": zscores,
-        "pvalue": pvalues,
-        "fdr": fdr,
-    }, index=genes).sort_values("I", ascending=False)
+    result = pd.DataFrame(
+        {
+            "I": I_values,
+            "expected": expected_I,
+            "variance": variance_I,
+            "zscore": zscores,
+            "pvalue": pvalues,
+            "fdr": fdr,
+        },
+        index=genes,
+    ).sort_values("I", ascending=False)
 
     n_sig = (result["fdr"] < fdr_threshold).sum()
     print(f"  ✓ {n_sig}/{n_genes} significant SVGs (FDR < {fdr_threshold})")

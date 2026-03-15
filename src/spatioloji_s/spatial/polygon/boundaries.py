@@ -50,8 +50,7 @@ def _get_buffered_polys(gdf, graph: PolygonSpatialGraph) -> dict | None:
     buffer_distance = graph.params.get("buffer_distance")
     if buffer_distance is None:
         warnings.warn(
-            "Buffer graph missing 'buffer_distance' in params. "
-            "Falling back to direct contact mode.",
+            "Buffer graph missing 'buffer_distance' in params. Falling back to direct contact mode.",
             UserWarning,
             stacklevel=3,
         )
