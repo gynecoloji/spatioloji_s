@@ -559,3 +559,82 @@ def sp_motif():
         spatial_coords=spatial,
         polygons=polygons,
     )
+
+
+@pytest.fixture
+def sp_ccc():
+    """300-cell spatioloji for CCC testing.
+
+    Layout:
+    - TypeA (cells 0-149): x_global in [50, 490]
+    - TypeB (cells 150-299): x_global in [510, 950]
+    - Interface around x=500.
+
+    Cell types (in 'cell_type'):
+    - TypeA cells: 100 'Tumor', 30 'Fibroblast', 20 'CD8_T'
+    - TypeB cells: 80 'Stroma', 40 'Fibroblast', 30 'CD8_T'
+
+    Expression:
+    - gene_L1: expressed in Tumor (sender ligand)
+    - gene_R1: expressed in Stroma (receiver receptor)
+    - gene_L2, gene_R2: uniformly expressed (secreted pair)
+    - gene_4 to gene_9: random noise
+
+    Each cell has a 4x4 square polygon.
+    Morphology column 'morph_class': 'round' or 'elongated'.
+    """
+    np.random.seed(123)
+    n_cells = 300
+    n_genes = 10
+    n_a, n_b = 150, 150
+
+    x_a = np.random.uniform(50, 490, n_a)
+    x_b = np.random.uniform(510, 950, n_b)
+    x_global = np.concatenate([x_a, x_b])
+    y_global = np.random.uniform(0, 1000, n_cells)
+
+    expression = np.random.poisson(1.0, (n_cells, n_genes)).astype(float)
+    # gene_L1 (idx 0): high in Tumor cells (first 100 of region A)
+    expression[:100, 0] += 5.0
+    # gene_R1 (idx 1): high in Stroma cells (first 80 of region B)
+    expression[150:230, 1] += 5.0
+    # gene_L2 (idx 2), gene_R2 (idx 3): uniform moderate expression
+    expression[:, 2] += 3.0
+    expression[:, 3] += 3.0
+
+    cell_ids = [f"cell_{i}" for i in range(n_cells)]
+    gene_names = ["gene_L1", "gene_R1", "gene_L2", "gene_R2"] + [f"gene_{i}" for i in range(4, n_genes)]
+
+    type_a = ["Tumor"] * 100 + ["Fibroblast"] * 30 + ["CD8_T"] * 20
+    type_b = ["Stroma"] * 80 + ["Fibroblast"] * 40 + ["CD8_T"] * 30
+    cell_types = type_a + type_b
+
+    morph = np.random.choice(["round", "elongated"], n_cells)
+
+    cell_meta = pd.DataFrame(
+        {"cell_type": cell_types, "morph_class": morph},
+        index=cell_ids,
+    )
+
+    spatial = {
+        "x_global": x_global, "y_global": y_global,
+        "x_local": x_global, "y_local": y_global,
+    }
+
+    rows = []
+    for cid, cx, cy in zip(cell_ids, x_global, y_global, strict=True):
+        for vx, vy in [
+            (cx - 2, cy - 2), (cx + 2, cy - 2),
+            (cx + 2, cy + 2), (cx - 2, cy + 2), (cx - 2, cy - 2),
+        ]:
+            rows.append({"cell": cid, "x_global_px": vx, "y_global_px": vy})
+    polygons = pd.DataFrame(rows)
+
+    return spatioloji(
+        expression=expression,
+        cell_ids=cell_ids,
+        gene_names=gene_names,
+        cell_metadata=cell_meta,
+        spatial_coords=spatial,
+        polygons=polygons,
+    )
