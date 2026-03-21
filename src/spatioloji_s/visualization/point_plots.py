@@ -1435,11 +1435,14 @@ def plot_interface_point_map(
     spatioloji_obj,
     interface_result,
     coord_type: str = "global",
-    colors: dict | None = None,
+    color_a: str = "#e74c3c",
+    color_b: str = "#3498db",
     contour_color: str = "black",
     contour_width: float = 2.0,
     point_size: float = 5.0,
+    alpha: float = 0.7,
     show_interior: bool = True,
+    show_seg_labels: bool = True,
     ax=None,
     figsize: tuple[float, float] = (9, 8),
     title: str | None = None,
@@ -1449,15 +1452,26 @@ def plot_interface_point_map(
 ):
     """Scatter plot coloured by interface role with contour overlay.
 
+    Cells in region A are shown in ``color_a`` (darker for interface,
+    lighter for interior).  Region B uses ``color_b``.  All other cells
+    are white.
+
     Args:
         spatioloji_obj: A ``spatioloji`` object.
         interface_result: ``InterfaceResult`` from ``identify_interface()``.
         coord_type: ``'global'`` or ``'local'``.
-        colors: Dict mapping label -> colour. Defaults provide red/blue.
+        color_a: Colour for region A cells (interface cells use this
+            colour at full opacity; interior cells at reduced opacity).
+        color_b: Colour for region B cells (same logic as ``color_a``).
         contour_color: Colour of the interface contour line.
         contour_width: Width of the contour line.
         point_size: Scatter dot size.
-        show_interior: If ``False``, interior and other cells shown in grey.
+        alpha: Opacity for interior cells (interface cells use 1.0).
+        show_interior: If ``False``, only interface cells are coloured;
+            interior and other cells are white.
+        show_seg_labels: If ``True`` (default), annotate each contour
+            segment with its segment ID.  Set to ``False`` when there
+            are many segments to avoid clutter.
         ax: Optional matplotlib Axes to draw into.
         figsize: Figure size (ignored if ``ax`` provided).
         title: Plot title. Auto-generated if ``None``.
@@ -1469,21 +1483,32 @@ def plot_interface_point_map(
         ``plt.Figure`` or ``None``.
 
     Example:
-        >>> result = sj.spatial.point.interface.identify_interface(
+        >>> result = sj.spatial.point.identify_interface(
         ...     sp, g, "cell_type", "Tumor", "Stromal")
-        >>> sj.visualization.point_plots.plot_interface_map(sp, result)
+        >>> sj.visualization.plot_interface_point_map(sp, result)
+        >>> # Custom colours
+        >>> sj.visualization.plot_interface_point_map(
+        ...     sp, result, color_a='orange', color_b='purple')
     """
+    import matplotlib.colors as mcolors
     from matplotlib.patches import Patch
 
-    default_colors = {
-        "region_a_interface": "#e74c3c",
-        "region_b_interface": "#3498db",
-        "interior_a": "#fadbd8",
-        "interior_b": "#d6eaf8",
-        "other": "#e8e8e8",
+    # Build colour palette from user colours
+    # Interface cells: full colour.  Interior: lighter version.
+    rgba_a = mcolors.to_rgba(color_a)
+    rgba_b = mcolors.to_rgba(color_b)
+    # Lighter interior: blend toward white
+    interior_a = tuple(c * 0.4 + 0.6 for c in rgba_a[:3]) + (1.0,)
+    interior_b = tuple(c * 0.4 + 0.6 for c in rgba_b[:3]) + (1.0,)
+    white = "#ffffff"
+
+    color_map = {
+        "region_a_interface": color_a,
+        "region_b_interface": color_b,
+        "interior_a": interior_a,
+        "interior_b": interior_b,
+        "other": white,
     }
-    grey = "#d5d5d5"
-    cmap = {**(default_colors), **(colors or {})}
 
     if coord_type == "global":
         x = spatioloji_obj.spatial.x_global
@@ -1494,20 +1519,55 @@ def plot_interface_point_map(
 
     labels = interface_result.cell_labels.reindex(spatioloji_obj.cell_index).fillna("other")
 
-    if show_interior:
-        c = [cmap.get(lbl, grey) for lbl in labels]
-    else:
-        c = [cmap.get(lbl, grey) if lbl.endswith("_interface") else grey for lbl in labels]
-
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.get_figure()
 
-    ax.scatter(x, y, c=c, s=point_size, edgecolors="none", zorder=1)
+    # Draw layers: other first (white, background), then interior, then interface on top
+    for lbl, zorder, a in [
+        ("other", 0, alpha * 0.3),
+        ("interior_a", 1, alpha if show_interior else 0.1),
+        ("interior_b", 1, alpha if show_interior else 0.1),
+        ("region_a_interface", 2, 1.0),
+        ("region_b_interface", 2, 1.0),
+    ]:
+        mask = (labels == lbl).values
+        if not mask.any():
+            continue
+        ax.scatter(
+            np.asarray(x)[mask], np.asarray(y)[mask],
+            c=[color_map[lbl]], s=point_size,
+            alpha=a, edgecolors="none", zorder=zorder,
+        )
 
-    # Overlay contour
-    if interface_result.contour is not None:
+    # Overlay contour with segment labels
+    segs = interface_result.segments
+    if segs is not None and len(segs) > 0:
+        for _, seg_row in segs.iterrows():
+            geom = seg_row.geometry
+            seg_id = seg_row["segment_id"]
+            if geom is None or geom.is_empty:
+                continue
+            if geom.geom_type == "MultiLineString":
+                for line in geom.geoms:
+                    xs, ys = line.xy
+                    ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
+            elif geom.geom_type == "LineString":
+                xs, ys = geom.xy
+                ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
+            # Label segment at midpoint
+            if show_seg_labels:
+                mid = geom.interpolate(0.5, normalized=True)
+                ax.annotate(
+                    f"Seg {seg_id}", (mid.x, mid.y),
+                    fontsize=7, fontweight="bold", color=contour_color,
+                    ha="center", va="bottom",
+                    bbox={"boxstyle": "round,pad=0.2", "fc": "white", "alpha": 0.8, "ec": "none"},
+                    zorder=4,
+                )
+    elif interface_result.contour is not None:
+        # Fallback: no segments DataFrame but contour exists (e.g. manual)
         if interface_result.contour.geom_type == "MultiLineString":
             for line in interface_result.contour.geoms:
                 xs, ys = line.xy
@@ -1517,19 +1577,32 @@ def plot_interface_point_map(
             ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
 
     ax.set_aspect("equal")
+    ax.invert_yaxis()
 
-    # Legend
-    legend_items = []
-    for lbl in ["region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"]:
-        n = (labels == lbl).sum()
-        if n > 0:
-            display = lbl.replace("_", " ")
-            legend_items.append(Patch(facecolor=cmap.get(lbl, grey), label=f"{display} ({n})"))
-    ax.legend(handles=legend_items, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, frameon=False)
-
+    # Legend — use region names from the result
     ra = interface_result.region_a
     rb = interface_result.region_b
-    ax.set_title(title or f"Interface: {ra} vs {rb} ({interface_result.method})")
+    ra_label = ra if isinstance(ra, str) else ", ".join(ra)
+    rb_label = rb if isinstance(rb, str) else ", ".join(rb)
+
+    legend_items = []
+    for lbl, display, fc in [
+        ("region_a_interface", f"{ra_label} interface", color_a),
+        ("region_b_interface", f"{rb_label} interface", color_b),
+        ("interior_a", f"{ra_label} interior", interior_a),
+        ("interior_b", f"{rb_label} interior", interior_b),
+    ]:
+        n = (labels == lbl).sum()
+        if n > 0:
+            legend_items.append(Patch(facecolor=fc, label=f"{display} ({n})"))
+
+    n_other = (labels == "other").sum()
+    if n_other > 0:
+        legend_items.append(Patch(facecolor=white, edgecolor="#ccc", label=f"other ({n_other})"))
+
+    ax.legend(handles=legend_items, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, frameon=False)
+
+    ax.set_title(title or f"Interface: {ra_label} vs {rb_label} ({interface_result.method})")
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 

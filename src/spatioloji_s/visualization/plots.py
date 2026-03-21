@@ -1192,3 +1192,903 @@ def plot_local_dots_gene(
         dpi=dpi,
         show_plot=show_plot,
     )
+
+
+# =============================================================================
+# SECTION D — SIMPLE SPATIAL PLOTS (spatioloji class, global coords)
+# =============================================================================
+
+
+_CATEGORICAL_THRESHOLD = 30  # numeric columns with <= this many unique values → categorical
+
+
+def _infer_kind(arr: np.ndarray) -> str:
+    """Decide 'categorical' or 'continuous' from an array.
+
+    Rules:
+    - String / object dtype → categorical
+    - Float with non-integer values (e.g. 0.333, 0.667) → continuous
+      (even if few unique values — common for scores like AUCell)
+    - Integer-like with <= _CATEGORICAL_THRESHOLD unique values → categorical
+    - Otherwise → continuous
+    """
+    if arr.dtype.kind in ("U", "S", "O"):
+        return "categorical"
+    if np.issubdtype(arr.dtype, np.floating):
+        finite = arr[~np.isnan(arr)]
+        if len(finite) == 0:
+            return "continuous"
+        # If any value is non-integer, treat as continuous
+        # (scores like AUCell produce 0.333, 0.667 etc.)
+        if not np.all(finite == np.floor(finite)):
+            return "continuous"
+        # Integer-valued floats (e.g. leiden stored as float)
+        n_unique = len(np.unique(finite))
+        return "categorical" if n_unique <= _CATEGORICAL_THRESHOLD else "continuous"
+    # Integer dtype
+    n_unique = len(np.unique(arr))
+    return "categorical" if n_unique <= _CATEGORICAL_THRESHOLD else "continuous"
+
+
+def _xenium_resolve_values(sp, values, layer=None):
+    """Resolve values to (array, label, kind).
+
+    Parameters
+    ----------
+    sp : spatioloji
+    values : str or np.ndarray
+        Cell_meta column, gene name, or pre-computed array.
+    layer : str or None
+        Expression layer for gene lookup.
+
+    Returns
+    -------
+    arr : np.ndarray (n_cells,)
+    label : str
+    kind : 'categorical' or 'continuous'
+    """
+    from scipy import sparse
+
+    if isinstance(values, np.ndarray):
+        arr = values.flatten()
+        kind = _infer_kind(arr)
+        if kind == "categorical":
+            # Preserve NaN as None in object array
+            out = np.where(pd.isna(arr), None, arr.astype(str))
+            return out, "custom", "categorical"
+        return arr.astype(float), "custom", "continuous"
+
+    # String: try layer gene → cell_meta → raw expression
+    if layer is not None:
+        layer_data = sp.get_layer(layer)
+        gene_indices = sp._get_gene_indices([values])
+        if len(gene_indices) > 0:
+            if sparse.issparse(layer_data):
+                arr = np.array(layer_data[:, gene_indices[0]].todense()).flatten().astype(float)
+            else:
+                arr = layer_data[:, gene_indices[0]].flatten().astype(float)
+            return arr, values, "continuous"
+
+    if values in sp.cell_meta.columns:
+        series = sp.cell_meta[values]
+        if not pd.api.types.is_numeric_dtype(series):
+            # Preserve NaN as None in object array
+            out = np.where(series.isna(), None, series.astype(str).values)
+            return out, values, "categorical"
+        arr = series.values.astype(float)
+        kind = _infer_kind(arr)
+        if kind == "categorical":
+            out = np.where(np.isnan(arr), None, arr.astype(int).astype(str))
+            return out, values, "categorical"
+        return arr, values, "continuous"
+
+    # Try raw expression
+    gene_indices = sp._get_gene_indices([values])
+    if len(gene_indices) > 0:
+        arr = sp.expression.get_dense()[:, gene_indices[0]].flatten().astype(float)
+        return arr, values, "continuous"
+
+    raise ValueError(f"'{values}' not found as gene name or cell_meta column")
+
+
+def xenium_plot_spatial(
+    sp,
+    values: str | np.ndarray,
+    layer: str | None = None,
+    kind: str | None = None,
+    mode: str = "dot",
+    color_dict: dict | None = None,
+    cmap: str | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    dot_size: float = 1,
+    alpha: float = 0.7,
+    edge_color: str = "none",
+    edge_width: float = 0.0,
+    figsize: tuple[float, float] = (10, 8),
+    title: str | None = None,
+    legend_ncol: int = 1,
+    legend_fontsize: int = 7,
+    legend_loc: str = "center left",
+    legend_bbox: tuple[float, float] = (1.02, 0.5),
+    ax: plt.Axes | None = None,
+    save_dir: str | None = None,
+    filename: str | None = None,
+    dpi: int = 300,
+    show: bool = True,
+) -> plt.Figure:
+    """
+    Plot cells in global coordinates colored by any feature.
+
+    Supports both centroid dot plots and filled polygon plots.
+    Accepts a cell_meta column name, gene name, or a pre-computed
+    array.  Auto-detects categorical vs. continuous:
+
+    - **String / object dtype** → categorical
+    - **Numeric with <= 30 unique values** → categorical (e.g. cluster IDs)
+    - **Numeric with > 30 unique values** → continuous
+
+    Default colors are chosen automatically:
+
+    - Categorical: ``tab10``/``tab20``/``gist_ncar`` by category count
+    - Continuous: ``viridis``
+
+    Parameters
+    ----------
+    sp : spatioloji
+        spatioloji object.
+    values : str or np.ndarray
+        What to color by.  Can be:
+
+        - A cell_meta column name (e.g. ``'leiden'``, ``'morph_area'``)
+        - A gene name (e.g. ``'EPCAM'``) — uses ``layer`` if given
+        - A numpy array of length ``n_cells``
+    layer : str or None
+        Expression layer for gene lookup (e.g. ``'log_normalized'``).
+        Ignored when ``values`` is a cell_meta column or array.
+    kind : {'categorical', 'continuous'} or None
+        Force the data type for coloring.  If None (default), auto-detects
+        based on dtype and number of unique values.  Use ``kind='continuous'``
+        when scores (e.g. AUCell) have few unique values but should still
+        be shown on a continuous color scale.
+    mode : {'dot', 'polygon'}
+        ``'dot'`` — scatter plot of cell centroids (fast, works always).
+        ``'polygon'`` — filled cell boundary polygons (requires polygon
+        data in ``sp.polygons``).
+    color_dict : dict or None
+        ``{category: color}`` for categorical features.  If None,
+        auto-assigns colors.
+    cmap : str or None
+        Matplotlib colormap name.  If None, auto-selects based on
+        data type (``tab20`` for categorical, ``viridis`` for
+        continuous).
+    vmin, vmax : float or None
+        Value range for continuous color scale.
+    dot_size : float
+        Scatter point size (dot mode only), by default 1.
+    alpha : float
+        Transparency, by default 0.7.
+    edge_color : str
+        Polygon edge color (polygon mode only), by default ``'none'``.
+    edge_width : float
+        Polygon edge width (polygon mode only), by default 0.0.
+    figsize : tuple
+        Figure size, by default (10, 8).
+    title : str or None
+        Plot title.  If None, uses the feature name.
+    legend_ncol : int
+        Number of columns in categorical legend, by default 1.
+    legend_fontsize : int
+        Font size for legend labels, by default 7.
+    legend_loc : str
+        Legend location anchor, by default ``'center left'``.
+    legend_bbox : tuple
+        ``(x, y)`` position for legend anchor, by default ``(1.02, 0.5)``
+        (outside the right edge of the plot).
+    ax : matplotlib Axes or None
+        If provided, plot onto this axes instead of creating a new figure.
+    save_dir : str or None
+        Directory to save the figure.  If None, does not save.
+    filename : str or None
+        Filename for saving.  If None, auto-generates from feature name.
+    dpi : int
+        Resolution for saved figure, by default 300.
+    show : bool
+        If True, call ``plt.show()``.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+
+    Examples
+    --------
+    >>> # Dot plot — categorical
+    >>> sj.visualization.xenium_plot_spatial(sp, 'leiden')
+    >>>
+    >>> # Polygon plot — categorical with custom colors
+    >>> sj.visualization.xenium_plot_spatial(sp, 'leiden', mode='polygon',
+    ...     color_dict={'0': 'red', '1': 'blue'})
+    >>>
+    >>> # Continuous — gene expression, saved to file
+    >>> sj.visualization.xenium_plot_spatial(sp, 'EPCAM', layer='log_normalized',
+    ...     save_dir='./figures', filename='EPCAM_spatial.png')
+    """
+    from matplotlib.lines import Line2D
+
+    if mode not in ("dot", "polygon"):
+        raise ValueError(f"mode must be 'dot' or 'polygon', got '{mode}'")
+
+    if mode == "polygon" and sp.polygons is None:
+        raise ValueError("mode='polygon' requires polygon data in sp.polygons")
+
+    arr, label, auto_kind = _xenium_resolve_values(sp, values, layer=layer)
+    # User-specified kind overrides auto-detection
+    if kind is not None:
+        if kind not in ("categorical", "continuous"):
+            raise ValueError(f"kind must be 'categorical', 'continuous', or None, got '{kind}'")
+        # If forcing continuous on a string array, keep the raw float values
+        if kind == "continuous" and auto_kind == "categorical":
+            # Re-resolve without categorical conversion
+            if isinstance(values, str) and values in sp.cell_meta.columns:
+                arr = sp.cell_meta[values].values.astype(float)
+    else:
+        kind = auto_kind
+    coords = sp.get_spatial_coords(coord_type="global")
+    x, y = coords[:, 0], coords[:, 1]
+
+    if title is None:
+        layer_str = f" ({layer})" if layer and kind == "continuous" else ""
+        title = f"{label}{layer_str}"
+
+    own_fig = ax is None
+    if own_fig:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    na_color = (0.75, 0.75, 0.75, 1.0)
+
+    # --- Build color mapping ---
+    if kind == "categorical":
+        nan_mask = pd.isna(pd.array(arr, dtype=object))
+        categories = sorted(set(str(v) for v in arr[~nan_mask]))
+        n_cats = len(categories)
+
+        if color_dict is not None:
+            c_dict = {str(k): v for k, v in color_dict.items()}
+        else:
+            if cmap is not None:
+                palette = plt.get_cmap(cmap)
+            elif n_cats <= 10:
+                palette = plt.get_cmap("tab10")
+            elif n_cats <= 20:
+                palette = plt.get_cmap("tab20")
+            else:
+                palette = plt.get_cmap("gist_ncar")
+            c_dict = {cat: palette(i / max(n_cats - 1, 1)) for i, cat in enumerate(categories)}
+
+        if mode == "dot":
+            # NaN cells first (gray background)
+            if nan_mask.any():
+                ax.scatter(x[nan_mask], y[nan_mask], c=[na_color], s=dot_size,
+                           alpha=alpha, linewidths=0)
+            # Valid cells on top
+            valid_mask = ~nan_mask
+            if valid_mask.any():
+                valid_colors = [c_dict.get(str(v), na_color) for v in arr[valid_mask]]
+                ax.scatter(x[valid_mask], y[valid_mask], c=valid_colors, s=dot_size,
+                           alpha=alpha, linewidths=0)
+        else:  # polygon
+            gdf = sp.to_geopandas(coord_type="global", include_metadata=False)
+            polys, face_colors = [], []
+            for i, (_, row) in enumerate(gdf.iterrows()):
+                geom = row.geometry
+                if geom is None or geom.is_empty:
+                    continue
+                poly_coords = np.array(geom.exterior.coords)
+                polys.append(poly_coords)
+                val = arr[i]
+                if val is None or (isinstance(val, float) and np.isnan(val)):
+                    rgba = (*na_color[:3], alpha)
+                else:
+                    c = c_dict.get(str(val), na_color)
+                    rgba = (*c[:3], alpha) if len(c) >= 3 else (*c, alpha)
+                face_colors.append(rgba)
+
+            collection = PolyCollection(
+                polys, facecolors=face_colors,
+                edgecolors=edge_color, linewidths=edge_width,
+            )
+            ax.add_collection(collection)
+            ax.autoscale_view()
+
+        # Legend
+        legend_elements = [
+            Line2D([0], [0], marker="o", color="w", label=cat,
+                   markerfacecolor=c_dict.get(cat, na_color), markersize=6)
+            for cat in categories
+        ]
+        n_nan = int(nan_mask.sum())
+        if n_nan > 0:
+            legend_elements.append(
+                Line2D([0], [0], marker="o", color="w", label=f"NaN ({n_nan:,})",
+                       markerfacecolor=na_color, markeredgecolor="gray",
+                       markeredgewidth=0.5, markersize=6)
+            )
+        ax.legend(
+            handles=legend_elements, title=label,
+            loc=legend_loc, bbox_to_anchor=legend_bbox,
+            ncol=legend_ncol, fontsize=legend_fontsize,
+            framealpha=0.9,
+        )
+
+    else:  # continuous
+        resolved_cmap = cmap if cmap is not None else "viridis"
+        v_min = vmin if vmin is not None else np.nanmin(arr)
+        v_max = vmax if vmax is not None else np.nanmax(arr)
+
+        if mode == "dot":
+            sc = ax.scatter(x, y, c=arr, cmap=resolved_cmap, vmin=v_min, vmax=v_max,
+                            s=dot_size, alpha=alpha, linewidths=0)
+        else:  # polygon
+            cmap_obj = plt.get_cmap(resolved_cmap)
+            norm = colors.Normalize(vmin=v_min, vmax=v_max)
+            gdf = sp.to_geopandas(coord_type="global", include_metadata=False)
+            polys, face_colors = [], []
+            for i, (_, row) in enumerate(gdf.iterrows()):
+                geom = row.geometry
+                if geom is None or geom.is_empty:
+                    continue
+                poly_coords = np.array(geom.exterior.coords)
+                polys.append(poly_coords)
+                val = arr[i]
+                if np.isnan(val):
+                    rgba = (*na_color[:3], alpha)
+                else:
+                    c = cmap_obj(norm(val))
+                    rgba = (*c[:3], alpha)
+                face_colors.append(rgba)
+
+            collection = PolyCollection(
+                polys, facecolors=face_colors,
+                edgecolors=edge_color, linewidths=edge_width,
+            )
+            ax.add_collection(collection)
+            ax.autoscale_view()
+            # Create a ScalarMappable for colorbar
+            sc = cm.ScalarMappable(norm=norm, cmap=cmap_obj)
+
+        fig.colorbar(sc, ax=ax, shrink=0.8, label=label)
+
+    ax.set_aspect("equal")
+    ax.invert_yaxis()
+    ax.set_title(title)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+
+    if own_fig:
+        plt.tight_layout()
+
+    # Save
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+        if filename is None:
+            safe = label.replace(" ", "_").lower()
+            filename = f"xenium_{safe}_{mode}_{kind}.png"
+        filepath = os.path.join(save_dir, filename)
+        fig.savefig(filepath, dpi=dpi, bbox_inches="tight")
+        print(f"  Saved: {filepath}")
+
+    if not show:
+        plt.close(fig)
+        return None
+    plt.close(fig)
+    return fig
+
+
+# Xenium standard stain channels and their default colormaps
+_XENIUM_STAIN_DEFAULTS = {
+    "dapi": {"index": 0, "cmap": "Blues", "label": "DAPI"},
+    "boundary": {"index": 1, "cmap": "Reds", "label": "Boundary (membrane)"},
+    "interior": {"index": 2, "cmap": "Purples", "label": "Interior (18S RNA)"},
+    "protein": {"index": 3, "cmap": "Greens", "label": "Protein (IF)"},
+}
+
+
+def _resolve_channel_indices(channels: list, stain_keys: list[str]) -> list[int]:
+    """Convert channel names or ints to integer indices."""
+    indices = []
+    for ch in channels:
+        if isinstance(ch, int):
+            indices.append(ch)
+        elif isinstance(ch, str):
+            ch_lower = ch.lower()
+            if ch_lower in stain_keys:
+                indices.append(stain_keys.index(ch_lower))
+            else:
+                raise ValueError(f"Unknown channel '{ch}'. Use one of: {stain_keys} or integer index.")
+        else:
+            indices.append(int(ch))
+    return indices
+
+
+def xenium_show_staining(
+    tif_paths: str | list[str],
+    channels: str | list[str] | None = None,
+    cmaps: str | list[str] | None = None,
+    level: int = 3,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    vmax_percentile: float = 99.5,
+    figsize_per_panel: tuple[float, float] = (8, 8),
+    titles: list[str] | None = None,
+    save_dir: str | None = None,
+    filename: str | None = None,
+    dpi: int = 150,
+    show: bool = True,
+) -> plt.Figure:
+    """
+    Display Xenium morphology staining images.
+
+    Supports two input modes:
+
+    1. **Single multi-channel OME-TIFF** (e.g. ``morphology.ome.tif``) —
+       reads selected channels from the pyramid.
+    2. **List of per-channel TIFFs** (e.g. ``morphology_focus_000X.ome.tif``)
+       — one file per stain.
+
+    Channels are auto-detected from Xenium standard naming:
+    ``0=DAPI``, ``1=boundary``, ``2=interior (18S RNA)``,
+    ``3=protein (IF)``.
+
+    Parameters
+    ----------
+    tif_paths : str or list of str
+        Path(s) to morphology TIFF file(s).
+
+        - Single string → multi-channel OME-TIFF (reads channels by index)
+        - List of strings → one file per channel (order = channel order)
+    channels : str, list of str, or None
+        Which channels to show.  Can be:
+
+        - ``None`` → all available channels
+        - ``'dapi'`` → single channel
+        - ``['dapi', 'protein']`` → subset
+        - ``[0, 2]`` → by index
+
+        Standard names: ``'dapi'``, ``'boundary'``, ``'interior'``,
+        ``'protein'``.
+    cmaps : str, list of str, or None
+        Colormap(s) for each channel.  If None, uses Xenium defaults
+        (Blues, Reds, Purples, Greens).  If a single string, applied
+        to all channels.
+    level : int
+        Pyramid level to read (0 = full resolution, higher = more
+        downsampled).  Default 3 (fast preview).
+    vmin : float or None
+        Minimum intensity.  If None, uses array minimum.
+    vmax : float or None
+        Maximum intensity.  If None, uses ``vmax_percentile`` of
+        the image data.
+    vmax_percentile : float
+        Percentile for auto-vmax, by default 99.5.  Clips hot pixels.
+    figsize_per_panel : tuple
+        ``(width, height)`` per channel panel.
+    titles : list of str or None
+        Custom titles per channel.  If None, uses standard stain names.
+    save_dir : str or None
+        Directory to save the figure.
+    filename : str or None
+        Filename for saving.
+    dpi : int
+        Save resolution, by default 150.
+    show : bool
+        If True, display the figure.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+
+    Examples
+    --------
+    >>> # Per-channel TIFFs — show all 4
+    >>> xenium_show_staining([
+    ...     'morphology_focus_0000.ome.tif',  # DAPI
+    ...     'morphology_focus_0001.ome.tif',  # boundary
+    ...     'morphology_focus_0002.ome.tif',  # interior
+    ...     'morphology_focus_0003.ome.tif',  # protein
+    ... ])
+    >>>
+    >>> # Single multi-channel TIFF — show all channels
+    >>> xenium_show_staining('morphology.ome.tif')
+    >>>
+    >>> # Show only DAPI and protein
+    >>> xenium_show_staining('morphology.ome.tif', channels=['dapi', 'protein'])
+    >>>
+    >>> # Custom colormap, full resolution
+    >>> xenium_show_staining('morphology.ome.tif', channels='dapi', cmaps='gray', level=0)
+    """
+    try:
+        import tifffile
+    except ImportError as err:
+        raise ImportError("tifffile is required: pip install tifffile") from err
+
+    # --- Resolve input mode ---
+    is_multi = isinstance(tif_paths, str)
+    stain_keys = list(_XENIUM_STAIN_DEFAULTS.keys())
+
+    if is_multi:
+        # Single multi-channel OME-TIFF — detect channel count from shape
+        tif = tifffile.TiffFile(tif_paths)
+        try:
+            full_shape = tif.series[0].levels[level].shape
+            n_channels_available = full_shape[0] if len(full_shape) == 3 else 1
+        except (IndexError, AttributeError):
+            n_channels_available = 1
+    else:
+        n_channels_available = len(tif_paths)
+
+    # --- Resolve which channels to show ---
+    if channels is None:
+        channel_indices = list(range(min(n_channels_available, 4)))
+    else:
+        if isinstance(channels, (str, int)):
+            channels = [channels]
+        channel_indices = _resolve_channel_indices(channels, stain_keys)
+
+    n_show = len(channel_indices)
+
+    # --- Resolve cmaps ---
+    if cmaps is None:
+        cmap_list = [_XENIUM_STAIN_DEFAULTS[stain_keys[min(i, 3)]]["cmap"] for i in channel_indices]
+    elif isinstance(cmaps, str):
+        cmap_list = [cmaps] * n_show
+    else:
+        cmap_list = list(cmaps)
+        if len(cmap_list) < n_show:
+            cmap_list.extend(["gray"] * (n_show - len(cmap_list)))
+
+    # --- Resolve titles ---
+    if titles is None:
+        title_list = [_XENIUM_STAIN_DEFAULTS[stain_keys[min(i, 3)]]["label"] for i in channel_indices]
+    else:
+        title_list = list(titles)
+        if len(title_list) < n_show:
+            title_list.extend([f"Channel {i}" for i in channel_indices[len(title_list):]])
+
+    # --- Load images ---
+    images = []
+    for ch_idx in channel_indices:
+        if is_multi:
+            img = tifffile.imread(tif_paths, series=0, level=level)
+            if img.ndim == 3:
+                img = img[ch_idx]
+        else:
+            if ch_idx >= len(tif_paths):
+                raise ValueError(f"Channel index {ch_idx} but only {len(tif_paths)} files provided")
+            img = tifffile.imread(tif_paths[ch_idx], is_ome=False, level=level)
+        images.append(img)
+
+    # --- Plot ---
+    fig_w = figsize_per_panel[0] * n_show
+    fig_h = figsize_per_panel[1]
+    fig, axes = plt.subplots(1, n_show, figsize=(fig_w, fig_h), squeeze=False)
+    axes = axes.flatten()
+
+    for i, (img, cmap_name, ch_title) in enumerate(zip(images, cmap_list, title_list, strict=True)):
+        ax = axes[i]
+        v_lo = vmin if vmin is not None else float(img.min())
+        v_hi = vmax if vmax is not None else float(np.percentile(img, vmax_percentile))
+        ax.imshow(img, cmap=cmap_name, vmin=v_lo, vmax=v_hi)
+        ax.set_title(f"{ch_title}: {img.shape}", fontsize=12)
+        ax.axis("off")
+
+    plt.tight_layout()
+
+    # Save
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+        if filename is None:
+            ch_str = "_".join(title_list).replace(" ", "_").replace("(", "").replace(")", "").lower()
+            filename = f"xenium_staining_{ch_str}_level{level}.png"
+        filepath = os.path.join(save_dir, filename)
+        fig.savefig(filepath, dpi=dpi, bbox_inches="tight")
+        print(f"  Saved: {filepath}")
+
+    if not show:
+        plt.close(fig)
+        return None
+    plt.close(fig)
+    return fig
+
+
+def xenium_plot_spatial_bg(
+    sp,
+    bg_tif: str,
+    values: str | np.ndarray,
+    layer: str | None = None,
+    kind: str | None = None,
+    mode: str = "dot",
+    pixel_size: float = 0.2125,
+    bg_level: int = 3,
+    bg_cmap: str = "gray",
+    bg_vmin_pct: float = 1.0,
+    bg_vmax_pct: float = 99.0,
+    color_dict: dict | None = None,
+    cmap: str | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    dot_size: float = 1,
+    alpha: float = 0.5,
+    edge_color: str = "none",
+    edge_width: float = 0.0,
+    figsize: tuple[float, float] = (12, 10),
+    title: str | None = None,
+    legend_ncol: int = 1,
+    legend_fontsize: int = 7,
+    legend_loc: str = "center left",
+    legend_bbox: tuple[float, float] = (1.02, 0.5),
+    ax: plt.Axes | None = None,
+    save_dir: str | None = None,
+    filename: str | None = None,
+    dpi: int = 200,
+    show: bool = True,
+) -> plt.Figure:
+    """
+    Overlay cells on a Xenium morphology image background.
+
+    Loads a single-channel morphology TIFF (e.g. DAPI from
+    ``morphology_focus/morphology_focus_0000.ome.tif``), converts
+    cell coordinates from microns to pixels at the chosen pyramid
+    level, and overlays colored dots or polygons.
+
+    Parameters
+    ----------
+    sp : spatioloji
+        spatioloji object.
+    bg_tif : str
+        Path to the background TIFF file (single-channel, e.g.
+        ``morphology_focus_0000.ome.tif`` for DAPI).
+    values : str or np.ndarray
+        What to color cells by (same as :func:`xenium_plot_spatial`).
+    layer : str or None
+        Expression layer for gene lookup.
+    mode : {'dot', 'polygon'}
+        ``'dot'`` for centroid scatter, ``'polygon'`` for filled polygons.
+    pixel_size : float
+        Xenium base pixel size in microns at level 0, by default 0.2125.
+    bg_level : int
+        Pyramid level to read for the background image, by default 3.
+    bg_cmap : str
+        Colormap for the background image, by default ``'gray'``.
+    bg_vmin_pct, bg_vmax_pct : float
+        Percentile range for background contrast, by default 1-99.
+    color_dict : dict or None
+        Custom ``{category: color}`` mapping.
+    cmap : str or None
+        Matplotlib colormap.  Auto-selects if None.
+    vmin, vmax : float or None
+        Value range for continuous color scale.
+    dot_size : float
+        Scatter point size, by default 1.
+    alpha : float
+        Cell overlay transparency, by default 0.5.
+    edge_color : str
+        Polygon edge color, by default ``'none'``.
+    edge_width : float
+        Polygon edge width, by default 0.0.
+    figsize : tuple
+        Figure size, by default (12, 10).
+    title : str or None
+        Plot title.
+    legend_ncol : int
+        Legend columns.
+    legend_fontsize : int
+        Legend font size.
+    legend_loc : str
+        Legend anchor location.
+    legend_bbox : tuple
+        Legend anchor position.
+    ax : matplotlib Axes or None
+        Existing axes to plot onto.
+    save_dir : str or None
+        Directory to save the figure.
+    filename : str or None
+        Filename for saving.
+    dpi : int
+        Save resolution, by default 200.
+    show : bool
+        If True, display the figure.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+
+    Examples
+    --------
+    >>> # Leiden clusters on DAPI
+    >>> xenium_plot_spatial_bg(
+    ...     sp, 'morphology_focus/morphology_focus_0000.ome.tif',
+    ...     values='leiden')
+    >>>
+    >>> # Gene expression on DAPI, polygon mode
+    >>> xenium_plot_spatial_bg(
+    ...     sp, 'morphology_focus/morphology_focus_0000.ome.tif',
+    ...     values='EPCAM', layer='log_normalized', mode='polygon',
+    ...     cmap='Reds', alpha=0.6)
+    """
+    try:
+        import tifffile
+    except ImportError as err:
+        raise ImportError("tifffile is required: pip install tifffile") from err
+
+    from matplotlib.lines import Line2D
+
+    if mode not in ("dot", "polygon"):
+        raise ValueError(f"mode must be 'dot' or 'polygon', got '{mode}'")
+    if mode == "polygon" and sp.polygons is None:
+        raise ValueError("mode='polygon' requires polygon data in sp.polygons")
+
+    # --- Load background image ---
+    bg_img = tifffile.imread(bg_tif, is_ome=False, level=bg_level)
+    px_size = pixel_size * (2**bg_level)  # µm per pixel at this level
+
+    # --- Resolve values ---
+    arr, label, auto_kind = _xenium_resolve_values(sp, values, layer=layer)
+    if kind is not None:
+        if kind not in ("categorical", "continuous"):
+            raise ValueError(f"kind must be 'categorical', 'continuous', or None, got '{kind}'")
+        if kind == "continuous" and auto_kind == "categorical":
+            if isinstance(values, str) and values in sp.cell_meta.columns:
+                arr = sp.cell_meta[values].values.astype(float)
+    else:
+        kind = auto_kind
+
+    # --- Convert cell coords from µm to pixels ---
+    coords_um = sp.get_spatial_coords(coord_type="global")
+    x_px = coords_um[:, 0] / px_size
+    y_px = coords_um[:, 1] / px_size
+
+    if title is None:
+        layer_str = f" ({layer})" if layer and kind == "continuous" else ""
+        title = f"{label}{layer_str} on {os.path.basename(bg_tif)}"
+
+    own_fig = ax is None
+    if own_fig:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.get_figure()
+
+    # --- Draw background ---
+    bg_vmin = np.percentile(bg_img, bg_vmin_pct)
+    bg_vmax = np.percentile(bg_img, bg_vmax_pct)
+    ax.imshow(bg_img, cmap=bg_cmap, vmin=bg_vmin, vmax=bg_vmax, origin="upper")
+
+    na_color = (0.75, 0.75, 0.75, 1.0)
+
+    # --- Overlay cells ---
+    if kind == "categorical":
+        nan_mask = pd.isna(pd.array(arr, dtype=object))
+        categories = sorted(set(str(v) for v in arr[~nan_mask]))
+        n_cats = len(categories)
+
+        if color_dict is not None:
+            c_dict = {str(k): v for k, v in color_dict.items()}
+        else:
+            if cmap is not None:
+                palette = plt.get_cmap(cmap)
+            elif n_cats <= 10:
+                palette = plt.get_cmap("tab10")
+            elif n_cats <= 20:
+                palette = plt.get_cmap("tab20")
+            else:
+                palette = plt.get_cmap("gist_ncar")
+            c_dict = {cat: palette(i / max(n_cats - 1, 1)) for i, cat in enumerate(categories)}
+
+        if mode == "dot":
+            if nan_mask.any():
+                ax.scatter(x_px[nan_mask], y_px[nan_mask], c=[na_color], s=dot_size,
+                           alpha=alpha * 0.3, linewidths=0)
+            valid_mask = ~nan_mask
+            if valid_mask.any():
+                valid_colors = [c_dict.get(str(v), na_color) for v in arr[valid_mask]]
+                ax.scatter(x_px[valid_mask], y_px[valid_mask], c=valid_colors,
+                           s=dot_size, alpha=alpha, linewidths=0)
+        else:  # polygon
+            gdf = sp.to_geopandas(coord_type="global", include_metadata=False)
+            polys, face_colors = [], []
+            for i, (_, row) in enumerate(gdf.iterrows()):
+                geom = row.geometry
+                if geom is None or geom.is_empty:
+                    continue
+                poly_coords = np.array(geom.exterior.coords) / px_size
+                polys.append(poly_coords)
+                val = arr[i]
+                if val is None or (isinstance(val, float) and np.isnan(val)):
+                    face_colors.append((*na_color[:3], alpha * 0.3))
+                else:
+                    c = c_dict.get(str(val), na_color)
+                    face_colors.append((*c[:3], alpha))
+
+            collection = PolyCollection(
+                polys, facecolors=face_colors,
+                edgecolors=edge_color, linewidths=edge_width,
+            )
+            ax.add_collection(collection)
+
+        # Legend
+        legend_elements = [
+            Line2D([0], [0], marker="o", color="w", label=cat,
+                   markerfacecolor=c_dict.get(cat, na_color), markersize=6)
+            for cat in categories
+        ]
+        n_nan = int(nan_mask.sum())
+        if n_nan > 0:
+            legend_elements.append(
+                Line2D([0], [0], marker="o", color="w", label=f"NaN ({n_nan:,})",
+                       markerfacecolor=na_color, markeredgecolor="gray",
+                       markeredgewidth=0.5, markersize=6)
+            )
+        ax.legend(
+            handles=legend_elements, title=label,
+            loc=legend_loc, bbox_to_anchor=legend_bbox,
+            ncol=legend_ncol, fontsize=legend_fontsize, framealpha=0.9,
+        )
+
+    else:  # continuous
+        resolved_cmap = cmap if cmap is not None else "hot"
+        v_min = vmin if vmin is not None else np.nanmin(arr)
+        v_max = vmax if vmax is not None else np.nanmax(arr)
+
+        if mode == "dot":
+            sc = ax.scatter(x_px, y_px, c=arr, cmap=resolved_cmap, vmin=v_min, vmax=v_max,
+                            s=dot_size, alpha=alpha, linewidths=0)
+        else:  # polygon
+            cmap_obj = plt.get_cmap(resolved_cmap)
+            norm = colors.Normalize(vmin=v_min, vmax=v_max)
+            gdf = sp.to_geopandas(coord_type="global", include_metadata=False)
+            polys, face_colors = [], []
+            for i, (_, row) in enumerate(gdf.iterrows()):
+                geom = row.geometry
+                if geom is None or geom.is_empty:
+                    continue
+                poly_coords = np.array(geom.exterior.coords) / px_size
+                polys.append(poly_coords)
+                val = arr[i]
+                if np.isnan(val):
+                    face_colors.append((*na_color[:3], alpha))
+                else:
+                    c = cmap_obj(norm(val))
+                    face_colors.append((*c[:3], alpha))
+
+            collection = PolyCollection(
+                polys, facecolors=face_colors,
+                edgecolors=edge_color, linewidths=edge_width,
+            )
+            ax.add_collection(collection)
+            sc = cm.ScalarMappable(norm=norm, cmap=cmap_obj)
+
+        fig.colorbar(sc, ax=ax, shrink=0.8, label=label)
+
+    ax.set_title(title)
+    ax.axis("off")
+
+    if own_fig:
+        plt.tight_layout()
+
+    # Save
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+        if filename is None:
+            safe = label.replace(" ", "_").lower()
+            bg_name = os.path.splitext(os.path.basename(bg_tif))[0]
+            filename = f"xenium_{safe}_on_{bg_name}_{mode}.png"
+        filepath = os.path.join(save_dir, filename)
+        fig.savefig(filepath, dpi=dpi, bbox_inches="tight")
+        print(f"  Saved: {filepath}")
+
+    if not show:
+        plt.close(fig)
+        return None
+    plt.close(fig)
+    return fig

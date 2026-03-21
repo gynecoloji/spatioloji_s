@@ -20,8 +20,9 @@ def finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) 
     if save_path is not None:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         print(f"Saved to {save_path}")
-    if show:
-        plt.show()
+    if not show:
+        plt.close(fig)
+        return None
     plt.close(fig)
     return fig
 

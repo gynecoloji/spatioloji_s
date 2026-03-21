@@ -1698,8 +1698,30 @@ def plot_interface_polygon_map(
 
     ax.add_collection(pc)
 
-    # Overlay contour
-    if interface_result.contour is not None:
+    # Overlay contour with segment labels
+    segs = interface_result.segments
+    if segs is not None and len(segs) > 0:
+        for _, seg_row in segs.iterrows():
+            geom = seg_row.geometry
+            seg_id = seg_row["segment_id"]
+            if geom is None or geom.is_empty:
+                continue
+            if geom.geom_type == "MultiLineString":
+                for line in geom.geoms:
+                    xs, ys = line.xy
+                    ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
+            elif geom.geom_type == "LineString":
+                xs, ys = geom.xy
+                ax.plot(xs, ys, color=contour_color, linewidth=contour_width, zorder=3)
+            mid = geom.interpolate(0.5, normalized=True)
+            ax.annotate(
+                f"Seg {seg_id}", (mid.x, mid.y),
+                fontsize=7, fontweight="bold", color=contour_color,
+                ha="center", va="bottom",
+                bbox={"boxstyle": "round,pad=0.2", "fc": "white", "alpha": 0.8, "ec": "none"},
+                zorder=4,
+            )
+    elif interface_result.contour is not None:
         if interface_result.contour.geom_type == "MultiLineString":
             for line in interface_result.contour.geoms:
                 xs, ys = line.xy
@@ -1710,6 +1732,7 @@ def plot_interface_polygon_map(
 
     ax.autoscale_view()
     ax.set_aspect("equal")
+    ax.invert_yaxis()
 
     # Legend
     legend_items = []
@@ -1765,40 +1788,68 @@ def plot_interface_polygon_metrics(
 
     if len(segs) == 0:
         figsize = figsize or (6, 3)
-        if ax is None:
+        own_fig_empty = ax is None
+        if own_fig_empty:
             fig, ax = plt.subplots(figsize=figsize)
         else:
             fig = ax.get_figure()
         ax.text(0.5, 0.5, "No interface segments found", ha="center", va="center", transform=ax.transAxes, fontsize=11)
         ax.set_title(title or f"Interface segments — {metric}")
         clean_axes(ax)
+        if not own_fig_empty:
+            return fig
         return finalize_plot(fig, save_path, dpi, show)
 
     n = len(segs)
-    figsize = figsize or (7, max(3, n * 0.5))
-    vals = segs[metric].values
-    bar_labels = [f"Segment {i}" for i in range(n)]
+    figsize = figsize or (7, max(3, n * 0.5 + 1))
+    vals = segs[metric].values.astype(float)
+
+    # Replace inf and NaN with 0 for display; track originals for annotation
+    vals_display = np.where(np.isfinite(vals), vals, 0.0)
+
+    bar_labels = [f"Seg {segs['segment_id'].iloc[i]}" for i in range(n)]
 
     from matplotlib.colors import Normalize
 
     cm_obj = plt.get_cmap("YlOrRd")
-    v_min, v_max = float(vals.min()), float(vals.max())
+    finite = vals[np.isfinite(vals)]
+    v_min = float(finite.min()) if len(finite) > 0 else 0.0
+    v_max = float(finite.max()) if len(finite) > 0 else 1.0
     if v_min == v_max:
         v_min, v_max = v_min - 0.1, v_max + 0.1
     norm = Normalize(vmin=v_min, vmax=v_max)
-    bar_colors = [cm_obj(norm(v)) for v in vals]
+    bar_colors = [cm_obj(norm(v)) for v in vals_display]
 
-    if ax is None:
+    own_fig = ax is None
+    if own_fig:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.get_figure()
 
-    ax.barh(range(n), vals, color=bar_colors, height=0.6)
+    bars = ax.barh(range(n), vals_display, color=bar_colors, height=0.6)
+
+    # Annotate bars with values
+    x_offset = 0.02 * (v_max - v_min) if (v_max - v_min) > 0 else 0.1
+    for bar, v in zip(bars, vals, strict=True):
+        if np.isinf(v):
+            ax.text(x_offset, bar.get_y() + bar.get_height() / 2,
+                    "inf", va="center", fontsize=7, color="red")
+        elif np.isnan(v):
+            ax.text(x_offset, bar.get_y() + bar.get_height() / 2,
+                    "NaN", va="center", fontsize=7, color="gray")
+        else:
+            ax.text(bar.get_width() + x_offset, bar.get_y() + bar.get_height() / 2,
+                    f"{v:.2f}", va="center", fontsize=7)
+
     ax.set_yticks(range(n))
     ax.set_yticklabels(bar_labels, fontsize=8)
     ax.set_xlabel(metric)
     ax.set_title(title or f"Interface segments — {metric}")
     clean_axes(ax)
+
+    # When ax was provided externally, don't close the figure — caller owns it
+    if not own_fig:
+        return fig
     return finalize_plot(fig, save_path, dpi, show)
 
 

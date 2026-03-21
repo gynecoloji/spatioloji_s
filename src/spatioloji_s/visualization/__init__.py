@@ -50,6 +50,9 @@ from .plots import (
     plot_local_polygon,
     plot_local_polygon_gene,
     stitch_fov_images,
+    xenium_plot_spatial,
+    xenium_plot_spatial_bg,
+    xenium_show_staining,
 )
 from .point_plots import (
     plot_co_occurrence,
@@ -122,6 +125,9 @@ __all__ = [
     "plot_local_dots_gene",
     "plot_local_polygon",
     "plot_local_polygon_gene",
+    "xenium_plot_spatial",
+    "xenium_plot_spatial_bg",
+    "xenium_show_staining",
     "stitch_fov_images",
     # point-based spatial analysis
     "plot_spatial_graph",
