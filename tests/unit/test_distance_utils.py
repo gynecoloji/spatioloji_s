@@ -1,11 +1,11 @@
 """Tests for signed distance to interface utility."""
 
-import numpy as np
 import pandas as pd
 import pytest
 from shapely.geometry import LineString, MultiLineString
 
 from spatioloji_s.spatial._distance_utils import signed_distance_to_interface
+from spatioloji_s.spatial._interface import identify_interface
 from spatioloji_s.spatial._interface_types import InterfaceResult
 
 
@@ -30,7 +30,7 @@ def _make_interface_result(cell_labels, contour, region_a="TypeA", region_b="Typ
         summary={"total_length": 1.0, "n_segments": 1, "mean_tortuosity": 1.0, "n_interface_a": 1, "n_interface_b": 1},
         region_a=region_a,
         region_b=region_b,
-        method="graph",
+        method="grid",
     )
 
 
@@ -39,17 +39,11 @@ class TestSignedDistance:
 
     def test_basic_signed_distance(self, sp_interface):
         """Cells on region A side get positive, region B side get negative."""
-        from spatioloji_s.spatial.polygon.interface import identify_interface
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-
-        graph = build_buffer_graph(sp_interface, buffer_distance=50)
         iface = identify_interface(
             sp_interface,
-            graph,
             group_col="cell_type",
             region_a="TypeA",
             region_b="TypeB",
-            method="graph",
             min_interface_cells=1,
         )
         distances = signed_distance_to_interface(sp_interface, iface, coord_type="global")
@@ -67,17 +61,11 @@ class TestSignedDistance:
 
     def test_unsigned_distance(self, sp_interface):
         """When unsigned=True, all distances should be non-negative."""
-        from spatioloji_s.spatial.polygon.interface import identify_interface
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-
-        graph = build_buffer_graph(sp_interface, buffer_distance=50)
         iface = identify_interface(
             sp_interface,
-            graph,
             group_col="cell_type",
             region_a="TypeA",
             region_b="TypeB",
-            method="graph",
             min_interface_cells=1,
         )
         distances = signed_distance_to_interface(

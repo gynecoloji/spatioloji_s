@@ -37,15 +37,23 @@ Examples
 """
 
 # --- Graph construction ---
+from spatioloji_s.spatial._distance_utils import classify_regions
+
+# Gradient
+from spatioloji_s.spatial._gradient import compute_gradient
+
+# Infiltration
+from spatioloji_s.spatial._infiltration import score_infiltration
+
+# Interface
+from spatioloji_s.spatial._interface import filter_interface, identify_interface
+
 from .._gradient_types import GradientResult
 from .._infiltration_types import InfiltrationResult
 from .._interface_types import InterfaceResult
 
 # Motifs
 from .._motif_types import AssemblyCatalog, MotifCatalog, MotifResult, StructureMatches
-
-# Gradient
-from .gradient import compute_gradient
 from .graph import (
     PointSpatialGraph,
     build_delaunay_graph,
@@ -53,12 +61,6 @@ from .graph import (
     build_radius_graph,
     build_weighted_knn_graph,
 )
-
-# Infiltration
-from .infiltration import score_infiltration
-
-# Interface
-from .interface import identify_interface
 from .motifs import detect_assemblies, discover_motifs, match_known_structures, run_motif_pipeline
 
 # --- Neighborhood analysis ---
@@ -126,6 +128,8 @@ __all__ = [
     "permutation_test",
     # Interface
     "identify_interface",
+    "filter_interface",
+    "classify_regions",
     "InterfaceResult",
     # Gradient
     "compute_gradient",

@@ -42,10 +42,10 @@ class TestInterfaceResult:
             },
             region_a="Tumor",
             region_b="Stromal",
-            method="graph",
+            method="grid",
         )
         assert result.contour is None
-        assert result.method == "graph"
+        assert result.method == "grid"
         assert result.summary["n_segments"] == 0
 
     def test_contour_accepts_multilinestring(self):
@@ -72,72 +72,52 @@ class TestInterfaceResult:
             },
             region_a="Tumor",
             region_b="Stromal",
-            method="graph",
+            method="grid",
         )
         assert isinstance(result.contour, MultiLineString)
         assert len(result.segments) == 1
 
 
-from spatioloji_s.spatial.polygon.graph import build_buffer_graph, build_contact_graph  # noqa: E402
-from spatioloji_s.spatial.polygon.interface import identify_interface  # noqa: E402
+from spatioloji_s.spatial._interface import identify_interface  # noqa: E402
 
 
-class TestPolygonValidation:
-    """Tests for input validation in polygon identify_interface."""
+class TestValidation:
+    """Tests for input validation in identify_interface."""
 
     def test_invalid_group_col_raises(self, sp_interface):
-        g = build_contact_graph(sp_interface)
         with pytest.raises(ValueError, match="not found in cell_meta"):
-            identify_interface(sp_interface, g, group_col="nonexistent", region_a="TypeA", region_b="TypeB")
+            identify_interface(sp_interface, group_col="nonexistent", region_a="TypeA", region_b="TypeB")
 
     def test_invalid_region_label_raises(self, sp_interface):
-        g = build_contact_graph(sp_interface)
         with pytest.raises(ValueError, match="not found"):
-            identify_interface(sp_interface, g, group_col="cell_type", region_a="Tumor", region_b="TypeB")
+            identify_interface(sp_interface, group_col="cell_type", region_a="Tumor", region_b="TypeB")
 
     def test_overlapping_regions_raises(self, sp_interface):
-        g = build_contact_graph(sp_interface)
         with pytest.raises(ValueError, match="overlap"):
-            identify_interface(sp_interface, g, group_col="cell_type", region_a=["TypeA", "TypeB"], region_b="TypeA")
-
-    def test_graph_required_for_graph_method(self, sp_interface):
-        with pytest.raises(ValueError, match="graph.*required"):
-            identify_interface(
-                sp_interface, graph=None, group_col="cell_type", region_a="TypeA", region_b="TypeB", method="graph"
-            )
-
-    def test_density_without_graph_needs_threshold(self, sp_interface):
-        with pytest.raises(ValueError, match="distance_threshold"):
-            identify_interface(
-                sp_interface, graph=None, group_col="cell_type", region_a="TypeA", region_b="TypeB", method="density"
-            )
+            identify_interface(sp_interface, group_col="cell_type", region_a=["TypeA", "TypeB"], region_b="TypeA")
 
 
-class TestPolygonGraphMethod:
-    """Tests for the graph-based interface identification (polygon)."""
+class TestGridMethod:
+    """Tests for the grid-based interface identification."""
 
     def test_returns_interface_result(self, sp_interface):
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         assert isinstance(result, InterfaceResult)
-        assert result.method == "graph"
+        assert result.method == "grid"
 
     def test_cell_labels_values(self, sp_interface):
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         valid = {"region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"}
         assert set(result.cell_labels.unique()).issubset(valid)
 
     def test_cell_labels_index_matches_cells(self, sp_interface):
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         assert len(result.cell_labels) == len(sp_interface.cell_index)
 
     def test_interface_cells_detected(self, sp_interface):
-        """With buffer_distance=50, cells near x=500 should be interface."""
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
+        """With default grid, cells near the boundary should be interface."""
         result = identify_interface(
-            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", min_interface_cells=1
+            sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB", min_interface_cells=1
         )
         n_a = (result.cell_labels == "region_a_interface").sum()
         n_b = (result.cell_labels == "region_b_interface").sum()
@@ -145,143 +125,28 @@ class TestPolygonGraphMethod:
         assert n_b > 0, "Should detect TypeB interface cells"
 
     def test_store_writes_to_cell_meta(self, sp_interface):
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=True)
+        identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=True)
         assert "interface_label" in sp_interface.cell_meta.columns
 
     def test_store_false_no_modification(self, sp_interface):
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=False)
+        identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=False)
         assert "interface_label" not in sp_interface.cell_meta.columns
 
     def test_list_region_labels(self, sp_interface):
         """region_a as a list should work."""
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type", region_a=["TypeA"], region_b="TypeB")
+        result = identify_interface(sp_interface, group_col="cell_type", region_a=["TypeA"], region_b="TypeB")
         assert isinstance(result, InterfaceResult)
-
-    def test_no_interface_returns_empty(self, sp_interface):
-        """With no buffer (contact only), far-apart cells have no interface."""
-        g = build_contact_graph(sp_interface)
-        result = identify_interface(
-            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", min_interface_cells=1
-        )
-        assert isinstance(result, InterfaceResult)
-        assert isinstance(result.summary, dict)
-        assert "n_segments" in result.summary
-
-
-class TestPolygonDensityMethod:
-    """Tests for the density-based interface identification."""
-
-    def test_density_returns_interface_result(self, sp_interface):
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(
-            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", method="density"
-        )
-        assert isinstance(result, InterfaceResult)
-        assert result.method == "density"
-
-    def test_density_without_graph_explicit_threshold(self, sp_interface):
-        result = identify_interface(
-            sp_interface,
-            graph=None,
-            group_col="cell_type",
-            region_a="TypeA",
-            region_b="TypeB",
-            method="density",
-            distance_threshold=30.0,
-        )
-        assert isinstance(result, InterfaceResult)
-
-    def test_density_cell_labels_valid(self, sp_interface):
-        result = identify_interface(
-            sp_interface,
-            graph=None,
-            group_col="cell_type",
-            region_a="TypeA",
-            region_b="TypeB",
-            method="density",
-            distance_threshold=30.0,
-        )
-        valid = {"region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"}
-        assert set(result.cell_labels.unique()).issubset(valid)
-
-    def test_density_contour_is_geometry(self, sp_interface):
-        result = identify_interface(
-            sp_interface,
-            graph=None,
-            group_col="cell_type",
-            region_a="TypeA",
-            region_b="TypeB",
-            method="density",
-            distance_threshold=30.0,
-        )
-        if result.contour is not None:
-            assert result.contour.geom_type in ("MultiLineString", "LineString")
-
-    def test_density_scikit_image_missing_raises(self, sp_interface, monkeypatch):
-        """Should raise ImportError if scikit-image not installed."""
-        import builtins
-
-        real_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "skimage" or name.startswith("skimage."):
-                raise ImportError("mocked")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", mock_import)
-        with pytest.raises(ImportError, match="scikit-image"):
-            identify_interface(
-                sp_interface,
-                graph=None,
-                group_col="cell_type",
-                region_a="TypeA",
-                region_b="TypeB",
-                method="density",
-                distance_threshold=30.0,
-            )
-
-
-from spatioloji_s.spatial.point.graph import build_knn_graph  # noqa: E402
-from spatioloji_s.spatial.point.interface import (  # noqa: E402
-    identify_interface as point_identify_interface,
-)
-
-
-class TestPointGraphMethod:
-    """Tests for point-based interface identification."""
-
-    def test_returns_interface_result(self, sp_interface):
-        g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
-        assert isinstance(result, InterfaceResult)
-
-    def test_cell_labels_valid(self, sp_interface):
-        g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
-        valid = {"region_a_interface", "region_b_interface", "interior_a", "interior_b", "other"}
-        assert set(result.cell_labels.unique()).issubset(valid)
-
-    def test_interface_cells_detected(self, sp_interface):
-        g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
-        assert result.summary["n_interface_a"] > 0 or result.summary["n_interface_b"] > 0
 
     def test_contour_geometry(self, sp_interface):
-        g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         if result.contour is not None:
             assert result.contour.geom_type in ("MultiLineString", "LineString")
 
-    def test_validation_same_as_polygon(self, sp_interface):
-        with pytest.raises(ValueError, match="not found in cell_meta"):
-            point_identify_interface(
-                sp_interface, None, group_col="bad", region_a="TypeA", region_b="TypeB", method="graph"
-            )
+    def test_grid_resolution_param(self, sp_interface):
+        result = identify_interface(
+            sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB", grid_resolution=20
+        )
+        assert isinstance(result, InterfaceResult)
 
 
 from spatioloji_s.visualization.polygon_plots import (  # noqa: E402
@@ -294,10 +159,7 @@ class TestPlotInterfaceMap:
     """Tests for plot_interface_polygon_map."""
 
     def test_returns_figure(self, sp_interface):
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         fig = plot_interface_polygon_map(sp_interface, result, show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
@@ -328,17 +190,14 @@ class TestPlotInterfaceMap:
             },
             region_a="TypeA",
             region_b="TypeB",
-            method="graph",
+            method="grid",
         )
         fig = plot_interface_polygon_map(sp_interface, empty, show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
 
     def test_custom_ax(self, sp_interface):
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         fig, ax = plt.subplots()
         plot_interface_polygon_map(sp_interface, result, ax=ax, show=False)
         plt.close("all")
@@ -348,10 +207,7 @@ class TestPlotInterfaceMetrics:
     """Tests for plot_interface_polygon_metrics."""
 
     def test_returns_figure(self, sp_interface):
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
-        result = identify_interface(sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB")
+        result = identify_interface(sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB")
         fig = plot_interface_polygon_metrics(result, metric="length", show=False)
         assert isinstance(fig, plt.Figure)
         plt.close("all")
@@ -382,7 +238,7 @@ class TestPlotInterfaceMetrics:
             },
             region_a="A",
             region_b="B",
-            method="graph",
+            method="grid",
         )
         fig = plot_interface_polygon_metrics(empty, show=False)
         assert isinstance(fig, plt.Figure)
@@ -392,13 +248,10 @@ class TestPlotInterfaceMetrics:
 class TestIntegration:
     """End-to-end integration tests."""
 
-    def test_polygon_full_pipeline(self, sp_interface):
-        """Full pipeline: build graph -> identify interface -> plot."""
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-
-        g = build_buffer_graph(sp_interface, buffer_distance=50)
+    def test_full_pipeline(self, sp_interface):
+        """Full pipeline: identify interface -> plot."""
         result = identify_interface(
-            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=True
+            sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=True
         )
         assert "interface_label" in sp_interface.cell_meta.columns
         assert result.summary["n_segments"] >= 0
@@ -412,15 +265,6 @@ class TestIntegration:
             assert isinstance(fig2, plt.Figure)
             plt.close("all")
 
-    def test_point_full_pipeline(self, sp_interface):
-        """Full pipeline with point-based graph."""
-        g = build_knn_graph(sp_interface, k=10)
-        result = point_identify_interface(
-            sp_interface, g, group_col="cell_type", region_a="TypeA", region_b="TypeB", store=True
-        )
-        assert "interface_label" in sp_interface.cell_meta.columns
-        assert isinstance(result, InterfaceResult)
-
     def test_imports_from_top_level(self):
         """Verify imports work from package top-level paths."""
         from spatioloji_s.spatial.point import identify_interface as pi
@@ -431,3 +275,10 @@ class TestIntegration:
         assert callable(pi)
         assert callable(plot_interface_polygon_map)
         assert callable(plot_interface_polygon_metrics)
+
+    def test_point_and_polygon_same_function(self):
+        """Point and polygon should export the same identify_interface."""
+        from spatioloji_s.spatial.point import identify_interface as pi
+        from spatioloji_s.spatial.polygon import identify_interface as poly_ii
+
+        assert pi is poly_ii

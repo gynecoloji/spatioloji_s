@@ -47,6 +47,15 @@ Typical workflow
 
 # Graph construction
 # Boundaries
+# Gradient
+from spatioloji_s.spatial._gradient import compute_gradient
+
+# Infiltration
+from spatioloji_s.spatial._infiltration import score_infiltration
+
+# Interface
+from spatioloji_s.spatial._interface import filter_interface, identify_interface
+
 from .._gradient_types import GradientResult
 from .._infiltration_types import InfiltrationResult
 from .._interface_types import InterfaceResult
@@ -59,9 +68,6 @@ from .boundaries import (
     contact_summary,
     free_boundary_fraction,
 )
-
-# Gradient
-from .gradient import compute_gradient
 from .graph import (
     PolygonSpatialGraph,
     build_buffer_graph,
@@ -69,12 +75,6 @@ from .graph import (
     build_knn_graph,
     build_weighted_knn_graph,
 )
-
-# Infiltration
-from .infiltration import score_infiltration
-
-# Interface
-from .interface import identify_interface
 
 # Morphology
 from .morphology import (
@@ -140,6 +140,7 @@ __all__ = [
     "colocalization",
     # Interface
     "identify_interface",
+    "filter_interface",
     "InterfaceResult",
     # Gradient
     "compute_gradient",

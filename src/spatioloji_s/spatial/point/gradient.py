@@ -1,9 +1,8 @@
 """Spatial gradient analysis for point-based spatial data.
 
-Thin wrapper — re-exports ``compute_gradient`` from the polygon module.
-Both modes use centroid-based distances, so the logic is identical.
+Re-exports from the shared ``_gradient`` module.
 """
 
-from spatioloji_s.spatial.polygon.gradient import compute_gradient
+from spatioloji_s.spatial._gradient import compute_gradient
 
 __all__ = ["compute_gradient"]

@@ -3,7 +3,9 @@
 import pandas as pd
 import pytest
 
+from spatioloji_s.spatial._infiltration import score_infiltration
 from spatioloji_s.spatial._infiltration_types import InfiltrationResult
+from spatioloji_s.spatial._interface import identify_interface
 
 
 class TestScoreInfiltrationBasic:
@@ -11,23 +13,15 @@ class TestScoreInfiltrationBasic:
 
     @pytest.fixture
     def interface_result(self, sp_gradient):
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-        from spatioloji_s.spatial.polygon.interface import identify_interface
-
-        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
         return identify_interface(
             sp_gradient,
-            graph,
             group_col="cell_type",
             region_a="TypeA",
             region_b="TypeB",
-            method="graph",
             min_interface_cells=1,
         )
 
     def test_returns_infiltration_result(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         result = score_infiltration(
             sp_gradient,
             interface_result,
@@ -38,8 +32,6 @@ class TestScoreInfiltrationBasic:
         assert isinstance(result, InfiltrationResult)
 
     def test_cell_classifications(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         result = score_infiltration(
             sp_gradient,
             interface_result,
@@ -52,8 +44,6 @@ class TestScoreInfiltrationBasic:
         assert len(result.cell_classifications) == len(sp_gradient.cell_index)
 
     def test_per_type_metrics_columns(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         result = score_infiltration(
             sp_gradient,
             interface_result,
@@ -73,8 +63,6 @@ class TestScoreInfiltrationBasic:
         assert expected_cols.issubset(set(result.per_type_metrics.columns))
 
     def test_per_type_metrics_rows(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         result = score_infiltration(
             sp_gradient,
             interface_result,
@@ -85,8 +73,6 @@ class TestScoreInfiltrationBasic:
         assert set(result.per_type_metrics.index) == {"CD8_T", "Macrophage"}
 
     def test_target_region_auto_detect(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         result = score_infiltration(
             sp_gradient,
             interface_result,
@@ -96,8 +82,6 @@ class TestScoreInfiltrationBasic:
         assert result.target_region in ("TypeA", "TypeB")
 
     def test_infiltration_fraction_range(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         result = score_infiltration(
             sp_gradient,
             interface_result,
@@ -109,8 +93,6 @@ class TestScoreInfiltrationBasic:
         assert (fracs >= 0).all() and (fracs <= 1).all()
 
     def test_distances_series(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         result = score_infiltration(
             sp_gradient,
             interface_result,
@@ -122,8 +104,6 @@ class TestScoreInfiltrationBasic:
         assert len(result.distances) == len(sp_gradient.cell_index)
 
     def test_region_labels_propagated(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         result = score_infiltration(
             sp_gradient,
             interface_result,
@@ -140,23 +120,15 @@ class TestScoreInfiltrationValidation:
 
     @pytest.fixture
     def interface_result(self, sp_gradient):
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-        from spatioloji_s.spatial.polygon.interface import identify_interface
-
-        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
         return identify_interface(
             sp_gradient,
-            graph,
             group_col="cell_type",
             region_a="TypeA",
             region_b="TypeB",
-            method="graph",
             min_interface_cells=1,
         )
 
     def test_invalid_immune_col(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         with pytest.raises(ValueError, match="not found"):
             score_infiltration(
                 sp_gradient,
@@ -166,8 +138,6 @@ class TestScoreInfiltrationValidation:
             )
 
     def test_invalid_target_region(self, sp_gradient, interface_result):
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-
         with pytest.raises(ValueError, match="target_region"):
             score_infiltration(
                 sp_gradient,
@@ -178,8 +148,8 @@ class TestScoreInfiltrationValidation:
             )
 
 
-class TestPointInfiltrationReExport:
-    """Verify point module re-exports polygon infiltration."""
+class TestPointPolygonUnified:
+    """Verify point and polygon export the same function."""
 
     def test_point_score_infiltration_is_same(self):
         from spatioloji_s.spatial.point.infiltration import score_infiltration as point_si
@@ -194,19 +164,14 @@ class TestPlotInfiltrationSummary:
     def test_returns_figure(self, sp_gradient):
         import matplotlib
         import matplotlib.pyplot as plt
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-        from spatioloji_s.spatial.polygon.interface import identify_interface
+
         from spatioloji_s.visualization.polygon_plots import plot_infiltration_summary
 
-        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
         iface = identify_interface(
             sp_gradient,
-            graph,
             group_col="cell_type",
             region_a="TypeA",
             region_b="TypeB",
-            method="graph",
             min_interface_cells=1,
         )
         result = score_infiltration(
@@ -227,19 +192,14 @@ class TestIntegration:
     def test_full_infiltration_workflow(self, sp_gradient):
         """Full workflow: interface -> infiltration -> plot."""
         import matplotlib.pyplot as plt
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
-        from spatioloji_s.spatial.polygon.infiltration import score_infiltration
-        from spatioloji_s.spatial.polygon.interface import identify_interface
+
         from spatioloji_s.visualization.polygon_plots import plot_infiltration_summary
 
-        graph = build_buffer_graph(sp_gradient, buffer_distance=50)
         iface = identify_interface(
             sp_gradient,
-            graph,
             group_col="cell_type",
             region_a="TypeA",
             region_b="TypeB",
-            method="graph",
             min_interface_cells=1,
         )
         result = score_infiltration(
