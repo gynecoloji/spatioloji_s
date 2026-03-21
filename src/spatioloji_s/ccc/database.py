@@ -373,7 +373,7 @@ def filter_to_expressed(
     if layer is not None and layer in sp.layers:
         expr = sp.layers[layer]
     else:
-        expr = sp.expression.to_dense()
+        expr = sp.expression.get_dense()
 
     if issparse(expr):
         expr = expr.toarray()

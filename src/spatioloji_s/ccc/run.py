@@ -1,974 +1,409 @@
 """
 run.py - Full CCC pipeline orchestrator.
 
-Single entry point for the entire spatioloji CCC workflow:
+Single entry point for the spatioloji CCC workflow:
 
-    ccc_results = run_ccc(sp_fov, config)
+    result = run_ccc(sp, config)
 
 Executes in order:
-  Prerequisites  — build_contact_graph, contact_fraction,
-                   free_boundary_fraction, compute_morphology
-  Database       — load LR pairs, filter to expressed
-  Layer 1        — Bivariate Moran + Spatial Lag (discovery)
-  Layer 2        — Polygon OT + Message Passing (scoring)
-  Layer 3        — Contrastive scoring + NMF programs (patterns)
-
-Prerequisites can be supplied pre-computed to avoid redundant work
-when running multiple FOVs (pass via the `precomputed` argument).
-
-Results can be saved and reloaded with save_ccc_results() /
-load_ccc_results() for downstream visualization or comparison.
+  1. Load LR database and filter to expressed pairs
+  2. Build spatial graphs (juxtacrine contact, secreted/ECM radius)
+  3. Score edges (score_edges)
+  4. Filter by sender/receiver types (optional)
+  5. Aggregate scores (aggregate_scores)
+  6. Test significance (test_significance)
+  7. Interface zone comparison and gradient (optional)
+  8. Morphology stratification (optional)
 
 Typical usage
 -------------
->>> from spatioloji_s.ccc.run import run_ccc, CCCConfig, save_ccc_results
+>>> from spatioloji_s.ccc.run import run_ccc, CCCConfig
 >>>
 >>> config = CCCConfig(
-...     cell_type_col   = 'cell_type',
-...     layer           = 'log_normalized',
-...     db_source       = 'cellchatdb',
-...     db_csv_path     = 'CellChatDB.csv',
-...     lr_types        = ['juxtacrine', 'secreted'],
-...     n_permutations  = 1000,
-...     K               = None,   # auto-select
+...     group_col="cell_type",
+...     db_source="builtin",
+...     secreted_radius=200.0,
+...     test_method="analytical",
 ... )
->>>
->>> ccc_results = run_ccc(sp_fov, config)
->>> save_ccc_results(ccc_results, 'fov01_ccc.pkl')
+>>> result = run_ccc(sp_fov, config)
+>>> result.scores.head()
 """
 
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+import pandas as pd
 
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
-
-import pickle
-import time
-from dataclasses import dataclass, field
-
-import numpy as np
-import pandas as pd
 
 from .database import (
     LRPair,
     filter_to_expressed,
     load_from_cellchatdb_csv,
     load_lr_database,
-    lr_pairs_to_dataframe,
 )
-from .layer1 import run_layer1
-from .layer2 import run_layer2
-from .layer3 import (
-    run_layer3,
-)
+from .scoring import aggregate_scores, score_edges, test_significance
+from .zones import communication_gradient, compare_morphology, compare_zones
+
+try:
+    from spatioloji_s.spatial._interface_types import InterfaceResult
+except ImportError:
+    InterfaceResult = None  # type: ignore[assignment,misc]
+
 
 # ── Config dataclass ──────────────────────────────────────────────────────────
 
 
 @dataclass
 class CCCConfig:
+    """Configuration for CCC analysis.
+
+    Attributes:
+        db_source: Database source. ``'builtin'`` uses curated built-in
+            LR pairs; ``'cellchatdb'`` loads from CSV (requires
+            ``db_csv_path``); ``'custom'`` requires ``custom_df`` passed
+            to :func:`load_lr_database`.
+        db_csv_path: Path to CellChatDB CSV file. Required when
+            ``db_source='cellchatdb'``.
+        lr_types: Filter to specific LR types (``'juxtacrine'``,
+            ``'secreted'``, ``'ecm'``). None = all types.
+        min_pct: Minimum fraction of cells expressing a gene for a pair to
+            be kept after expression filtering. Default 0.05.
+        secreted_radius: Radius (in coordinate units) for secreted
+            signaling graph. Default 200.0.
+        ecm_radius: Radius for ECM signaling graph. Default 200.0.
+        buffer_distance: Buffer distance for juxtacrine contact graph.
+            None = use 0 (touching cells only).
+        sigma_secreted: Distance decay sigma for secreted pairs. None =
+            estimated as median edge distance.
+        sigma_ecm: Distance decay sigma for ECM pairs. None = estimated
+            as median edge distance.
+        layer: Expression layer name. None = raw counts.
+        test_method: Significance test method. ``'analytical'`` or
+            ``'permutation'``.
+        n_subsample: Maximum cells for permutation test (stratified
+            subsample). Default 10000.
+        n_permutations: Number of permutations. Default 1000.
+        alpha: Significance threshold for reporting. Default 0.05.
+        group_col: Column in ``sp.cell_meta`` for cell type labels.
+        sender_types: If set, filter edges to these sender cell types.
+        receiver_types: If set, filter edges to these receiver cell types.
+        interface_result: Optional
+            :class:`~spatioloji_s.spatial._interface_types.InterfaceResult`
+            for zone comparison and gradient analysis.
+        n_distance_bins: Number of bins for gradient analysis. Default 20.
+        morphology_col: Column in ``sp.cell_meta`` for morphology categories.
+            If set, :func:`~spatioloji_s.ccc.zones.compare_morphology` is run.
+        coord_type: Coordinate type for graph building. ``'global'`` or
+            ``'local'``.
+        seed: Random seed. Default 42.
+        verbose: Print progress messages. Default True.
+
+    Example:
+        >>> config = CCCConfig(group_col="cell_type", test_method="permutation")
     """
-    Configuration for the full CCC pipeline.
-
-    All parameters have sensible defaults — only cell_type_col and
-    layer typically need to be changed for a new dataset.
-
-    Parameters
-    ----------
-    cell_type_col : str
-        Column in sp.cell_meta with cell type labels.
-    layer : str | None
-        Expression layer for CCC scoring. None → raw counts.
-        Recommended: 'log_normalized'.
-
-    Database settings
-    -----------------
-    db_source : str
-        'builtin'    — use curated built-in LR pairs (no file needed)
-        'cellchatdb' — load from CellChatDB CSV (requires db_csv_path)
-        'custom'     — pass a custom DataFrame via db_custom_df
-    db_csv_path : str | None
-        Path to CellChatDB CSV (required when db_source='cellchatdb').
-    db_custom_df : pd.DataFrame | None
-        Custom LR DataFrame (required when db_source='custom').
-        Required columns: lr_name, ligand, receptor, pathway, lr_type.
-    lr_types : list[str] | None
-        Which signaling types to include.
-        Options: 'juxtacrine', 'secreted', 'ecm'. None = all.
-    min_pct : float
-        Minimum fraction of cells expressing a gene to include it.
-        Default 0.05 (5%).
-
-    Layer 1 settings
-    ----------------
-    n_permutations : int
-        Permutations for Moran significance test. Default 1000.
-    alpha_moran : float
-        Moran p-value threshold. Default 0.05.
-    alpha_lag : float
-        Spatial lag FDR threshold. Default 0.05.
-    min_rho : float
-        Minimum spatial lag effect size. Default 0.05.
-    n_jobs : int
-        Parallel workers for Moran permutation test. -1 = all cores. Default 1.
-    secreted_radius : float | None
-        Buffer radius for secreted signal graph (coordinate units).
-        None = auto-compute as FOV diagonal (all pairs connected).
-        Default 100.0.
-    ecm_radius : float | None
-        Buffer radius for ECM signal graph. None = FOV diagonal.
-        Default 200.0.
-    cross_fov_secreted : bool
-        If True, build secreted graph on full sp in run_ccc_multifov,
-        allowing signals to cross FOV boundaries. Default False.
-    cross_fov_ecm : bool
-        Same as cross_fov_secreted but for ECM graph. Default False.
-
-    Layer 2 settings
-    ----------------
-    ot_reg : float
-        Sinkhorn entropy regularization. Default 0.1.
-    ot_iter : int
-        Max Sinkhorn iterations. Default 50.
-    hub_percentile : float
-        Hub cell detection threshold (percentile). Default 90.
-    top_k_l2 : int | None
-        Limit Layer 2 to top-K pairs from Layer 1. None = all.
-
-    Layer 3 settings
-    ----------------
-    n_permutations_contrast : int
-        Permutations for contrastive null models. Default 1000.
-    z_thresh : float
-        Z-score threshold for driver classification. Default 1.96.
-    K : int | None
-        Number of NMF programs. None = auto-select via elbow.
-    k_range : range
-        K values to test when K=None. Default range(2, 11).
-    lambda_reg : float
-        Spatial regularization for NMF. Default 0.1.
-
-    General
-    -------
-    coord_type : str
-        'global' or 'local'. Default 'global'.
-    seed : int
-        Random seed for reproducibility. Default 42.
-    verbose : bool
-        Print progress. Default True.
-    """
-
-    # Required
-    cell_type_col: str = "cell_type"
-    layer: str | None = "log_normalized"
 
     # Database
     db_source: str = "builtin"
     db_csv_path: str | None = None
-    db_custom_df: pd.DataFrame | None = field(default=None, repr=False)
     lr_types: list[str] | None = None
     min_pct: float = 0.05
 
-    # Layer 1
+    # Graph
+    secreted_radius: float = 200.0
+    ecm_radius: float = 200.0
+    buffer_distance: float | None = None  # None = contact only (0 = touching)
+
+    # Scoring
+    sigma_secreted: float | None = None
+    sigma_ecm: float | None = None
+    layer: str | None = None
+
+    # Significance
+    test_method: str = "analytical"
+    n_subsample: int = 10000
     n_permutations: int = 1000
-    alpha_moran: float = 0.05
-    alpha_lag: float = 0.05
-    min_rho: float = 0.05
-    n_jobs: int = 1
+    alpha: float = 0.05
 
-    # Spatial graphs for secreted / ECM
-    # radius: float = fixed buffer distance in coordinate units
-    #         None  = whole-FOV diagonal (every cell pair connected)
-    secreted_radius: float | None = 100.0
-    ecm_radius: float | None = 200.0
-    # cross_fov: if True, build secreted/ECM graphs on full sp in
-    # run_ccc_multifov (cells can signal across FOV boundaries)
-    cross_fov_secreted: bool = False
-    cross_fov_ecm: bool = False
-    # Edges with exp(-d/σ) < min_weight are dropped from W_secreted / W_ecm.
-    # 1e-3 removes near-zero distant pairs when radius=None, reducing W
-    # from O(n²) to a sparse matrix comparable in density to a KNN graph.
-    min_weight: float = 1e-3
-    n_jobs: int = 1
+    # Cell types
+    group_col: str = "cell_type"
+    sender_types: list[str] | None = None
+    receiver_types: list[str] | None = None
 
-    # Layer 2
-    ot_reg: float = 0.1
-    ot_iter: int = 50
-    hub_percentile: float = 90.0
-    top_k_l2: int | None = None
+    # Interface (optional)
+    interface_result: object | None = None  # InterfaceResult | None
+    n_distance_bins: int = 20
 
-    # Layer 3
-    n_permutations_contrast: int = 1000
-    z_thresh: float = 1.96
-    K: int | None = None
-    k_range: range = field(default_factory=lambda: range(2, 11))
-    lambda_reg: float = 0.1
+    # Morphology (optional)
+    morphology_col: str | None = None
 
     # General
     coord_type: str = "global"
     seed: int = 42
     verbose: bool = True
 
-    def __post_init__(self):
-        if self.db_source == "cellchatdb" and self.db_csv_path is None:
-            raise ValueError("db_csv_path is required when db_source='cellchatdb'.")
-        if self.db_source == "custom" and self.db_custom_df is None:
-            raise ValueError("db_custom_df is required when db_source='custom'.")
-        valid_sources = {"builtin", "cellchatdb", "custom"}
-        if self.db_source not in valid_sources:
-            raise ValueError(f"db_source must be one of {valid_sources}, got {self.db_source!r}.")
+
+# ── Result dataclass ──────────────────────────────────────────────────────────
 
 
-# ── Prerequisites helper ──────────────────────────────────────────────────────
+@dataclass
+class CCCResult:
+    """Results from CCC analysis.
 
+    Attributes:
+        scores: Summary DataFrame with columns lr_name, sender_type,
+            receiver_type, mean_score, sum_score, n_edges, pvalue, fdr.
+        cell_scores: Per-cell sender/receiver scores indexed by cell_id.
+        lr_pairs: List of :class:`~spatioloji_s.ccc.database.LRPair`
+            objects used in the analysis.
+        zone_comparison: Zone-stratified scores (set when
+            ``config.interface_result`` is provided).
+        zone_gradient: Communication gradient across the interface axis
+            (set when ``config.interface_result`` is provided).
+        morphology_comparison: Morphology-stratified scores (set when
+            ``config.morphology_col`` is provided).
+        config: The :class:`CCCConfig` used to produce this result.
+        n_cells: Number of cells in the analysis.
+        n_edges: Number of scored edges.
+        runtime_seconds: Wall-clock runtime of :func:`run_ccc`.
 
-def _resolve_radius(
-    sp: spatioloji,
-    radius: float | None,
-    coord_type: str = "global",
-) -> float:
+    Example:
+        >>> result = run_ccc(sp, config)
+        >>> result.scores[result.scores["fdr"] < 0.05]
     """
-    Resolve buffer radius.
 
-    Parameters
-    ----------
-    radius : float | None
-        Fixed distance in coordinate units, or None to auto-compute
-        the FOV diagonal (connects all cells in the FOV).
+    scores: pd.DataFrame
+    cell_scores: pd.DataFrame
+    lr_pairs: list
 
-    Returns
-    -------
-    float : resolved radius
-    """
-    if radius is not None:
-        return float(radius)
-    # Auto: diagonal of the FOV bounding box
-    coords = sp.get_spatial_coords(coord_type=coord_type)
-    dx = float(coords[:, 0].max() - coords[:, 0].min())
-    dy = float(coords[:, 1].max() - coords[:, 1].min())
-    r = np.sqrt(dx**2 + dy**2)
-    print(f"  radius=None → FOV diagonal = {r:.1f} (whole-FOV coverage)")
-    return r
+    zone_comparison: pd.DataFrame | None = None
+    zone_gradient: pd.DataFrame | None = None
+    morphology_comparison: pd.DataFrame | None = None
+
+    config: CCCConfig | None = None
+    n_cells: int = 0
+    n_edges: int = 0
+    runtime_seconds: float = 0.0
 
 
-def _run_prerequisites(
-    sp: spatioloji,
-    config: CCCConfig,
-    verbose: bool,
-) -> tuple:
-    """
-    Build polygon contact graph, buffer graphs, and all required cell_meta columns.
-
-    Builds three spatial graphs:
-      contact graph  — juxtacrine (polygon-touching pairs)
-      secreted_graph — buffer graph at secreted_radius (or FOV diagonal if None)
-      ecm_graph      — buffer graph at ecm_radius (or FOV diagonal if None)
-
-    Required cell_meta columns computed here:
-      free_boundary_fraction, total_contact_fraction,
-      morph_solidity, morph_circularity
-
-    Returns
-    -------
-    graph              : PolygonSpatialGraph  (contact)
-    contact_frac_df    : pd.DataFrame
-    free_boundary_ser  : pd.Series
-    secreted_graph     : PolygonSpatialGraph
-    ecm_graph          : PolygonSpatialGraph
-    """
-    from spatioloji_s.spatial.polygon.boundaries import (
-        contact_fraction,
-        free_boundary_fraction,
-    )
-    from spatioloji_s.spatial.polygon.graph import (
-        build_buffer_graph,
-        build_contact_graph,
-    )
-    from spatioloji_s.spatial.polygon.morphology import compute_morphology
-
-    coord_type = config.coord_type
-
-    if verbose:
-        print("\n[Prerequisites] Building contact graph (juxtacrine)...")
-    graph = build_contact_graph(sp, coord_type=coord_type)
-
-    if verbose:
-        print("[Prerequisites] Computing contact fractions...")
-    cf_df = contact_fraction(sp, graph, coord_type=coord_type, store=True)
-
-    if verbose:
-        print("[Prerequisites] Computing free boundary fractions...")
-    fb_ser = free_boundary_fraction(sp, graph, coord_type=coord_type, store=True)
-
-    if verbose:
-        print("[Prerequisites] Computing morphology metrics...")
-    compute_morphology(sp, store=True)
-
-    # ── Secreted buffer graph ─────────────────────────────────────────────────
-    r_s = _resolve_radius(sp, config.secreted_radius, coord_type)
-    if verbose:
-        print(f"[Prerequisites] Building secreted buffer graph (radius={r_s:.1f})...")
-    secreted_graph = build_buffer_graph(sp, buffer_distance=r_s, coord_type=coord_type)
-
-    # ── ECM buffer graph ──────────────────────────────────────────────────────
-    r_e = _resolve_radius(sp, config.ecm_radius, coord_type)
-    if verbose:
-        print(f"[Prerequisites] Building ECM buffer graph (radius={r_e:.1f})...")
-    ecm_graph = build_buffer_graph(sp, buffer_distance=r_e, coord_type=coord_type)
-
-    return graph, cf_df, fb_ser, secreted_graph, ecm_graph
-
-
-def _check_prerequisites(sp: spatioloji) -> list[str]:
-    """Return list of missing prerequisite columns in sp.cell_meta."""
-    required = [
-        "free_boundary_fraction",
-        "total_contact_fraction",
-        "morph_solidity",
-        "morph_circularity",
-    ]
-    return [c for c in required if c not in sp.cell_meta.columns]
-
-
-# ── Database loader ───────────────────────────────────────────────────────────
-
-
-def _load_database(
-    config: CCCConfig,
-    sp: spatioloji,
-    verbose: bool,
-) -> list[LRPair]:
-    """Load LR database and filter to expressed genes."""
-    if verbose:
-        print(f"\n[Database] Loading LR pairs (source={config.db_source!r})...")
-
-    if config.db_source == "builtin":
-        lr_all = load_lr_database(
-            source="builtin",
-            lr_types=config.lr_types,
-        )
-    elif config.db_source == "cellchatdb":
-        lr_all = load_from_cellchatdb_csv(
-            csv_path=config.db_csv_path,
-            lr_types=config.lr_types,
-        )
-    else:  # custom
-        lr_all = load_lr_database(
-            source="custom",
-            lr_types=config.lr_types,
-            custom_df=config.db_custom_df,
-        )
-
-    if verbose:
-        print(f"[Database] Filtering to expressed genes (min_pct={config.min_pct:.0%})...")
-
-    lr_expressed = filter_to_expressed(
-        lr_all,
-        sp,
-        min_pct=config.min_pct,
-        layer=config.layer,
-    )
-
-    if not lr_expressed:
-        raise ValueError(
-            f"No LR pairs passed the expression filter "
-            f"(min_pct={config.min_pct:.0%}). "
-            f"Consider lowering min_pct or checking your gene panel."
-        )
-
-    return lr_expressed
-
-
-# ── Main entry point ──────────────────────────────────────────────────────────
+# ── Public entry point ────────────────────────────────────────────────────────
 
 
 def run_ccc(
     sp: spatioloji,
-    config: CCCConfig,
-    precomputed: dict | None = None,
-) -> dict:
+    config: CCCConfig | None = None,
+    lr_pairs: list[LRPair] | None = None,
+) -> CCCResult:
+    """Run the full CCC pipeline on a spatioloji object.
+
+    Steps:
+        1. Load LR database and filter to expressed pairs (skipped when
+           ``lr_pairs`` is provided directly).
+        2. Build spatial graphs (buffer for juxtacrine; radius for
+           secreted / ECM).
+        3. Score edges with :func:`~spatioloji_s.ccc.scoring.score_edges`.
+        4. Filter edges by ``sender_types`` / ``receiver_types`` (optional).
+        5. Aggregate with :func:`~spatioloji_s.ccc.scoring.aggregate_scores`.
+        6. Test significance with
+           :func:`~spatioloji_s.ccc.scoring.test_significance`.
+        7. Zone analysis with
+           :func:`~spatioloji_s.ccc.zones.compare_zones` and
+           :func:`~spatioloji_s.ccc.zones.communication_gradient`
+           (when ``config.interface_result`` is not None).
+        8. Morphology analysis with
+           :func:`~spatioloji_s.ccc.zones.compare_morphology`
+           (when ``config.morphology_col`` is not None).
+
+    Args:
+        sp: spatioloji object.
+        config: Pipeline configuration. If None, defaults are used.
+        lr_pairs: If provided, skip database loading entirely and use
+            these pairs directly. Useful in tests or when you already
+            have pre-filtered pairs.
+
+    Returns:
+        :class:`CCCResult` with all analysis results.
+
+    Raises:
+        ValueError: If ``db_source`` is unknown or required parameters
+            are missing.
+
+    Example:
+        >>> config = CCCConfig(group_col="cell_type")
+        >>> result = run_ccc(sp_fov, config)
+        >>> sig = result.scores[result.scores["fdr"] < 0.05]
     """
-    Run the full spatioloji CCC pipeline on a single FOV.
+    start = time.time()
 
-    sp should already be subset to one FOV before calling run_ccc.
-    Multi-FOV analysis: call run_ccc once per FOV and collect results.
+    if config is None:
+        config = CCCConfig()
 
-    Parameters
-    ----------
-    sp : spatioloji
-        spatioloji object (already subset to one FOV).
-    config : CCCConfig
-        Pipeline configuration. See CCCConfig docstring.
-    precomputed : dict | None
-        Optional pre-computed prerequisites to skip rebuilding.
-        Accepted keys:
-          'graph'           : PolygonSpatialGraph
-          'contact_frac_df' : pd.DataFrame
-          'free_boundary_ser': pd.Series
-        Missing keys will be recomputed automatically.
-        If None, all prerequisites are computed fresh.
+    def _log(msg: str) -> None:
+        if config.verbose:
+            print(f"[run_ccc] {msg}")
 
-    Returns
-    -------
-    dict with keys:
-        'config'          : CCCConfig        — parameters used
-        'sp_summary'      : dict             — FOV metadata
-        'lr_pairs'        : list[LRPair]     — expressed LR pairs
-        'lr_pairs_df'     : pd.DataFrame     — tabular summary of LR pairs
-        'layer1_results'  : dict             — Layer 1 outputs
-        'layer2_results'  : dict             — Layer 2 outputs
-        'layer3_results'  : dict             — Layer 3 outputs
-        'significant_pairs': pd.DataFrame   — shortcut to Layer 1 sig pairs
-        'scores'          : pd.DataFrame    — shortcut to Layer 2 scores
-        'contrastive'     : pd.DataFrame    — shortcut to Layer 3 contrastive
-        'programs'        : pd.DataFrame    — shortcut to Layer 3 programs
-        'timing'          : dict            — wall time per step (seconds)
-
-    Examples
-    --------
-    >>> config = CCCConfig(
-    ...     cell_type_col = 'cell_type',
-    ...     layer         = 'log_normalized',
-    ...     db_source     = 'cellchatdb',
-    ...     db_csv_path   = 'CellChatDB.csv',
-    ...     K             = 5,
-    ... )
-    >>> ccc_results = run_ccc(sp_fov, config)
-    >>> print(ccc_results['programs'])
-    """
-    t_total = time.time()
-    timing: dict[str, float] = {}
-    verbose = config.verbose
-
-    if verbose:
-        print("\n" + "═" * 60)
-        print("spatioloji CCC Pipeline")
-        print("═" * 60)
-        print(f"  Cells      : {sp.n_cells}")
-        print(f"  Genes      : {sp.n_genes}")
-        print(f"  Cell types : {sp.cell_meta[config.cell_type_col].nunique()}")
-        print(f"  Layer      : {config.layer!r}")
-        print(f"  db_source  : {config.db_source!r}")
-
-    # ── Prerequisites ─────────────────────────────────────────────────────────
-    t0 = time.time()
-
-    precomputed = precomputed or {}
-    graph = precomputed.get("graph")
-    contact_frac_df = precomputed.get("contact_frac_df")
-    free_boundary_ser = precomputed.get("free_boundary_ser")
-    secreted_graph = precomputed.get("secreted_graph")
-    ecm_graph = precomputed.get("ecm_graph")
-
-    # Check which cell_meta columns are already present
-    missing_meta = _check_prerequisites(sp)
-
-    needs_compute = (
-        graph is None
-        or contact_frac_df is None
-        or free_boundary_ser is None
-        or secreted_graph is None
-        or ecm_graph is None
-        or bool(missing_meta)
-    )
-
-    if needs_compute:
-        if verbose and missing_meta:
-            print(f"\n  Missing prerequisite columns: {missing_meta}")
-            print("  Running prerequisites automatically...")
-        (graph, contact_frac_df, free_boundary_ser, secreted_graph, ecm_graph) = _run_prerequisites(sp, config, verbose)
+    # ── Step 1: Load / filter LR pairs ───────────────────────────────────
+    if lr_pairs is not None:
+        _log(f"Using {len(lr_pairs)} user-supplied LR pairs (database loading skipped)")
+        pairs = list(lr_pairs)
     else:
-        if verbose:
-            print("\n[Prerequisites] Using pre-computed graphs and fractions.")
+        _log(f"Loading LR database (source={config.db_source!r})")
+        if config.db_source == "cellchatdb" and config.db_csv_path is not None:
+            pairs = load_from_cellchatdb_csv(config.db_csv_path, lr_types=config.lr_types)
+        else:
+            pairs = load_lr_database(config.db_source, lr_types=config.lr_types)
 
-    timing["prerequisites"] = time.time() - t0
+        _log(f"Filtering to expressed pairs (min_pct={config.min_pct})")
+        pairs = filter_to_expressed(pairs, sp, min_pct=config.min_pct, layer=config.layer)
 
-    # ── Database ──────────────────────────────────────────────────────────────
-    t0 = time.time()
-    lr_expressed = _load_database(config, sp, verbose)
-    timing["database"] = time.time() - t0
-
-    if verbose:
-        print(f"\n  {len(lr_expressed)} LR pairs after expression filter")
-
-    # ── Layer 1 ───────────────────────────────────────────────────────────────
-    t0 = time.time()
-    layer1_results = run_layer1(
-        sp=sp,
-        lr_pairs=lr_expressed,
-        contact_graph=graph,
-        contact_frac_df=contact_frac_df,
-        free_boundary_ser=free_boundary_ser,
-        secreted_graph=secreted_graph,
-        ecm_graph=ecm_graph,
-        cell_type_col=config.cell_type_col,
-        layer=config.layer,
-        n_permutations=config.n_permutations,
-        alpha_moran=config.alpha_moran,
-        alpha_lag=config.alpha_lag,
-        min_rho=config.min_rho,
-        seed=config.seed,
-        n_jobs=config.n_jobs,
-        min_weight=config.min_weight,
-    )
-    timing["layer1"] = time.time() - t0
-
-    n_sig = len(layer1_results["significant_pairs"])
-    if verbose:
-        print(f"\n  Layer 1: {n_sig} significant (lr, type_pair) combinations")
-
-    if n_sig == 0:
-        if verbose:
-            print("\n  ⚠ No significant pairs found after Layer 1.")
-            print("  Consider loosening alpha_moran, alpha_lag, or min_rho.")
-        return _build_results(
-            config,
-            sp,
-            lr_expressed,
-            layer1_results,
-            {},
-            {},
-            timing,
-            t_total,
+    if not pairs:
+        _log("No expressed LR pairs found — returning empty result")
+        empty_scores = pd.DataFrame(
+            columns=["lr_name", "sender_type", "receiver_type", "mean_score", "sum_score", "n_edges"]
+        )
+        return CCCResult(
+            scores=empty_scores,
+            cell_scores=pd.DataFrame(index=sp.cell_index),
+            lr_pairs=pairs,
+            config=config,
+            n_cells=len(sp.cell_index),
+            n_edges=0,
+            runtime_seconds=time.time() - start,
         )
 
-    # ── Layer 2 ───────────────────────────────────────────────────────────────
-    t0 = time.time()
-    layer2_results = run_layer2(
-        sp=sp,
-        layer1_results=layer1_results,
-        contact_frac_df=contact_frac_df,
-        coord_type=config.coord_type,
-        ot_reg=config.ot_reg,
-        ot_iter=config.ot_iter,
-        hub_percentile=config.hub_percentile,
-        top_k=config.top_k_l2,
-    )
-    timing["layer2"] = time.time() - t0
+    _log(f"{len(pairs)} LR pairs will be scored")
 
-    if verbose:
-        n_scored = len(layer2_results.get("scores", pd.DataFrame()))
-        print(f"\n  Layer 2: {n_scored} combinations scored")
+    # ── Step 2: Separate by signaling type ───────────────────────────────
+    juxtacrine_pairs = [p for p in pairs if p.lr_type == "juxtacrine"]
+    secreted_pairs = [p for p in pairs if p.lr_type == "secreted"]
+    ecm_pairs = [p for p in pairs if p.lr_type == "ecm"]
 
-    if not layer2_results.get("edge_data"):
-        if verbose:
-            print("\n  ⚠ No edge data produced by Layer 2.")
-        return _build_results(
-            config,
-            sp,
-            lr_expressed,
-            layer1_results,
-            layer2_results,
-            {},
-            timing,
-            t_total,
-        )
+    graph_jux = None
+    graph_secreted = None
+    graph_ecm = None
 
-    # ── Layer 3 ───────────────────────────────────────────────────────────────
-    t0 = time.time()
-    layer3_results = run_layer3(
-        sp=sp,
-        layer1_results=layer1_results,
-        layer2_results=layer2_results,
-        contact_graph=graph,
-        n_permutations=config.n_permutations_contrast,
-        z_thresh=config.z_thresh,
-        K=config.K,
-        k_range=config.k_range,
-        lambda_reg=config.lambda_reg,
-        seed=config.seed,
-    )
-    timing["layer3"] = time.time() - t0
-
-    # ── Package and return ────────────────────────────────────────────────────
-    results = _build_results(
-        config,
-        sp,
-        lr_expressed,
-        layer1_results,
-        layer2_results,
-        layer3_results,
-        timing,
-        t_total,
-    )
-
-    if verbose:
-        _print_final_summary(results)
-
-    return results
-
-
-# ── Multi-FOV pipeline ────────────────────────────────────────────────────────
-
-
-def run_ccc_multifov(
-    sp: spatioloji,
-    config: CCCConfig,
-    fov_col: str = "fov",
-    fov_ids: list | None = None,
-    cross_fov_mode: bool = False,
-) -> dict[str, dict]:
-    """
-    Run CCC pipeline on each FOV, with optional cross-FOV graph support.
-
-    Per-FOV mode (default, cross_fov_mode=False)
-    --------------------------------------------
-    Subsets sp to each FOV and runs run_ccc independently.
-    Juxtacrine, secreted, and ECM graphs are all built per FOV.
-    Use this when FOVs are non-adjacent (separate biopsies, distant regions).
-
-    Cross-FOV mode (cross_fov_mode=True)
-    -------------------------------------
-    Builds secreted and/or ECM graphs ONCE on the full sp (all FOVs),
-    so cells near FOV boundaries can signal to cells in neighboring FOVs.
-    Then runs a single run_ccc on the full sp — no per-FOV subsetting.
-    Use this when FOVs are stitched and physically contiguous on the tissue.
-
-    Controlled by config flags:
-      config.cross_fov_secreted : include cross-FOV edges in secreted W
-      config.cross_fov_ecm      : include cross-FOV edges in ECM W
-
-    Juxtacrine always remains per-FOV (cells in different FOVs never touch).
-
-    Parameters
-    ----------
-    sp : spatioloji
-        Full spatioloji object (all FOVs).
-    config : CCCConfig
-        Shared configuration applied to every FOV.
-    fov_col : str
-        Column in sp.cell_meta with FOV labels.
-    fov_ids : list | None
-        Subset of FOV IDs to process. None = all FOVs.
-    cross_fov_mode : bool
-        If True, run as single tissue analysis (see above). Default False.
-
-    Returns
-    -------
-    dict[str, dict]
-        Keys = FOV IDs, values = ccc_results dicts.
-        In cross_fov_mode, returns {'all_fovs': ccc_results}.
-    """
-    if fov_col not in sp.cell_meta.columns:
-        raise ValueError(f"fov_col={fov_col!r} not found in sp.cell_meta. Available: {list(sp.cell_meta.columns)}")
-
-    # ── Cross-FOV mode: single analysis on full sp ────────────────────────────
-    if cross_fov_mode:
-        print(f"\n[Multi-FOV CCC] Cross-FOV mode: running on full tissue ({sp.n_cells} cells)...")
-
+    # ── Step 3: Build graphs ──────────────────────────────────────────────
+    if juxtacrine_pairs:
+        from spatioloji_s.spatial.polygon.boundaries import contact_fraction
         from spatioloji_s.spatial.polygon.graph import build_buffer_graph
 
-        precomputed: dict = {}
+        buf_dist = config.buffer_distance if config.buffer_distance is not None else 0
+        _log(f"Building juxtacrine contact graph (buffer_distance={buf_dist})")
+        graph_jux = build_buffer_graph(sp, buffer_distance=buf_dist, coord_type=config.coord_type)
+        graph_jux.contact_frac_df = contact_fraction(sp, graph_jux, coord_type=config.coord_type)
 
-        # Build cross-FOV secreted graph if requested
-        if config.cross_fov_secreted:
-            r_s = _resolve_radius(sp, config.secreted_radius, config.coord_type)
-            print(f"  Building cross-FOV secreted graph (radius={r_s:.1f})...")
-            precomputed["secreted_graph"] = build_buffer_graph(sp, buffer_distance=r_s, coord_type=config.coord_type)
+    if secreted_pairs:
+        from spatioloji_s.spatial.point.graph import build_radius_graph
 
-        # Build cross-FOV ECM graph if requested
-        if config.cross_fov_ecm:
-            r_e = _resolve_radius(sp, config.ecm_radius, config.coord_type)
-            print(f"  Building cross-FOV ECM graph (radius={r_e:.1f})...")
-            precomputed["ecm_graph"] = build_buffer_graph(sp, buffer_distance=r_e, coord_type=config.coord_type)
+        _log(f"Building secreted radius graph (radius={config.secreted_radius})")
+        graph_secreted = build_radius_graph(sp, radius=config.secreted_radius, coord_type=config.coord_type)
 
-        ccc_results = run_ccc(sp, config, precomputed=precomputed or None)
-        return {"all_fovs": ccc_results}
+    if ecm_pairs:
+        from spatioloji_s.spatial.point.graph import build_radius_graph
 
-    # ── Per-FOV mode (default) ────────────────────────────────────────────────
-    all_fovs = sorted(sp.cell_meta[fov_col].unique())
-    if fov_ids is not None:
-        all_fovs = [f for f in all_fovs if f in set(fov_ids)]
+        # Reuse secreted graph when radii are the same to avoid redundant work
+        if graph_secreted is not None and config.ecm_radius == config.secreted_radius:
+            _log("Reusing secreted graph for ECM pairs (same radius)")
+            graph_ecm = graph_secreted
+        else:
+            _log(f"Building ECM radius graph (radius={config.ecm_radius})")
+            graph_ecm = build_radius_graph(sp, radius=config.ecm_radius, coord_type=config.coord_type)
 
-    print(
-        f"\n[Multi-FOV CCC] Processing {len(all_fovs)} FOVs "
-        f"(secreted_radius={config.secreted_radius}, "
-        f"ecm_radius={config.ecm_radius})..."
+    # Pick the diffusible graph (secreted takes priority; fall back to ECM-only)
+    graph_diffusible = graph_secreted if graph_secreted is not None else graph_ecm
+
+    # ── Step 4: Score edges ───────────────────────────────────────────────
+    _log("Scoring edges")
+    edge_df = score_edges(
+        sp,
+        pairs,
+        graph_juxtacrine=graph_jux,
+        graph_diffusible=graph_diffusible,
+        group_col=config.group_col,
+        layer=config.layer,
+        sigma_secreted=config.sigma_secreted,
+        sigma_ecm=config.sigma_ecm,
     )
 
-    results: dict[str, dict] = {}
+    # ── Step 5: Filter by sender/receiver types ───────────────────────────
+    if not edge_df.empty:
+        if config.sender_types is not None:
+            edge_df = edge_df[edge_df["sender_type"].isin(config.sender_types)]
+            _log(f"Filtered to sender types: {config.sender_types} → {len(edge_df)} edges")
+        if config.receiver_types is not None:
+            edge_df = edge_df[edge_df["receiver_type"].isin(config.receiver_types)]
+            _log(f"Filtered to receiver types: {config.receiver_types} → {len(edge_df)} edges")
 
-    for fov_id in all_fovs:
-        print(f"\n{'─' * 60}")
-        print(f"FOV: {fov_id}")
-        print(f"{'─' * 60}")
+    n_edges = len(edge_df)
+    _log(f"{n_edges} edges after filtering")
 
-        fov_cell_ids = sp.cell_meta.index[sp.cell_meta[fov_col].astype(str) == str(fov_id)].tolist()
+    # ── Step 6: Aggregate ─────────────────────────────────────────────────
+    _log("Aggregating scores")
+    summary_df, cell_scores_df = aggregate_scores(edge_df, sp, group_col=config.group_col)
 
-        if len(fov_cell_ids) < 20:
-            print(f"  ⚠ Skipping FOV {fov_id}: only {len(fov_cell_ids)} cells")
-            continue
-
-        try:
-            sp_fov = sp.subset_by_cells(fov_cell_ids)
-            fov_results = run_ccc(sp_fov, config)
-            results[str(fov_id)] = fov_results
-
-        except Exception as e:
-            print(f"  ✗ FOV {fov_id} failed: {e}")
-            results[str(fov_id)] = {"error": str(e), "fov_id": fov_id}
-
-    n_success = sum(1 for v in results.values() if "error" not in v)
-    print(f"\n[Multi-FOV CCC] Completed: {n_success}/{len(all_fovs)} FOVs successful")
-
-    return results
-
-
-# ── Save / load ───────────────────────────────────────────────────────────────
-
-
-def save_ccc_results(
-    ccc_results: dict,
-    path: str,
-) -> None:
-    """
-    Save ccc_results dict to disk as a pickle file.
-
-    Parameters
-    ----------
-    ccc_results : dict
-        Output of run_ccc() or run_ccc_multifov().
-    path : str
-        Output file path. Recommend .pkl extension.
-
-    Examples
-    --------
-    >>> save_ccc_results(ccc_results, 'fov01_ccc.pkl')
-    """
-    with open(path, "wb") as f:
-        pickle.dump(ccc_results, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"[CCC] Saved results to {path!r}")
-
-
-def load_ccc_results(path: str) -> dict:
-    """
-    Load ccc_results dict from a pickle file.
-
-    Parameters
-    ----------
-    path : str
-        Path to pickle file saved by save_ccc_results().
-
-    Returns
-    -------
-    dict
-        ccc_results dict as returned by run_ccc().
-
-    Examples
-    --------
-    >>> ccc_results = load_ccc_results('fov01_ccc.pkl')
-    """
-    with open(path, "rb") as f:
-        results = pickle.load(f)
-    print(f"[CCC] Loaded results from {path!r}")
-    return results
-
-
-# ── Comparison helpers ────────────────────────────────────────────────────────
-
-
-def compare_fov_results(
-    multifov_results: dict[str, dict],
-    metric: str = "combined_strength",
-    top_n: int = 20,
-) -> pd.DataFrame:
-    """
-    Compare CCC results across FOVs.
-
-    Builds a tidy DataFrame with one row per (lr_name, sender, receiver, fov).
-    Useful for identifying LR pairs that are consistently significant
-    or FOV-specific.
-
-    Parameters
-    ----------
-    multifov_results : dict[str, dict]
-        Output of run_ccc_multifov().
-    metric : str
-        Column from Layer 2 scores to compare. Default 'combined_strength'.
-    top_n : int
-        Top-N pairs per FOV to include. Default 20.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: fov_id, lr_name, sender_type, receiver_type, <metric>
-    """
-    rows: list[dict] = []
-
-    for fov_id, res in multifov_results.items():
-        if "error" in res:
-            continue
-        scores = res.get("scores", pd.DataFrame())
-        if scores.empty:
-            continue
-        if metric not in scores.columns:
-            continue
-
-        top = scores.nlargest(top_n, metric)
-        for _, row in top.iterrows():
-            rows.append(
-                {
-                    "fov_id": fov_id,
-                    "lr_name": row["lr_name"],
-                    "sender_type": row["sender_type"],
-                    "receiver_type": row["receiver_type"],
-                    metric: row[metric],
-                }
-            )
-
-    if not rows:
-        return pd.DataFrame()
-
-    return pd.DataFrame(rows).sort_values(["lr_name", "fov_id"]).reset_index(drop=True)
-
-
-def summarize_ccc(ccc_results: dict, top_n: int = 10) -> None:
-    """
-    Print a compact human-readable summary of ccc_results.
-
-    Parameters
-    ----------
-    ccc_results : dict   Output of run_ccc().
-    top_n : int          Top pairs to display per section.
-    """
-    print("\n" + "═" * 60)
-    print("CCC Pipeline Summary")
-    print("═" * 60)
-
-    # FOV info
-    sp_sum = ccc_results.get("sp_summary", {})
-    print(f"\n  FOV: {sp_sum.get('fov_id', 'unknown')}")
-    print(
-        f"  Cells: {sp_sum.get('n_cells', '?')}  |  "
-        f"Genes: {sp_sum.get('n_genes', '?')}  |  "
-        f"Cell types: {sp_sum.get('n_cell_types', '?')}"
+    # ── Step 7: Significance testing ──────────────────────────────────────
+    _log(f"Testing significance (method={config.test_method!r})")
+    summary_df = test_significance(
+        summary_df,
+        edge_df,
+        sp,
+        group_col=config.group_col,
+        method=config.test_method,
+        n_subsample=config.n_subsample,
+        n_permutations=config.n_permutations,
+        seed=config.seed,
+        alpha=config.alpha,
     )
 
-    # LR pairs
-    lr_df = ccc_results.get("lr_pairs_df", pd.DataFrame())
-    if not lr_df.empty:
-        print(f"\n  Expressed LR pairs: {len(lr_df)}")
-        for t, grp in lr_df.groupby("lr_type"):
-            print(f"    {t:12s}: {len(grp)}")
+    # ── Step 8: Interface zone analysis (optional) ────────────────────────
+    zone_comparison = None
+    zone_gradient = None
+    if config.interface_result is not None:
+        _log("Running interface zone comparison")
+        zone_comparison = compare_zones(
+            edge_df,
+            sp,
+            config.interface_result,
+            group_col=config.group_col,
+            coord_type=config.coord_type,
+        )
+        _log("Computing communication gradient")
+        zone_gradient = communication_gradient(
+            edge_df,
+            sp,
+            config.interface_result,
+            group_col=config.group_col,
+            n_bins=config.n_distance_bins,
+            coord_type=config.coord_type,
+        )
 
-    # Layer 1
-    sig = ccc_results.get("significant_pairs", pd.DataFrame())
-    if not sig.empty:
-        print(f"\n  Layer 1 significant: {len(sig)} (lr, type_pair) combinations")
-        print(f"  Top {min(top_n, len(sig))} by layer1_score:")
-        cols = [
-            c
-            for c in ["lr_name", "sender_type", "receiver_type", "I_bivar", "rho_LR", "layer1_score"]
-            if c in sig.columns
-        ]
-        print(sig[cols].head(top_n).to_string(index=False))
+    # ── Step 9: Morphology analysis (optional) ────────────────────────────
+    morphology_comparison = None
+    if config.morphology_col is not None:
+        _log(f"Running morphology comparison (col={config.morphology_col!r})")
+        morphology_comparison = compare_morphology(
+            edge_df,
+            sp,
+            morphology_col=config.morphology_col,
+            group_col=config.group_col,
+        )
 
-    # Layer 2
-    scores = ccc_results.get("scores", pd.DataFrame())
-    if not scores.empty:
-        print(f"\n  Layer 2 scored: {len(scores)} combinations")
-        cols = [
-            c
-            for c in ["lr_name", "sender_type", "receiver_type", "ot_strength", "mp_strength", "combined_strength"]
-            if c in scores.columns
-        ]
-        print(f"  Top {min(top_n, len(scores))} by combined_strength:")
-        print(scores[cols].head(top_n).to_string(index=False))
+    elapsed = time.time() - start
+    _log(f"Done in {elapsed:.2f}s")
 
-    # Layer 3
-    programs = ccc_results.get("programs", pd.DataFrame())
-    if not programs.empty:
-        K = ccc_results["layer3_results"].get("K", "?")
-        print(f"\n  Layer 3 NMF programs: K={K}")
-        for _, prow in programs.iterrows():
-            print(
-                f"    Program {prow['program']}: "
-                f"{prow['dominant_sender_type']} → "
-                f"{prow['dominant_recv_type']}  |  "
-                f"top LR: {prow['top_lr_pairs'][:3]}"
-            )
-
-    # Timing
-    timing = ccc_results.get("timing", {})
-    if timing:
-        print("\n  Timing:")
-        for step, t in timing.items():
-            print(f"    {step:20s}: {t:.1f}s")
-        print(f"    {'total':20s}: {timing.get('total', 0):.1f}s")
-
-
-# ── Private helpers ───────────────────────────────────────────────────────────
-
-
-def _build_results(
-    config: CCCConfig,
-    sp: spatioloji,
-    lr_expressed: list[LRPair],
-    layer1_results: dict,
-    layer2_results: dict,
-    layer3_results: dict,
-    timing: dict[str, float],
-    t_total: float,
-) -> dict:
-    """Package all outputs into the ccc_results dict."""
-    timing["total"] = time.time() - t_total
-
-    # FOV summary (best-effort: extract fov_id from cell_meta if available)
-    fov_id = "unknown"
-    fov_col = "fov"
-    if fov_col in sp.cell_meta.columns:
-        unique_fovs = sp.cell_meta[fov_col].unique()
-        fov_id = str(unique_fovs[0]) if len(unique_fovs) == 1 else "multi"
-
-    sp_summary = {
-        "fov_id": fov_id,
-        "n_cells": sp.n_cells,
-        "n_genes": sp.n_genes,
-        "n_cell_types": (
-            sp.cell_meta[config.cell_type_col].nunique() if config.cell_type_col in sp.cell_meta.columns else "?"
-        ),
-    }
-
-    return {
-        # Metadata
-        "config": config,
-        "sp_summary": sp_summary,
-        # Database
-        "lr_pairs": lr_expressed,
-        "lr_pairs_df": lr_pairs_to_dataframe(lr_expressed),
-        # Full layer results
-        "layer1_results": layer1_results,
-        "layer2_results": layer2_results,
-        "layer3_results": layer3_results,
-        # Shortcuts for common access patterns
-        "significant_pairs": layer1_results.get("significant_pairs", pd.DataFrame()),
-        "scores": layer2_results.get("scores", pd.DataFrame()),
-        "contrastive": layer3_results.get("contrastive", pd.DataFrame()),
-        "programs": layer3_results.get("programs", pd.DataFrame()),
-        # Diagnostics
-        "timing": timing,
-    }
-
-
-def _print_final_summary(results: dict) -> None:
-    """Print compact completion summary."""
-    timing = results["timing"]
-    print(f"\n{'═' * 60}")
-    print("CCC Pipeline Complete")
-
-    sig = results.get("significant_pairs", pd.DataFrame())
-    scores = results.get("scores", pd.DataFrame())
-    K = results.get("layer3_results", {}).get("K", 0)
-
-    print(f"  Layer 1: {len(sig)} significant combinations")
-    print(f"  Layer 2: {len(scores)} combinations scored")
-    print(f"  Layer 3: {K} NMF programs")
-    print(
-        f"  Total time: {timing.get('total', 0):.1f}s  "
-        f"(L1: {timing.get('layer1', 0):.1f}s  "
-        f"L2: {timing.get('layer2', 0):.1f}s  "
-        f"L3: {timing.get('layer3', 0):.1f}s)"
+    return CCCResult(
+        scores=summary_df,
+        cell_scores=cell_scores_df,
+        lr_pairs=pairs,
+        zone_comparison=zone_comparison,
+        zone_gradient=zone_gradient,
+        morphology_comparison=morphology_comparison,
+        config=config,
+        n_cells=len(sp.cell_index),
+        n_edges=n_edges,
+        runtime_seconds=elapsed,
     )
-    print("═" * 60)
