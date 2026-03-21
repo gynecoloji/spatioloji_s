@@ -115,6 +115,9 @@ homepage = "https://github.com/gynecoloji/spatioloji_s"
 spatioloji_s = "spatioloji_s.cli:app"
 
 # ── Tool configs (unchanged) ───────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ty]
 
 [tool.ruff]
