@@ -60,8 +60,16 @@ class TestCompareZones:
         """compare_zones returns a DataFrame with the expected columns."""
         result = compare_zones(edges, sp_ccc, iface)
         assert isinstance(result, pd.DataFrame)
-        expected_cols = {"lr_name", "sender_type", "receiver_type", "zone", "mean_score", "sum_score", "n_edges",
-                         "fold_change"}
+        expected_cols = {
+            "lr_name",
+            "sender_type",
+            "receiver_type",
+            "zone",
+            "mean_score",
+            "sum_score",
+            "n_edges",
+            "fold_change",
+        }
         assert expected_cols.issubset(set(result.columns))
 
     def test_zone_values(self, sp_ccc, edges, iface):
@@ -78,8 +86,9 @@ class TestCompareZones:
         assert "fold_change" in result.columns
         if not result.empty:
             # fold_change should be numeric (float, possibly NaN)
-            assert pd.api.types.is_float_dtype(result["fold_change"]) or \
-                pd.api.types.is_numeric_dtype(result["fold_change"])
+            assert pd.api.types.is_float_dtype(result["fold_change"]) or pd.api.types.is_numeric_dtype(
+                result["fold_change"]
+            )
 
     def test_empty_edge_df_returns_empty(self, sp_ccc, iface):
         """compare_zones on an empty edge_df returns an empty DataFrame."""
@@ -147,8 +156,16 @@ class TestCompareMorphology:
         """compare_morphology returns a DataFrame with the expected columns."""
         result = compare_morphology(edges, sp_ccc, morphology_col="morph_class")
         assert isinstance(result, pd.DataFrame)
-        expected_cols = {"lr_name", "sender_type", "receiver_type", "morphology_group", "mean_score", "sum_score",
-                         "n_edges", "fold_change"}
+        expected_cols = {
+            "lr_name",
+            "sender_type",
+            "receiver_type",
+            "morphology_group",
+            "mean_score",
+            "sum_score",
+            "n_edges",
+            "fold_change",
+        }
         assert expected_cols.issubset(set(result.columns))
 
     def test_morphology_groups_match_data(self, sp_ccc, edges):

@@ -83,8 +83,16 @@ def compare_zones(
 
     if edge_df.empty:
         return pd.DataFrame(
-            columns=["lr_name", "sender_type", "receiver_type", "zone", "mean_score", "sum_score", "n_edges",
-                     "fold_change"]
+            columns=[
+                "lr_name",
+                "sender_type",
+                "receiver_type",
+                "zone",
+                "mean_score",
+                "sum_score",
+                "n_edges",
+                "fold_change",
+            ]
         )
 
     # ── Zone classification ───────────────────────────────────────────────
@@ -105,11 +113,7 @@ def compare_zones(
     df["receiver_zone"] = df["receiver"].map(cell_zones).fillna("other")
 
     # ── Overall mean score per (lr_name, sender_type, receiver_type) ─────
-    overall_mean = (
-        df.groupby(["lr_name", "sender_type", "receiver_type"])["score"]
-        .mean()
-        .rename("overall_mean")
-    )
+    overall_mean = df.groupby(["lr_name", "sender_type", "receiver_type"])["score"].mean().rename("overall_mean")
 
     # ── Aggregate per zone ────────────────────────────────────────────────
     zone_records: list[dict] = []
@@ -132,8 +136,16 @@ def compare_zones(
 
     if not zone_records:
         return pd.DataFrame(
-            columns=["lr_name", "sender_type", "receiver_type", "zone", "mean_score", "sum_score", "n_edges",
-                     "fold_change"]
+            columns=[
+                "lr_name",
+                "sender_type",
+                "receiver_type",
+                "zone",
+                "mean_score",
+                "sum_score",
+                "n_edges",
+                "fold_change",
+            ]
         )
 
     result = pd.concat(zone_records, ignore_index=True)
@@ -143,8 +155,9 @@ def compare_zones(
     result["fold_change"] = result["mean_score"] / result["overall_mean"].replace(0, np.nan)
     result = result.drop(columns=["overall_mean"])
 
-    return result[["lr_name", "sender_type", "receiver_type", "zone", "mean_score", "sum_score", "n_edges",
-                   "fold_change"]].reset_index(drop=True)
+    return result[
+        ["lr_name", "sender_type", "receiver_type", "zone", "mean_score", "sum_score", "n_edges", "fold_change"]
+    ].reset_index(drop=True)
 
 
 def communication_gradient(
@@ -223,8 +236,15 @@ def communication_gradient(
         records = []
         for (lr, st, rt), _ in groups:
             records.append(
-                {"lr_name": lr, "sender_type": st, "receiver_type": rt,
-                 "slope": 0.0, "pvalue": 1.0, "r2": 0.0, "trend": "flat"}
+                {
+                    "lr_name": lr,
+                    "sender_type": st,
+                    "receiver_type": rt,
+                    "slope": 0.0,
+                    "pvalue": 1.0,
+                    "r2": 0.0,
+                    "trend": "flat",
+                }
             )
         return pd.DataFrame(records)
 
@@ -245,15 +265,22 @@ def communication_gradient(
 
         if len(x) < 2:
             records.append(
-                {"lr_name": lr, "sender_type": st, "receiver_type": rt,
-                 "slope": 0.0, "pvalue": 1.0, "r2": 0.0, "trend": "flat"}
+                {
+                    "lr_name": lr,
+                    "sender_type": st,
+                    "receiver_type": rt,
+                    "slope": 0.0,
+                    "pvalue": 1.0,
+                    "r2": 0.0,
+                    "trend": "flat",
+                }
             )
             continue
 
         reg = linregress(x, y)
         slope = float(reg.slope)
         pvalue = float(reg.pvalue)
-        r2 = float(reg.rvalue ** 2)
+        r2 = float(reg.rvalue**2)
 
         if slope > 0 and pvalue < 0.05:
             trend = "increasing_toward_a"
@@ -263,8 +290,15 @@ def communication_gradient(
             trend = "flat"
 
         records.append(
-            {"lr_name": lr, "sender_type": st, "receiver_type": rt,
-             "slope": slope, "pvalue": pvalue, "r2": r2, "trend": trend}
+            {
+                "lr_name": lr,
+                "sender_type": st,
+                "receiver_type": rt,
+                "slope": slope,
+                "pvalue": pvalue,
+                "r2": r2,
+                "trend": trend,
+            }
         )
 
     return pd.DataFrame(records)[["lr_name", "sender_type", "receiver_type", "slope", "pvalue", "r2", "trend"]]
@@ -313,8 +347,16 @@ def compare_morphology(
 
     if edge_df.empty:
         return pd.DataFrame(
-            columns=["lr_name", "sender_type", "receiver_type", "morphology_group", "mean_score", "sum_score",
-                     "n_edges", "fold_change"]
+            columns=[
+                "lr_name",
+                "sender_type",
+                "receiver_type",
+                "morphology_group",
+                "mean_score",
+                "sum_score",
+                "n_edges",
+                "fold_change",
+            ]
         )
 
     morph_labels: pd.Series = sp.cell_meta[morphology_col]
@@ -324,11 +366,7 @@ def compare_morphology(
     df["sender_morphology"] = df["sender"].map(morph_labels)
 
     # ── Overall mean score per (lr_name, sender_type, receiver_type) ─────
-    overall_mean = (
-        df.groupby(["lr_name", "sender_type", "receiver_type"])["score"]
-        .mean()
-        .rename("overall_mean")
-    )
+    overall_mean = df.groupby(["lr_name", "sender_type", "receiver_type"])["score"].mean().rename("overall_mean")
 
     # ── Aggregate by morphology group ─────────────────────────────────────
     grouped = df.dropna(subset=["sender_morphology"]).groupby(
@@ -351,8 +389,16 @@ def compare_morphology(
     result = result.drop(columns=["overall_mean"])
 
     return result[
-        ["lr_name", "sender_type", "receiver_type", "morphology_group", "mean_score", "sum_score", "n_edges",
-         "fold_change"]
+        [
+            "lr_name",
+            "sender_type",
+            "receiver_type",
+            "morphology_group",
+            "mean_score",
+            "sum_score",
+            "n_edges",
+            "fold_change",
+        ]
     ].reset_index(drop=True)
 
 
