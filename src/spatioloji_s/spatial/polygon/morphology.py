@@ -35,12 +35,20 @@ def extract_polygon_arrays(gdf):
     """
     Convert GeoDataFrame polygons into flattened coordinate arrays.
 
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        GeoDataFrame with polygon geometry column.
+
     Returns
     -------
     all_x : np.ndarray
+        Flattened x-coordinates of all polygon vertices.
     all_y : np.ndarray
+        Flattened y-coordinates of all polygon vertices.
     offsets : np.ndarray
-        offsets[i] : start index of polygon i
+        ``offsets[i]`` is the start index of polygon *i* in the
+        flattened arrays.
     """
 
     xs = []
@@ -73,6 +81,24 @@ def extract_polygon_arrays(gdf):
 
 @nb.njit(parallel=True, fastmath=True)
 def polygon_area_perimeter(all_x, all_y, offsets):
+    """Compute area and perimeter for each polygon using the shoelace formula.
+
+    Parameters
+    ----------
+    all_x : np.ndarray
+        Flattened x-coordinates of all polygon vertices.
+    all_y : np.ndarray
+        Flattened y-coordinates of all polygon vertices.
+    offsets : np.ndarray
+        Start index of each polygon in the flattened arrays.
+
+    Returns
+    -------
+    areas : np.ndarray
+        Area of each polygon.
+    perims : np.ndarray
+        Perimeter of each polygon.
+    """
     n_cells = len(offsets) - 1
     areas = np.zeros(n_cells)
     perims = np.zeros(n_cells)
@@ -97,6 +123,20 @@ def polygon_area_perimeter(all_x, all_y, offsets):
 
 @nb.njit(parallel=True, fastmath=True)
 def compute_circularity(areas, perims):
+    """Compute circularity (4*pi*area / perimeter^2) for each polygon.
+
+    Parameters
+    ----------
+    areas : np.ndarray
+        Polygon areas.
+    perims : np.ndarray
+        Polygon perimeters.
+
+    Returns
+    -------
+    np.ndarray
+        Circularity values in (0, 1]. 1.0 = perfect circle.
+    """
     n = len(areas)
     circ = np.full(n, np.nan)
     for i in nb.prange(n):
@@ -108,6 +148,20 @@ def compute_circularity(areas, perims):
 
 @nb.njit(fastmath=True)
 def polygon_entropy(x, y):
+    """Compute contour entropy for a single polygon from turning-angle histogram.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        X-coordinates of polygon vertices.
+    y : np.ndarray
+        Y-coordinates of polygon vertices.
+
+    Returns
+    -------
+    float
+        Shannon entropy of the 16-bin turning-angle distribution.
+    """
     n = len(x)
     if n < 3:
         return np.nan
@@ -146,6 +200,22 @@ def polygon_entropy(x, y):
 
 @nb.njit(parallel=True)
 def batch_entropy(all_x, all_y, offsets):
+    """Compute contour entropy for all polygons in parallel.
+
+    Parameters
+    ----------
+    all_x : np.ndarray
+        Flattened x-coordinates.
+    all_y : np.ndarray
+        Flattened y-coordinates.
+    offsets : np.ndarray
+        Start index of each polygon.
+
+    Returns
+    -------
+    np.ndarray
+        Contour entropy per polygon.
+    """
     n_cells = len(offsets) - 1
     out = np.full(n_cells, np.nan)
     for i in nb.prange(n_cells):

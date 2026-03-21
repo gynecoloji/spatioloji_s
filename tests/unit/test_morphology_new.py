@@ -1,12 +1,10 @@
 """Tests for new intrinsic + context morphology features."""
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from spatioloji_s.spatial.polygon.graph import build_contact_graph
 from spatioloji_s.spatial.polygon.morphology import compute_context_morphology, compute_morphology
-
 
 # ---------------------------------------------------------------------------
 # Intrinsic shape metrics
