@@ -33,6 +33,11 @@ from .clustering import (
     spatial_clustering,
     spatially_constrained_clustering,
 )
+from .decoupler import (
+    load_gene_sets,
+    make_gene_set_net,
+    score_gene_sets,
+)
 from .DEG import (
     deg_deseq2,
     deg_mast,
@@ -118,4 +123,8 @@ __all__ = [
     "deg_mast",
     "deg_nb_glm",
     "deg_deseq2",
+    # Decoupler — gene set activity
+    "load_gene_sets",
+    "make_gene_set_net",
+    "score_gene_sets",
 ]

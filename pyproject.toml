@@ -74,6 +74,10 @@ ripley = [
     "pointpats",
 ]
 
+decoupler = [
+    "decoupler",
+]
+
 imputation = [
     "DCA",
     # magic-impute: install separately in conda env
