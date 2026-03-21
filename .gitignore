@@ -213,3 +213,5 @@ __marimo__/
 .claude/
 CLAUDE.md
 .worktrees/
+CC1_markers.csv
+docs/superpowers/
