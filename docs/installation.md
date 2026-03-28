@@ -1,38 +1,58 @@
 # Installation
 
-## Stable release
+## Requirements
 
-To install spatioloji_s, run this command in your terminal:
+- Python >= 3.12
+- Core dependencies are installed automatically: numpy, pandas, scipy, scikit-learn, matplotlib, seaborn, geopandas, shapely, networkx, opencv-python
 
-```sh
-uv add spatioloji_s
+## From PyPI (recommended)
+
+```bash
+pip install spatioloji-s
 ```
 
-Or if you prefer to use `pip`:
+## Optional extras
 
-```sh
-pip install spatioloji_s
+spatioloji_s uses optional dependencies for specialized functionality:
+
+```bash
+# Leiden clustering (leidenalg + igraph)
+pip install "spatioloji-s[clustering]"
+
+# UMAP dimensionality reduction
+pip install "spatioloji-s[reduction]"
+
+# Batch correction (Harmony, ComBat)
+pip install "spatioloji-s[batch]"
+
+# AnnData/scanpy interoperability
+pip install "spatioloji-s[anndata]"
+
+# Everything
+pip install "spatioloji-s[all]"
 ```
 
-## From source
+## MAGIC imputation
 
-The source files for spatioloji_s can be downloaded from the [Github repo](https://github.com/gynecoloji/spatioloji_s).
+MAGIC requires a separate conda environment due to dependency conflicts:
 
-You can either clone the public repository:
-
-```sh
-git clone git://github.com/gynecoloji/spatioloji_s
+```bash
+conda create -n spatioloji_magic python=3.12
+conda activate spatioloji_magic
+pip install magic-impute spatioloji-s
 ```
 
-Or download the [tarball](https://github.com/gynecoloji/spatioloji_s/tarball/master):
+## Development installation
 
-```sh
-curl -OJL https://github.com/gynecoloji/spatioloji_s/tarball/master
-```
-
-Once you have a copy of the source, you can install it with:
-
-```sh
+```bash
+git clone https://github.com/gynecoloji/spatioloji_s.git
 cd spatioloji_s
-uv pip install .
+pip install -e ".[test]"
+```
+
+## Verifying installation
+
+```python
+import spatioloji_s as sj
+print(sj.__version__)
 ```

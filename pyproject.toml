@@ -92,6 +92,14 @@ test = [
     "ipdb",
 ]
 
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme",
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+    "myst-parser",
+]
+
 # Install everything at once: pip install spatioloji-s[all]
 all = [
     "geopandas", "shapely",

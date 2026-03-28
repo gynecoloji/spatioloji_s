@@ -19,9 +19,11 @@
 - **Quality control** — Comprehensive QC metrics for cells, genes, and FOVs with diagnostic plots. Built-in NegProbe-aware gene filtering for CosMx/MERFISH.
 - **Processing pipeline** — Normalization, feature selection, dimensionality reduction (PCA, UMAP, t-SNE), clustering (Leiden, K-Means, hierarchical), batch correction (ComBat, Harmony, scVI), and imputation (MAGIC, ALRA, KNN, DCA, scVI).
 - **Spatial analysis** — Two complementary modes: centroid-based (fast, large datasets) and polygon-based (topologically accurate). Includes neighborhood enrichment, spatial autocorrelation, Ripley's K/L/G, and pattern analysis.
-- **Polygon morphology** — Cell shape metrics including area, circularity, elongation, solidity, convexity, compactness, and Shannon entropy of boundary curvature distribution.
+- **Interface & gradient analysis** — Detect tissue interfaces between cell type regions, compute gene expression gradients across boundaries, and score immune cell infiltration depth and density.
+- **Spatial motif discovery** — Multi-scale tissue architecture analysis: discover recurring local cellular motifs, detect mesoscale assemblies (TLS, tumor buds, immune aggregates), and match against known structure signatures. Scalable to millions of cells.
+- **Polygon morphology** — Cell shape metrics including area, circularity, elongation, solidity, convexity, compactness, and Shannon entropy of boundary curvature distribution. Proximity contact mode for buffer graph interactions.
 - **Cell-cell communication (CCC)** — A 3-layer polygon-native CCC framework: spatial discovery (Bivariate Moran's I), cell-pair scoring (Polygon OT + Message Passing), and pattern detection (Contrastive Scoring + NMF). No other CCC tool uses polygon contact geometry.
-- **Visualization** — Static and interactive spatial plots supporting both scatter (dot) and polygon (cell boundary) rendering, with flexible color customization.
+- **Visualization** — 40+ static and interactive spatial plots supporting scatter (dot), polygon (cell boundary), and analysis-specific rendering (gradient curves, motif maps, infiltration summaries).
 
 ---
 
@@ -94,18 +96,23 @@ spatioloji_s/
 │
 ├── spatial/            # Spatial analysis (two complementary modes)
 │   ├── point/              # Centroid-based (fast, large datasets)
-│   │   ├── graph.py            # KNN / radius neighbor graphs
+│   │   ├── graph.py            # KNN / radius / Delaunay graphs
 │   │   ├── neighborhoods.py    # Cell-type neighborhood enrichment
-│   │   ├── statistics.py       # Moran's I, spatial autocorrelation
+│   │   ├── statistics.py       # Nearest-neighbor distances, proximity
 │   │   ├── ripley.py           # Ripley's K/L/G functions
-│   │   └── patterns.py         # Spatial pattern detection
-│   └── polygon/            # Polygon-based (accurate topology)
-│       ├── graph.py            # Contact graph (polygon intersection)
-│       ├── boundaries.py       # Contact/free-boundary fractions
-│       ├── morphology.py       # Shape metrics + contour entropy
-│       ├── neighborhoods.py    # Contact-aware neighborhoods
-│       ├── statistics.py       # Polygon spatial statistics
-│       └── patterns.py         # Polygon pattern analysis
+│   │   └── patterns.py         # Moran's I, Getis-Ord, co-occurrence
+│   ├── polygon/            # Polygon-based (accurate topology)
+│   │   ├── graph.py            # Contact / buffer / KNN graphs
+│   │   ├── boundaries.py       # Contact/free-boundary fractions + proximity mode
+│   │   ├── morphology.py       # Shape metrics + contour entropy
+│   │   ├── neighborhoods.py    # Contact-aware neighborhoods + niches
+│   │   ├── statistics.py       # Permutation tests, association tests
+│   │   ├── patterns.py         # Density, hotspots, autocorrelation
+│   │   ├── interface.py        # Tissue interface detection
+│   │   ├── gradient.py         # Expression gradients across interfaces
+│   │   ├── infiltration.py     # Immune infiltration scoring
+│   │   └── motifs.py           # Spatial motif discovery + assemblies
+│   └── _*.py               # Shared types (InterfaceResult, GradientResult, etc.)
 │
 ├── ccc/                # Cell-Cell Communication (3-layer framework)
 │   ├── database.py         # LR pair loading (CellChatDB, builtin, custom)
@@ -114,10 +121,12 @@ spatioloji_s/
 │   ├── layer3.py           # Patterns — Contrastive Scoring + NMF
 │   └── run.py              # CCCConfig, run_ccc, run_ccc_multifov
 │
-└── visualization/      # Plotting
+└── visualization/      # Plotting (40+ functions)
     ├── basic_plots.py      # UMAP, PCA, heatmap, violin, dotplot
     ├── plots.py            # Spatial maps (dot and polygon rendering)
-    └── interactive_plots.py
+    ├── point_plots.py      # Point-based analysis plots
+    ├── polygon_plots.py    # Polygon analysis, gradient, motif plots
+    └── interactive_plots.py # Plotly-based interactive visualization
 ```
 
 ---
@@ -141,15 +150,31 @@ sj.processing.dimension_reduction.pca(sp)
 sj.processing.dimension_reduction.umap(sp)
 sj.processing.clustering.leiden(sp)
 
-# --- Spatial ---
-sj.spatial.point.graph.build_knn_graph(sp, k=10)
-sj.spatial.point.neighborhoods.neighborhood_enrichment(sp)
+# --- Spatial analysis ---
+graph = sj.spatial.polygon.build_buffer_graph(sp, buffer_distance=15)  # 15 μm for Xenium
+sj.spatial.polygon.neighborhood_enrichment(sp, graph, 'cell_type')
+sj.spatial.polygon.compute_morphology(sp, store=True)
 
-# --- Polygon morphology ---
-from spatioloji_s.spatial.polygon.morphology import compute_morphology
-morph = compute_morphology(sp, store=True)
-# Adds morph_area, morph_circularity, morph_solidity,
-#      morph_contour_entropy, ... to sp.cell_meta
+# --- Interface & gradient analysis ---
+from spatioloji_s.spatial.polygon import identify_interface, compute_gradient, score_infiltration
+
+iface = identify_interface(sp, graph, group_col='cell_type',
+                           region_a='Tumor', region_b='Stroma')
+gradient = compute_gradient(sp, iface, genes=['MKI67', 'VIM', 'CDH1'])
+infiltration = score_infiltration(sp, iface, immune_col='cell_type',
+                                  immune_types=['CD8_T', 'Macrophage'],
+                                  target_region='Tumor')
+
+# --- Spatial motif discovery ---
+from spatioloji_s.spatial.polygon import run_motif_pipeline
+
+motifs = run_motif_pipeline(
+    sp, graph, group_col='cell_type', n_motifs=8,
+    match_builtin='TME',  # auto-match TLS, tumor buds, immune desert, etc.
+)
+# motifs.motif_catalog     → local neighborhood motifs
+# motifs.assembly_catalog  → mesoscale tissue structures
+# motifs.structure_matches → TLS, tumor bud matches with locations
 
 # --- Cell-Cell Communication ---
 from spatioloji_s.ccc import CCCConfig, run_ccc, summarize_ccc
@@ -159,19 +184,20 @@ config = CCCConfig(
     layer         = 'log_normalized',
     db_source     = 'cellchatdb',
     db_csv_path   = 'CellChatDB.csv',
-    K             = 5,           # NMF programs (None = auto)
+    K             = 5,
 )
 ccc_results = run_ccc(sp_fov, config)
 summarize_ccc(ccc_results)
 
-# Access results
-sig_pairs = ccc_results['significant_pairs']   # Layer 1
-scores     = ccc_results['scores']             # Layer 2
-programs   = ccc_results['programs']           # Layer 3
-
 # --- Visualization ---
-sj.visualization.plots.plot_fov(sp, fov=1, color_by='leiden')
-sj.visualization.plots.plot_polygons(sp, fov=1, color_by='cell_type')
+from spatioloji_s.visualization import (
+    plot_gradient_curve, plot_spatial_distance,
+    plot_motif_map, plot_assembly_map, plot_structure_matches,
+    plot_infiltration_summary,
+)
+plot_motif_map(sp, motifs, show=True)
+plot_gradient_curve(gradient, genes=['MKI67', 'VIM'])
+plot_structure_matches(sp, motifs, 'TLS')
 ```
 
 ---
@@ -241,6 +267,42 @@ Scores every contacting cell pair for each significant LR pair.
 
 ---
 
+## Spatial Motif Discovery
+
+The `spatial.polygon.motifs` module provides hierarchical tissue architecture analysis — identifying recurring cellular patterns at multiple scales.
+
+### Stage 1 — Local Motif Discovery
+
+Each cell is characterized by the cell-type composition of its k-hop neighborhood, then clustered to find recurring local motifs. Motifs capture **microenvironment context**, not cell identity — a tumor cell in an immune-rich neighborhood and a tumor cell in a tumor-only neighborhood are different motifs.
+
+- **Methods**: MiniBatchKMeans (default, scalable) or Leiden (flexible)
+- **Auto-selection**: Calinski-Harabasz score when `n_motifs=None`
+- **Optional features**: neighbor morphology stats, local cell density (polygon graphs only)
+
+### Stage 2 — Mesoscale Assembly Detection
+
+Groups spatially contiguous cells with the same motif into instances, builds a region graph over instances, and clusters to find recurring multi-motif tissue structures (e.g., a B-cell follicle adjacent to a T-cell zone forming a TLS-like assembly).
+
+### Stage 3 — Known Structure Matching
+
+Matches discovered motifs and assemblies against known biological structure signatures using cosine similarity. Includes built-in TME presets:
+
+- **TLS** (tertiary lymphoid structures)
+- **Immune aggregate** (T-cell + macrophage clusters)
+- **Tumor bud** (isolated tumor clusters)
+- **Perivascular niche** (endothelial + pericyte)
+- **Immune desert** (tumor-dominant, immune-excluded)
+
+Users can define custom signatures:
+
+```python
+signatures = {
+    "my_niche": {"B_cell": 0.3, "T_cell": 0.2, "Tumor": 0.0},  # 0.0 = must be absent
+}
+```
+
+---
+
 ## How spatioloji Compares (Spatial Tools)
 
 | Feature | **spatioloji** | Squidpy | Giotto | SpatialData (scverse) |
@@ -254,16 +316,20 @@ Scores every contacting cell pair for each significant LR pair.
 | **Auto sparse/dense matrix** | Yes | No | No | No |
 | **Cell polygon analysis** | Full polygon module | Limited | Limited | Partial |
 | **Contact-based neighborhoods** | Polygon graph | No | No | No |
+| **Proximity contact mode** | Auto buffer-graph support | No | No | No |
 | **Polygon shape metrics** | 8 metrics incl. contour entropy | No | No | No |
+| **Interface detection** | Graph-based + density-based | No | No | No |
+| **Expression gradients** | OLS + gene programs (NMF/PCA) | No | No | No |
+| **Immune infiltration scoring** | Depth + density + fraction | No | No | No |
+| **Spatial motif discovery** | Multi-scale (local + mesoscale) | No | No | No |
+| **Known structure matching** | Built-in TME presets | No | No | No |
 | **3-layer CCC framework** | Yes | No | No | No |
 | **Ripley's K/L/G** | Yes | Yes | Partial | No |
 | **Batch correction** | ComBat + Harmony + scVI | Via scanpy | Limited | Via scanpy |
 | **Imputation** | MAGIC + ALRA + KNN + DCA | No | No | No |
 | **NegProbe-aware QC** | Built-in | No | No | No |
-| **Interactive visualization** | Yes | Yes | Yes | Yes |
+| **Interactive visualization** | Yes (Plotly) | Yes | Yes | Yes |
 | **Polygon visualization** | Yes | Partial | Partial | Partial |
-
-> Fully supported / Partial/indirect support / Not supported
 
 ---
 
@@ -290,7 +356,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 ### Planned
 - [ ] Xenium native file format loader
 - [ ] AI-supported integrated analysis for histology and gene expression
-- [ ] Spatially variable gene detection module
+- [ ] Multi-FOV spatial alignment and cross-sample comparison
 
 ### Done
 - [x] Core `spatioloji` data structure with master cell index
@@ -300,3 +366,9 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
 - [x] Polygon morphology (8 shape metrics including contour entropy)
 - [x] 3-layer CCC framework (Moran + Polygon OT + Contrastive NMF)
 - [x] Multi-FOV CCC with cross-FOV secreted/ECM graph support
+- [x] Tissue interface detection (graph-based + density-based)
+- [x] Expression gradient analysis across interfaces (OLS + NMF/PCA programs)
+- [x] Immune infiltration scoring (depth, density gradient, fraction)
+- [x] Hierarchical spatial motif discovery with known-structure matching
+- [x] Proximity contact mode for buffer-graph interactions
+- [x] 40+ visualization functions (static + interactive)
