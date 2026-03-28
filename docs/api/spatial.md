@@ -5,6 +5,8 @@ Two complementary analysis modes that share a common interface:
 - **Point-based** (`spatial.point`) — Uses cell centroids. Fast, suitable for large datasets.
 - **Polygon-based** (`spatial.polygon`) — Uses actual cell boundary polygons. Topologically accurate.
 
+Interface detection, gradient analysis, infiltration scoring, and motif discovery are implemented as **shared modules** (`spatial._interface`, `spatial._gradient`, `spatial._infiltration`) and re-exported through both point and polygon subpackages.
+
 ## Graph construction
 
 All spatial analysis starts with building a spatial graph.
@@ -19,8 +21,8 @@ radius_graph = build_radius_graph(sp, radius=50)
 delaunay_graph = build_delaunay_graph(sp)
 
 # Polygon graphs
-contact_graph = build_contact_graph(sp)           # physically touching cells
-buffer_graph = build_buffer_graph(sp, buffer_distance=15)  # 15 μm proximity
+contact_graph = build_contact_graph(sp)                    # physically touching cells
+buffer_graph = build_buffer_graph(sp, buffer_distance=15)  # 15 μm proximity (Xenium)
 ```
 
 ### Point graph
@@ -30,6 +32,8 @@ buffer_graph = build_buffer_graph(sp, buffer_distance=15)  # 15 μm proximity
    :members:
 
 .. autofunction:: spatioloji_s.spatial.point.graph.build_knn_graph
+
+.. autofunction:: spatioloji_s.spatial.point.graph.build_weighted_knn_graph
 
 .. autofunction:: spatioloji_s.spatial.point.graph.build_radius_graph
 
@@ -47,6 +51,8 @@ buffer_graph = build_buffer_graph(sp, buffer_distance=15)  # 15 μm proximity
 .. autofunction:: spatioloji_s.spatial.polygon.graph.build_buffer_graph
 
 .. autofunction:: spatioloji_s.spatial.polygon.graph.build_knn_graph
+
+.. autofunction:: spatioloji_s.spatial.polygon.graph.build_weighted_knn_graph
 ```
 
 ## Neighborhoods
@@ -90,7 +96,7 @@ K, L, cross-K, cross-L functions with simulation envelopes.
 
 ## Cell morphology
 
-Eight shape metrics per cell, including Shannon entropy of boundary curvature.
+Shape metrics per cell, including Shannon entropy of boundary curvature.
 
 ```python
 from spatioloji_s.spatial.polygon import compute_morphology, classify_morphology
@@ -107,7 +113,7 @@ compute_morphology(sp, store=True)
 
 ## Boundaries & contact
 
-Contact length, contact fraction, free boundary fraction. Automatically uses **proximity mode** when given a buffer graph — buffered neighbor polygons for intersection so that non-touching cells within buffer distance get meaningful contact metrics.
+Contact length, contact fraction, free boundary fraction. Automatically uses **proximity mode** when given a buffer graph.
 
 ```python
 from spatioloji_s.spatial.polygon.boundaries import contact_length, contact_fraction, free_boundary_fraction
@@ -124,12 +130,12 @@ free = free_boundary_fraction(sp, buffer_graph)
 
 ## Interface detection
 
-Detect boundaries between cell-type regions.
+Detect boundaries between cell-type regions. Shared implementation accessible from both point and polygon modules.
 
 ```python
 from spatioloji_s.spatial.polygon import identify_interface
 
-iface = identify_interface(sp, graph, group_col="cell_type",
+iface = identify_interface(sp, group_col="cell_type",
                            region_a="Tumor", region_b="Stroma")
 # iface.cell_labels  — per-cell interface/interior labels
 # iface.contour      — MultiLineString boundary geometry
@@ -140,7 +146,7 @@ iface = identify_interface(sp, graph, group_col="cell_type",
 .. autoclass:: spatioloji_s.spatial._interface_types.InterfaceResult
    :members:
 
-.. automodule:: spatioloji_s.spatial.polygon.interface
+.. automodule:: spatioloji_s.spatial._interface
    :members:
 ```
 
@@ -153,16 +159,13 @@ from spatioloji_s.spatial.polygon import compute_gradient
 
 gradient = compute_gradient(sp, iface, genes=["MKI67", "VIM"],
                             programs={"EMT": ["VIM", "CDH2", "SNAI1"]})
-# gradient.gene_gradients    — coef, pvalue, r2, trend per gene
-# gradient.program_gradients — same for gene programs
-# gradient.bins              — binned expression for plotting
 ```
 
 ```{eval-rst}
 .. autoclass:: spatioloji_s.spatial._gradient_types.GradientResult
    :members:
 
-.. automodule:: spatioloji_s.spatial.polygon.gradient
+.. automodule:: spatioloji_s.spatial._gradient
    :members:
 ```
 
@@ -176,15 +179,20 @@ from spatioloji_s.spatial.polygon import score_infiltration
 infil = score_infiltration(sp, iface, immune_col="cell_type",
                            immune_types=["CD8_T", "Macrophage"],
                            target_region="Tumor")
-# infil.per_type_metrics — depth, density slope, infiltration fraction
-# infil.cell_classifications — "infiltrating", "resident", or "other"
 ```
 
 ```{eval-rst}
 .. autoclass:: spatioloji_s.spatial._infiltration_types.InfiltrationResult
    :members:
 
-.. automodule:: spatioloji_s.spatial.polygon.infiltration
+.. automodule:: spatioloji_s.spatial._infiltration
+   :members:
+```
+
+## Distance utilities
+
+```{eval-rst}
+.. automodule:: spatioloji_s.spatial._distance_utils
    :members:
 ```
 

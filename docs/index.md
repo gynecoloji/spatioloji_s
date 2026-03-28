@@ -15,10 +15,10 @@ spatioloji_s provides an integrated workflow from raw data loading through quali
 | Module | Description |
 |--------|-------------|
 | {doc}`Data <api/data>` | `spatioloji` object with master cell index, auto sparse/dense expression, lazy image loading |
-| {doc}`Processing <api/processing>` | Normalization, HVG, PCA/UMAP/tSNE, Leiden/KMeans, batch correction, imputation |
+| {doc}`Processing <api/processing>` | Normalization, HVG, PCA/UMAP/tSNE, Leiden/KMeans, batch correction, imputation, DEG, pathway scoring |
 | {doc}`Spatial <api/spatial>` | Dual point/polygon analysis: neighborhoods, Ripley's K/L, Moran's I, morphology, interface detection |
 | {doc}`Motifs <api/motifs>` | Multi-scale tissue architecture: local motifs, mesoscale assemblies, TLS/tumor bud matching |
-| {doc}`CCC <api/ccc>` | 3-layer polygon-native CCC: Bivariate Moran's I, Polygon OT, Contrastive NMF |
+| {doc}`CCC <api/ccc>` | Polygon-native cell-cell communication: edge scoring, significance testing, zone comparison |
 | {doc}`Visualization <api/visualization>` | 40+ static and interactive plots for embeddings, spatial maps, analysis results |
 
 ---
@@ -29,26 +29,28 @@ spatioloji_s provides an integrated workflow from raw data loading through quali
 import spatioloji_s as sj
 
 # Load data
-sp = sj.spatioloji.from_files(
-    polygons_path="polygons.csv",
-    cell_meta_path="metadata.csv",
-    expression_path="expression.npz",
-)
+sp = sj.spatioloji.from_xenium("path/to/xenium_bundle/")
 
 # Process
 sj.processing.normalization.normalize_total(sp)
 sj.processing.normalization.log_transform(sp)
 sj.processing.dimension_reduction.pca(sp)
 sj.processing.dimension_reduction.umap(sp)
-sj.processing.clustering.leiden(sp)
+sj.processing.clustering.leiden_clustering(sp)
 
 # Spatial analysis
-graph = sj.spatial.polygon.build_buffer_graph(sp, buffer_distance=15)
-sj.spatial.polygon.neighborhood_enrichment(sp, graph, "cell_type")
+from spatioloji_s.spatial.polygon import build_buffer_graph, neighborhood_enrichment
+graph = build_buffer_graph(sp, buffer_distance=15)  # 15 μm for Xenium
+neighborhood_enrichment(sp, graph, "cell_type")
 
 # Motif discovery
 from spatioloji_s.spatial.polygon import run_motif_pipeline
 motifs = run_motif_pipeline(sp, graph, group_col="cell_type", match_builtin="TME")
+
+# Cell-cell communication
+from spatioloji_s.ccc import CCCConfig, run_ccc
+config = CCCConfig(cell_type_col="cell_type", layer="log_normalized")
+results = run_ccc(sp, graph, lr_pairs, "cell_type", config)
 ```
 
 See {doc}`tutorials/quickstart` for a complete walkthrough.
@@ -65,6 +67,7 @@ tutorials/spatial_analysis
 tutorials/interface_gradient
 tutorials/motif_discovery
 tutorials/ccc_analysis
+tutorials/deg_pathway
 ```
 
 ```{toctree}

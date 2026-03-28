@@ -9,13 +9,18 @@
 - **Expression gradients** — OLS regression of gene expression vs signed distance from interface, with NMF/PCA gene program discovery.
 - **Immune infiltration scoring** — Penetration depth, density gradient, and infiltration fraction per immune cell type.
 - **Proximity contact mode** — Buffer graphs automatically use buffered neighbor polygons for contact metrics, making `contact_length`/`contact_fraction` meaningful for non-touching cells.
-- **UMAP parallelism** — `n_jobs` parameter for parallel UMAP execution on large datasets.
+- **Differential expression** — Five statistical methods (Wilcoxon, t-test, MAST, NB-GLM, DESeq2) for DEG analysis.
+- **Pathway activity scoring** — Gene set scoring via decoupler integration.
+- **GPU-accelerated dimensionality reduction** — Cross-environment PCA/UMAP with GPU support for large datasets.
+- **UMAP parallelism** — `n_jobs` parameter for parallel UMAP execution.
+- **Weighted KNN graphs** — Inverse-distance weighted spatial graphs for both point and polygon modes.
 - **40+ visualization functions** — Gradient curves, motif maps, assembly maps, structure match highlights, infiltration summaries.
 
-### Improvements
+### Refactoring
 
-- Disambiguated interface plot names for point vs polygon modes.
-- Sparse feature matrix support for motif discovery (scalable to 1M+ cells).
+- **CCC module rewritten** — Replaced 3-layer architecture (layer1/2/3) with modular scoring + zones design. New `CCCConfig`/`CCCResult` API.
+- **Spatial shared modules** — Interface, gradient, and infiltration logic moved to shared `spatial/_*.py` modules, accessible from both point and polygon subpackages.
+- **KNN graphs default to directed** — Asymmetric neighbor relationships preserved by default.
 
 ## v0.2.0 (2025)
 

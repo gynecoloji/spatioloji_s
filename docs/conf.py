@@ -74,6 +74,13 @@ autodoc_mock_imports = [
     "scvi",
     "plotly",
     "cv2",
+    "decoupler",
+    "pydeseq2",
+    "pynndescent",
+    "pointpats",
+    "DCA",
+    "cuml",
+    "cupy",
 ]
 
 # MyST settings (Markdown support)

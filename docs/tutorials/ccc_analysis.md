@@ -1,78 +1,87 @@
 # Cell-Cell Communication
 
-spatioloji_s provides a 3-layer polygon-native CCC framework. Unlike other tools, it uses actual cell boundary geometry for scoring — not centroid distances.
+spatioloji_s provides polygon-native cell-cell communication analysis. Unlike other tools, it uses actual cell boundary geometry for scoring interactions.
 
 ## Quick start
 
 ```python
-from spatioloji_s.ccc import CCCConfig, run_ccc, summarize_ccc
+from spatioloji_s.ccc import CCCConfig, run_ccc
+from spatioloji_s.ccc.database import load_lr_database, filter_to_expressed
+from spatioloji_s.spatial.polygon import build_buffer_graph
 
-config = CCCConfig(
-    cell_type_col="cell_type",
-    layer="log_normalized",
-    db_source="cellchatdb",
-    db_csv_path="CellChatDB.csv",
-    K=5,  # NMF programs (None = auto)
-)
+# 1. Load LR database
+lr_pairs = load_lr_database(source="cellchatdb", csv_path="CellChatDB.csv")
+lr_pairs = filter_to_expressed(lr_pairs, sp, min_pct=0.1)
+print(f"{len(lr_pairs)} expressed LR pairs")
 
-results = run_ccc(sp, config)
-summarize_ccc(results)
+# 2. Build spatial graph
+graph = build_buffer_graph(sp, buffer_distance=15)
+
+# 3. Run CCC pipeline
+config = CCCConfig(cell_type_col="cell_type", layer="log_normalized")
+results = run_ccc(sp, graph, lr_pairs, "cell_type", config)
 ```
 
 ## LR database
 
 ```python
-from spatioloji_s.ccc.database import load_lr_database, filter_to_expressed
+from spatioloji_s.ccc.database import (
+    load_lr_database, load_from_cellchatdb_csv,
+    filter_to_expressed, lr_pairs_to_dataframe,
+)
 
-# Load from CellChatDB
-lr_pairs = load_lr_database(source="cellchatdb", csv_path="CellChatDB.csv")
+# Load and inspect
+lr_pairs = load_from_cellchatdb_csv("CellChatDB.csv")
+df = lr_pairs_to_dataframe(lr_pairs)
+print(df.head())
 
 # Filter to expressed pairs
 lr_pairs = filter_to_expressed(lr_pairs, sp, min_pct=0.1)
-print(f"{len(lr_pairs)} expressed LR pairs")
 ```
 
-## Layer 1 — Discovery
+## Edge scoring
 
-Identifies which LR pairs show significant spatial coupling using Bivariate Moran's I and spatial lag regression.
+Score individual cell-cell interactions for each LR pair.
 
 ```python
-# Results
-sig_pairs = results["significant_pairs"]  # ranked LR pairs
+from spatioloji_s.ccc.scoring import score_edges, aggregate_scores, test_significance
+
+# Score all edges
+edge_scores = score_edges(sp, graph, lr_pairs, interaction_type="expression_product")
+
+# Aggregate by cell type pair
+summary = aggregate_scores(edge_scores, aggregation_method="mean")
+
+# Permutation test
+sig = test_significance(sp, lr_pairs, n_permutations=100)
 ```
 
-## Layer 2 — Cell-Pair Scoring
+## Zone comparison
 
-Scores every contacting cell pair using polygon OT and message passing.
+Compare communication patterns across spatial regions.
 
 ```python
-scores = results["scores"]       # per-cell-pair LR activity
-hubs = results.get("hubs", {})   # hub sender/receiver cells
+from spatioloji_s.ccc.zones import compare_zones, communication_gradient, compare_morphology
+
+# Compare CCC across spatial zones
+zone_comp = compare_zones(sp, zone_col="spatial_zone")
+
+# Communication gradient across tissue interface
+from spatioloji_s.spatial.polygon import identify_interface
+iface = identify_interface(sp, group_col="cell_type",
+                           region_a="Tumor", region_b="Stroma")
+grad = communication_gradient(sp, iface, zone_col="cell_type")
+
+# Stratify by morphology
+morph_comp = compare_morphology(sp, morphology_col="morph_circularity")
 ```
 
-## Layer 3 — Pattern Detection
-
-Classifies LR pairs by driver mechanism and decomposes into spatial communication programs.
+## Multi-sample analysis
 
 ```python
-programs = results["programs"]   # NMF factors
-drivers = results.get("driver_classification", {})  # expression vs geometry driven
+# Run across multiple samples
+sp_dict = {"sample_1": sp1, "sample_2": sp2, "sample_3": sp3}
+for name, sp_obj in sp_dict.items():
+    graph = build_buffer_graph(sp_obj, buffer_distance=15)
+    results[name] = run_ccc(sp_obj, graph, lr_pairs, "cell_type", config)
 ```
-
-## Multi-FOV analysis
-
-```python
-from spatioloji_s.ccc import run_ccc_multifov
-
-# Run across all FOVs
-sp_dict = {f"fov_{i}": sp.subset_by_fovs([f"fov_{i}"]) for i in range(1, 5)}
-multi_results = run_ccc_multifov(sp_dict, config)
-```
-
-## Why polygon geometry matters
-
-| Signal type | Centroid-based proxy | Polygon-based proxy (spatioloji_s) |
-|---|---|---|
-| Juxtacrine | Distance < threshold | Shared membrane fraction |
-| Secreted | 1/distance | Membrane exposure x distance |
-| ECM | Fixed radius | Contour entropy x free boundary |
