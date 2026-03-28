@@ -98,6 +98,8 @@ docs = [
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
     "myst-parser",
+    "nbsphinx",
+    "pandoc",
 ]
 
 # Install everything at once: pip install spatioloji-s[all]

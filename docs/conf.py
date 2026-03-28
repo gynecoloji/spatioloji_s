@@ -23,7 +23,12 @@ extensions = [
     "sphinx_autodoc_typehints",
     "sphinx_copybutton",
     "myst_parser",
+    "nbsphinx",
 ]
+
+# nbsphinx settings
+nbsphinx_execute = "never"  # don't re-execute notebooks during build
+nbsphinx_allow_errors = True  # don't fail on notebook errors
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "superpowers", ".ipynb_checkpoints"]

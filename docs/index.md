@@ -71,6 +71,13 @@ tutorials/deg_pathway
 ```
 
 ```{toctree}
+:maxdepth: 1
+:caption: Examples
+
+examples/index
+```
+
+```{toctree}
 :maxdepth: 2
 :caption: API Reference
 
