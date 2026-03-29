@@ -75,6 +75,15 @@ from .point_plots import (
     plot_spatial_graph,
     plot_spatially_variable_genes,
 )
+from .ccc_plots import (
+    plot_ccc_dotplot,
+    plot_ccc_gradient,
+    plot_ccc_heatmap,
+    plot_ccc_morphology,
+    plot_ccc_network,
+    plot_ccc_spatial,
+    plot_ccc_zones,
+)
 from .polygon_plots import (
     plot_assembly_map,
     plot_boundary_cells_map,
@@ -192,4 +201,12 @@ __all__ = [
     "plot_motif_composition",
     "plot_assembly_map",
     "plot_structure_matches",
+    # CCC plots
+    "plot_ccc_heatmap",
+    "plot_ccc_dotplot",
+    "plot_ccc_zones",
+    "plot_ccc_gradient",
+    "plot_ccc_morphology",
+    "plot_ccc_spatial",
+    "plot_ccc_network",
 ]
