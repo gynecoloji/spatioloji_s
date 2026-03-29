@@ -312,7 +312,7 @@ def plot_ccc_gradient(
     if lr_name is not None:
         grad = grad[grad["lr_name"] == lr_name]
     else:
-        grad = grad.nlargest(top_n, grad["slope"].abs())
+        grad = grad.iloc[grad["slope"].abs().nlargest(top_n).index]
 
     if grad.empty:
         print("No gradient data to plot.")
