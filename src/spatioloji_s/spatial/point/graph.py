@@ -328,12 +328,12 @@ def build_radius_graph(
     nn.fit(coords)
     dist_sparse = nn.radius_neighbors_graph(coords, radius, mode="distance")
 
-    # Symmetrize (fill both directions)
-    dist_sym = (dist_sparse + dist_sparse.T) / 2
-    # For entries only in one direction, restore full distance
-    only_forward = dist_sparse.multiply(dist_sparse.T == 0)
-    only_backward = dist_sparse.T.multiply(dist_sparse == 0)
-    dist_sym = dist_sym + only_forward / 2 + only_backward / 2
+    # Symmetrize using element-wise max (keeps the distance for
+    # entries that appear in only one direction, averages where both
+    # exist).  Pure sparse operations — no dense intermediates.
+    dist_t = dist_sparse.T.tocsr()
+    # Element-wise max gives a symmetric matrix with no zeros dropped
+    dist_sym = dist_sparse.maximum(dist_t)
 
     adjacency = (dist_sym != 0).astype(np.float32)
     mean_deg = np.array(adjacency.sum(1)).mean()
