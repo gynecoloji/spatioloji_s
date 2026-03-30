@@ -1,5 +1,5 @@
 sphinx>=7.0
-sphinx-rtd-theme
+sphinx-book-theme>=1.1.0
 sphinx-autodoc-typehints
 sphinx-copybutton
 myst-parser

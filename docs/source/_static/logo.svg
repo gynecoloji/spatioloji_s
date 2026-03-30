@@ -1,0 +1,337 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
+  <defs>
+    <!-- Gradients -->
+    <radialGradient id="bgGrad" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0f0f1a"/>
+    </radialGradient>
+    <radialGradient id="glowCenter" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#56beff" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#56beff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="edgeGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e74c3c" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#f39c12" stop-opacity="0.4"/>
+    </linearGradient>
+    <linearGradient id="edgeGrad2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2ecc71" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#56beff" stop-opacity="0.4"/>
+    </linearGradient>
+    <linearGradient id="edgeGrad3" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#9b59b6" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#e74c3c" stop-opacity="0.4"/>
+    </linearGradient>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#56beff"/>
+      <stop offset="50%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#56beff"/>
+      <animate attributeName="x1" values="-100%;100%" dur="4s" repeatCount="indefinite"/>
+      <animate attributeName="x2" values="0%;200%" dur="4s" repeatCount="indefinite"/>
+    </linearGradient>
+    <linearGradient id="subtitleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#7f8c8d"/>
+      <stop offset="50%" stop-color="#bdc3c7"/>
+      <stop offset="100%" stop-color="#7f8c8d"/>
+    </linearGradient>
+
+    <!-- Cell fill gradients -->
+    <radialGradient id="cell1" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#e74c3c" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#c0392b" stop-opacity="0.12"/>
+    </radialGradient>
+    <radialGradient id="cell2" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#2ecc71" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#27ae60" stop-opacity="0.12"/>
+    </radialGradient>
+    <radialGradient id="cell3" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#56beff" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#2980b9" stop-opacity="0.12"/>
+    </radialGradient>
+    <radialGradient id="cell4" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#f39c12" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#e67e22" stop-opacity="0.12"/>
+    </radialGradient>
+    <radialGradient id="cell5" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#9b59b6" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#8e44ad" stop-opacity="0.12"/>
+    </radialGradient>
+
+    <!-- Glow filter -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="textGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Dash animation for edges -->
+    <style>
+      @keyframes dashFlow {
+        to { stroke-dashoffset: -40; }
+      }
+      @keyframes dashFlowReverse {
+        to { stroke-dashoffset: 40; }
+      }
+      @keyframes pulseOpacity {
+        0%, 100% { opacity: 0.6; }
+        50% { opacity: 1; }
+      }
+      @keyframes pulseScale {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.08); }
+      }
+      @keyframes nodeGlow {
+        0%, 100% { r: 4; opacity: 0.8; }
+        50% { r: 6; opacity: 1; }
+      }
+      @keyframes particleMove1 {
+        0% { offset-distance: 0%; opacity: 0; }
+        10% { opacity: 1; }
+        90% { opacity: 1; }
+        100% { offset-distance: 100%; opacity: 0; }
+      }
+      @keyframes orbitSpin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      @keyframes fadeInOut {
+        0%, 100% { opacity: 0.15; }
+        50% { opacity: 0.4; }
+      }
+      .edge-animated {
+        stroke-dasharray: 8 6;
+        animation: dashFlow 1.5s linear infinite;
+      }
+      .edge-animated-rev {
+        stroke-dasharray: 8 6;
+        animation: dashFlowReverse 1.8s linear infinite;
+      }
+      .cell-pulse {
+        animation: pulseOpacity 3s ease-in-out infinite;
+      }
+      .cell-pulse-delay1 {
+        animation: pulseOpacity 3.5s ease-in-out 0.5s infinite;
+      }
+      .cell-pulse-delay2 {
+        animation: pulseOpacity 4s ease-in-out 1s infinite;
+      }
+      .orbit-ring {
+        animation: orbitSpin 20s linear infinite;
+        transform-origin: 300px 260px;
+      }
+      .orbit-ring-rev {
+        animation: orbitSpin 30s linear infinite reverse;
+        transform-origin: 300px 260px;
+      }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="600" height="600" fill="url(#bgGrad)" rx="20"/>
+
+  <!-- Subtle orbital rings -->
+  <g opacity="0.12">
+    <ellipse class="orbit-ring" cx="300" cy="260" rx="190" ry="190" fill="none" stroke="#56beff" stroke-width="0.5" stroke-dasharray="4 8"/>
+    <ellipse class="orbit-ring-rev" cx="300" cy="260" rx="155" ry="155" fill="none" stroke="#a78bfa" stroke-width="0.5" stroke-dasharray="3 10"/>
+    <ellipse class="orbit-ring" cx="300" cy="260" rx="220" ry="220" fill="none" stroke="#2ecc71" stroke-width="0.3" stroke-dasharray="2 12"/>
+  </g>
+
+  <!-- Central glow -->
+  <circle cx="300" cy="260" r="140" fill="url(#glowCenter)">
+    <animate attributeName="r" values="130;150;130" dur="4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.6;1;0.6" dur="4s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- ═══ COMMUNICATION EDGES (behind cells) ═══ -->
+  <g filter="url(#glow)">
+    <!-- Juxtacrine edges (short, between adjacent) -->
+    <line x1="255" y1="210" x2="300" y2="175" stroke="url(#edgeGrad1)" stroke-width="1.8" class="edge-animated" opacity="0.7"/>
+    <line x1="300" y1="175" x2="355" y2="210" stroke="url(#edgeGrad2)" stroke-width="1.5" class="edge-animated-rev" opacity="0.6"/>
+    <line x1="255" y1="210" x2="240" y2="270" stroke="url(#edgeGrad3)" stroke-width="1.5" class="edge-animated" opacity="0.6"/>
+    <line x1="355" y1="210" x2="365" y2="270" stroke="url(#edgeGrad1)" stroke-width="1.8" class="edge-animated-rev" opacity="0.7"/>
+    <line x1="240" y1="270" x2="265" y2="330" stroke="url(#edgeGrad2)" stroke-width="1.5" class="edge-animated" opacity="0.6"/>
+    <line x1="365" y1="270" x2="340" y2="330" stroke="url(#edgeGrad3)" stroke-width="1.5" class="edge-animated-rev" opacity="0.6"/>
+    <line x1="265" y1="330" x2="340" y2="330" stroke="url(#edgeGrad1)" stroke-width="1.8" class="edge-animated" opacity="0.7"/>
+    <line x1="240" y1="270" x2="365" y2="270" stroke="url(#edgeGrad2)" stroke-width="1.2" class="edge-animated-rev" opacity="0.4"/>
+    <line x1="300" y1="175" x2="300" y2="355" stroke="url(#edgeGrad3)" stroke-width="1.0" class="edge-animated" opacity="0.3"/>
+
+    <!-- Secreted edges (longer range, curved) -->
+    <path d="M205 190 Q160 250 200 320" fill="none" stroke="#f39c12" stroke-width="1" class="edge-animated" opacity="0.4"/>
+    <path d="M395 190 Q440 250 400 320" fill="none" stroke="#2ecc71" stroke-width="1" class="edge-animated-rev" opacity="0.4"/>
+    <path d="M255 165 Q300 120 355 165" fill="none" stroke="#9b59b6" stroke-width="1" class="edge-animated" opacity="0.35"/>
+    <path d="M230 340 Q300 390 375 340" fill="none" stroke="#56beff" stroke-width="1" class="edge-animated-rev" opacity="0.35"/>
+  </g>
+
+  <!-- ═══ CELL POLYGONS ═══ -->
+  <!-- Central cluster of irregular polygons (tissue-like) -->
+  <g>
+    <!-- Cell 1: top (Tumor-like, red) -->
+    <polygon points="275,155 300,140 330,152 338,180 310,200 278,195 262,175"
+      fill="url(#cell1)" stroke="#e74c3c" stroke-width="1.5" class="cell-pulse" opacity="0.85">
+      <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
+    </polygon>
+
+    <!-- Cell 2: upper-left (Stroma, green) -->
+    <polygon points="225,185 258,178 272,198 265,228 238,240 215,225 210,200"
+      fill="url(#cell2)" stroke="#2ecc71" stroke-width="1.5" class="cell-pulse-delay1" opacity="0.85">
+      <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="3.5s" repeatCount="indefinite"/>
+    </polygon>
+
+    <!-- Cell 3: upper-right (Immune, blue) -->
+    <polygon points="340,180 370,190 382,215 375,242 348,248 330,228 328,200"
+      fill="url(#cell3)" stroke="#56beff" stroke-width="1.5" class="cell-pulse-delay2" opacity="0.85">
+      <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="4s" repeatCount="indefinite"/>
+    </polygon>
+
+    <!-- Cell 4: lower-left (Fibroblast, orange) -->
+    <polygon points="218,248 242,242 260,260 258,290 240,308 215,300 208,272"
+      fill="url(#cell4)" stroke="#f39c12" stroke-width="1.5" class="cell-pulse" opacity="0.85">
+      <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="3.2s" repeatCount="indefinite"/>
+    </polygon>
+
+    <!-- Cell 5: lower-right (Endothelial, purple) -->
+    <polygon points="350,250 378,258 388,282 380,310 355,318 335,302 332,272"
+      fill="url(#cell5)" stroke="#9b59b6" stroke-width="1.5" class="cell-pulse-delay1" opacity="0.85">
+      <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="3.8s" repeatCount="indefinite"/>
+    </polygon>
+
+    <!-- Cell 6: center (Hub cell, teal) -->
+    <polygon points="272,202 310,202 332,230 325,265 295,280 262,268 252,235"
+      fill="none" stroke="#5dade2" stroke-width="1.8" class="cell-pulse-delay2" opacity="0.9">
+      <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="2.8s" repeatCount="indefinite"/>
+      <animate attributeName="fill-opacity" values="0;0.15;0" dur="2.8s" repeatCount="indefinite"/>
+    </polygon>
+
+    <!-- Cell 7: bottom-center (Macrophage, coral) -->
+    <polygon points="260,290 295,282 330,295 338,325 310,348 275,345 252,320"
+      fill="url(#cell1)" stroke="#e67e22" stroke-width="1.5" class="cell-pulse-delay2" opacity="0.75">
+      <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="3.6s" repeatCount="indefinite"/>
+    </polygon>
+  </g>
+
+  <!-- ═══ CELL CENTROIDS (nodes) ═══ -->
+  <g filter="url(#glow)">
+    <circle cx="300" cy="172" fill="#e74c3c" opacity="0.9">
+      <animate attributeName="r" values="3.5;5.5;3.5" dur="2s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="242" cy="212" fill="#2ecc71" opacity="0.9">
+      <animate attributeName="r" values="3.5;5.5;3.5" dur="2.5s" repeatCount="indefinite" begin="0.3s"/>
+    </circle>
+    <circle cx="355" cy="218" fill="#56beff" opacity="0.9">
+      <animate attributeName="r" values="3.5;5.5;3.5" dur="2.2s" repeatCount="indefinite" begin="0.6s"/>
+    </circle>
+    <circle cx="238" cy="275" fill="#f39c12" opacity="0.9">
+      <animate attributeName="r" values="3.5;5.5;3.5" dur="2.8s" repeatCount="indefinite" begin="0.9s"/>
+    </circle>
+    <circle cx="360" cy="280" fill="#9b59b6" opacity="0.9">
+      <animate attributeName="r" values="3.5;5.5;3.5" dur="2.4s" repeatCount="indefinite" begin="0.4s"/>
+    </circle>
+    <circle cx="295" cy="240" fill="#5dade2" opacity="0.9">
+      <animate attributeName="r" values="4;6;4" dur="2s" repeatCount="indefinite" begin="0.7s"/>
+    </circle>
+    <circle cx="298" cy="318" fill="#e67e22" opacity="0.9">
+      <animate attributeName="r" values="3.5;5.5;3.5" dur="2.6s" repeatCount="indefinite" begin="0.2s"/>
+    </circle>
+  </g>
+
+  <!-- ═══ FLOATING PARTICLES (ligand/receptor signals) ═══ -->
+  <g filter="url(#glow)" opacity="0.7">
+    <!-- Particle set 1 -->
+    <circle cx="0" cy="0" r="2" fill="#e74c3c">
+      <animateMotion dur="3s" repeatCount="indefinite" path="M255,210 Q280,190 300,175"/>
+      <animate attributeName="opacity" values="0;1;1;0" dur="3s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="0" cy="0" r="2" fill="#2ecc71">
+      <animateMotion dur="3.5s" repeatCount="indefinite" path="M355,210 Q330,240 295,240"/>
+      <animate attributeName="opacity" values="0;1;1;0" dur="3.5s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="0" cy="0" r="1.5" fill="#56beff">
+      <animateMotion dur="4s" repeatCount="indefinite" path="M240,270 Q268,255 295,240"/>
+      <animate attributeName="opacity" values="0;1;1;0" dur="4s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="0" cy="0" r="2" fill="#f39c12">
+      <animateMotion dur="3.2s" repeatCount="indefinite" path="M295,240 Q320,280 340,330"/>
+      <animate attributeName="opacity" values="0;1;1;0" dur="3.2s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="0" cy="0" r="1.5" fill="#9b59b6">
+      <animateMotion dur="3.8s" repeatCount="indefinite" path="M265,330 Q280,300 295,240"/>
+      <animate attributeName="opacity" values="0;1;1;0" dur="3.8s" repeatCount="indefinite"/>
+    </circle>
+    <!-- Extra particles for density -->
+    <circle cx="0" cy="0" r="1.5" fill="#e74c3c">
+      <animateMotion dur="4.2s" repeatCount="indefinite" begin="1s" path="M300,175 Q340,200 355,210"/>
+      <animate attributeName="opacity" values="0;0.8;0.8;0" dur="4.2s" repeatCount="indefinite" begin="1s"/>
+    </circle>
+    <circle cx="0" cy="0" r="1.5" fill="#5dade2">
+      <animateMotion dur="3.6s" repeatCount="indefinite" begin="0.5s" path="M365,270 Q330,275 295,240"/>
+      <animate attributeName="opacity" values="0;0.8;0.8;0" dur="3.6s" repeatCount="indefinite" begin="0.5s"/>
+    </circle>
+  </g>
+
+  <!-- ═══ OUTER SCATTER DOTS (background tissue) ═══ -->
+  <g opacity="0.25">
+    <circle cx="150" cy="160" r="2" fill="#e74c3c"><animate attributeName="opacity" values="0.2;0.5;0.2" dur="5s" repeatCount="indefinite"/></circle>
+    <circle cx="440" cy="180" r="1.5" fill="#2ecc71"><animate attributeName="opacity" values="0.2;0.5;0.2" dur="6s" repeatCount="indefinite"/></circle>
+    <circle cx="170" cy="350" r="2" fill="#56beff"><animate attributeName="opacity" values="0.2;0.5;0.2" dur="4.5s" repeatCount="indefinite"/></circle>
+    <circle cx="430" cy="340" r="1.5" fill="#f39c12"><animate attributeName="opacity" values="0.2;0.5;0.2" dur="5.5s" repeatCount="indefinite"/></circle>
+    <circle cx="130" cy="260" r="1.5" fill="#9b59b6"><animate attributeName="opacity" values="0.15;0.4;0.15" dur="7s" repeatCount="indefinite"/></circle>
+    <circle cx="470" cy="260" r="2" fill="#e74c3c"><animate attributeName="opacity" values="0.15;0.4;0.15" dur="6.5s" repeatCount="indefinite"/></circle>
+    <circle cx="185" cy="200" r="1" fill="#2ecc71"><animate attributeName="opacity" values="0.2;0.45;0.2" dur="4s" repeatCount="indefinite"/></circle>
+    <circle cx="415" cy="210" r="1" fill="#56beff"><animate attributeName="opacity" values="0.2;0.45;0.2" dur="5s" repeatCount="indefinite"/></circle>
+    <circle cx="160" cy="310" r="1.5" fill="#f39c12"><animate attributeName="opacity" values="0.15;0.4;0.15" dur="6s" repeatCount="indefinite"/></circle>
+    <circle cx="445" cy="310" r="1" fill="#9b59b6"><animate attributeName="opacity" values="0.15;0.4;0.15" dur="5.2s" repeatCount="indefinite"/></circle>
+    <circle cx="200" cy="150" r="1" fill="#5dade2"><animate attributeName="opacity" values="0.1;0.35;0.1" dur="7.5s" repeatCount="indefinite"/></circle>
+    <circle cx="400" cy="360" r="1.5" fill="#e67e22"><animate attributeName="opacity" values="0.1;0.35;0.1" dur="8s" repeatCount="indefinite"/></circle>
+  </g>
+
+  <!-- ═══ DNA HELIX ACCENT (bottom-left corner) ═══ -->
+  <g transform="translate(95, 370) scale(0.5)" opacity="0.2">
+    <path d="M0,0 Q15,-8 30,0 Q45,8 60,0 Q75,-8 90,0 Q105,8 120,0" fill="none" stroke="#56beff" stroke-width="2">
+      <animate attributeName="d" values="M0,0 Q15,-8 30,0 Q45,8 60,0 Q75,-8 90,0 Q105,8 120,0;M0,0 Q15,8 30,0 Q45,-8 60,0 Q75,8 90,0 Q105,-8 120,0;M0,0 Q15,-8 30,0 Q45,8 60,0 Q75,-8 90,0 Q105,8 120,0" dur="4s" repeatCount="indefinite"/>
+    </path>
+    <path d="M0,0 Q15,8 30,0 Q45,-8 60,0 Q75,8 90,0 Q105,-8 120,0" fill="none" stroke="#a78bfa" stroke-width="2">
+      <animate attributeName="d" values="M0,0 Q15,8 30,0 Q45,-8 60,0 Q75,8 90,0 Q105,-8 120,0;M0,0 Q15,-8 30,0 Q45,8 60,0 Q75,-8 90,0 Q105,8 120,0;M0,0 Q15,8 30,0 Q45,-8 60,0 Q75,8 90,0 Q105,-8 120,0" dur="4s" repeatCount="indefinite"/>
+    </path>
+  </g>
+
+  <!-- ═══ TEXT: spatioloji_s ═══ -->
+  <g filter="url(#textGlow)">
+    <text x="300" y="445" text-anchor="middle" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="48" font-weight="700" letter-spacing="2" fill="url(#textGrad)">
+      spatioloji
+      <tspan fill="#a78bfa" font-weight="300">_s</tspan>
+    </text>
+  </g>
+
+  <!-- Subtitle -->
+  <text x="300" y="480" text-anchor="middle" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="300" letter-spacing="4" fill="url(#subtitleGrad)" opacity="0.7">
+    SPATIAL TRANSCRIPTOMICS
+  </text>
+
+  <!-- Decorative line under text -->
+  <line x1="200" y1="495" x2="400" y2="495" stroke="url(#textGrad)" stroke-width="1" opacity="0.3">
+    <animate attributeName="x1" values="250;200;250" dur="3s" repeatCount="indefinite"/>
+    <animate attributeName="x2" values="350;400;350" dur="3s" repeatCount="indefinite"/>
+  </line>
+
+  <!-- Version badge -->
+  <g transform="translate(300, 520)" opacity="0.5">
+    <rect x="-30" y="-10" width="60" height="20" rx="10" fill="none" stroke="#56beff" stroke-width="0.8" opacity="0.5"/>
+    <text x="0" y="4" text-anchor="middle" font-family="'Segoe UI', monospace" font-size="10" fill="#56beff" opacity="0.7">v0.3.0</text>
+  </g>
+
+</svg>

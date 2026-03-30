@@ -104,17 +104,29 @@ nbsphinx_execute = "never"
 nbsphinx_allow_errors = True
 
 # -- HTML output --------------------------------------------------------------
-html_theme = "sphinx_rtd_theme"
+html_theme = "sphinx_book_theme"
 html_theme_options = {
-    "navigation_depth": 4,
-    "collapse_navigation": False,
-    "sticky_navigation": True,
-    "titles_only": False,
-    "logo_only": False,
+    "repository_url": "https://github.com/gynecoloji/spatioloji_s",
+    "use_repository_button": True,
+    "use_download_button": False,
+    "use_fullscreen_button": False,
+    "logo": {
+        "image_dark": "_static/logo.svg",
+        "image_light": "_static/logo.svg",
+    },
+    "home_page_in_toc": True,
+    "show_navbar_depth": 2,
+    "show_toc_level": 2,
 }
+html_logo = "_static/logo.svg"
 html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 html_title = f"spatioloji_s {release}"
 html_show_sourcelink = False
+
+# -- Syntax highlighting (dark-mode aware) -----------------------------------
+pygments_style = "default"
+pygments_dark_style = "native"
 
 # -- Copy button settings ----------------------------------------------------
 copybutton_prompt_text = r">>> |\.\.\. |\$ "

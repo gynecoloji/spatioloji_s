@@ -1,0 +1,210 @@
+/* ═══════════════════════════════════════════════════════════════════
+   spatioloji_s — Dark theme customization for sphinx-book-theme
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Force dark mode by default ─────────────────────────────────── */
+html {
+    --pst-color-primary: #56beff;
+}
+
+html[data-theme="dark"],
+html:not([data-theme]) {
+    --pst-color-background: #0f0f1a;
+    --pst-color-on-background: #e0e0e0;
+    --pst-color-surface: #1a1a2e;
+    --pst-color-on-surface: #e0e0e0;
+    --pst-color-primary: #56beff;
+    --pst-color-secondary: #a78bfa;
+    --pst-color-border: #2a2a4a;
+    --pst-color-link: #56beff;
+    --pst-color-link-hover: #a78bfa;
+    --pst-color-inline-code: #2ecc71;
+}
+
+/* ── Body & sidebar backgrounds ─────────────────────────────────── */
+html[data-theme="dark"] body,
+html:not([data-theme]) body {
+    background-color: #0f0f1a;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] .bd-sidebar-primary,
+html:not([data-theme]) .bd-sidebar-primary {
+    background-color: #12121f;
+    border-right: 1px solid #1e1e35;
+}
+
+html[data-theme="dark"] .bd-sidebar-secondary,
+html:not([data-theme]) .bd-sidebar-secondary {
+    background-color: #0f0f1a;
+}
+
+html[data-theme="dark"] .bd-header,
+html:not([data-theme]) .bd-header {
+    background-color: #12121f;
+    border-bottom: 1px solid #1e1e35;
+}
+
+/* ── Content area ───────────────────────────────────────────────── */
+html[data-theme="dark"] .bd-content,
+html:not([data-theme]) .bd-content {
+    background-color: #0f0f1a;
+}
+
+html[data-theme="dark"] .bd-article-container,
+html:not([data-theme]) .bd-article-container {
+    background-color: #0f0f1a;
+}
+
+/* ── Code blocks ────────────────────────────────────────────────── */
+html[data-theme="dark"] pre,
+html:not([data-theme]) pre {
+    background-color: #1a1a2e !important;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+}
+
+html[data-theme="dark"] code,
+html:not([data-theme]) code {
+    background-color: #1a1a2e;
+    color: #2ecc71;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+html[data-theme="dark"] pre code,
+html:not([data-theme]) pre code {
+    color: inherit;
+    padding: 0;
+}
+
+/* ── Links ──────────────────────────────────────────────────────── */
+html[data-theme="dark"] a,
+html:not([data-theme]) a {
+    color: #56beff;
+}
+
+html[data-theme="dark"] a:hover,
+html:not([data-theme]) a:hover {
+    color: #a78bfa;
+}
+
+/* ── Tables ─────────────────────────────────────────────────────── */
+html[data-theme="dark"] table.docutils,
+html:not([data-theme]) table.docutils {
+    border-color: #2a2a4a;
+}
+
+html[data-theme="dark"] table.docutils td,
+html[data-theme="dark"] table.docutils th,
+html:not([data-theme]) table.docutils td,
+html:not([data-theme]) table.docutils th {
+    border-color: #2a2a4a;
+}
+
+html[data-theme="dark"] table.docutils th,
+html:not([data-theme]) table.docutils th {
+    background-color: #1a1a2e;
+}
+
+/* ── Admonitions (note, warning, etc.) ──────────────────────────── */
+html[data-theme="dark"] .admonition,
+html:not([data-theme]) .admonition {
+    background-color: #1a1a2e;
+    border-color: #2a2a4a;
+    border-radius: 8px;
+}
+
+html[data-theme="dark"] .admonition.note,
+html:not([data-theme]) .admonition.note {
+    border-left-color: #56beff;
+}
+
+html[data-theme="dark"] .admonition.warning,
+html:not([data-theme]) .admonition.warning {
+    border-left-color: #f39c12;
+}
+
+/* ── Sidebar navigation ─────────────────────────────────────────── */
+html[data-theme="dark"] .bd-sidebar-primary .nav-link,
+html:not([data-theme]) .bd-sidebar-primary .nav-link {
+    color: #bdc3c7;
+}
+
+html[data-theme="dark"] .bd-sidebar-primary .nav-link:hover,
+html:not([data-theme]) .bd-sidebar-primary .nav-link:hover {
+    color: #56beff;
+}
+
+html[data-theme="dark"] .bd-sidebar-primary .nav-link.active,
+html:not([data-theme]) .bd-sidebar-primary .nav-link.active {
+    color: #56beff;
+    font-weight: 600;
+}
+
+/* ── Logo sizing ────────────────────────────────────────────────── */
+.navbar-brand img,
+.sidebar-brand img {
+    max-height: 80px;
+    width: auto;
+}
+
+/* ── Autosummary tables ─────────────────────────────────────────── */
+html[data-theme="dark"] table.autosummary td,
+html:not([data-theme]) table.autosummary td {
+    border-color: #2a2a4a;
+}
+
+html[data-theme="dark"] .autosummary .attr-name,
+html:not([data-theme]) .autosummary .attr-name {
+    color: #56beff;
+}
+
+/* ── Footer ─────────────────────────────────────────────────────── */
+html[data-theme="dark"] .bd-footer,
+html:not([data-theme]) .bd-footer {
+    background-color: #12121f;
+    border-top: 1px solid #1e1e35;
+}
+
+/* ── Scrollbar (webkit) ─────────────────────────────────────────── */
+html[data-theme="dark"] ::-webkit-scrollbar,
+html:not([data-theme]) ::-webkit-scrollbar {
+    width: 8px;
+    background-color: #0f0f1a;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb,
+html:not([data-theme]) ::-webkit-scrollbar-thumb {
+    background-color: #2a2a4a;
+    border-radius: 4px;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover,
+html:not([data-theme]) ::-webkit-scrollbar-thumb:hover {
+    background-color: #3a3a5a;
+}
+
+/* ── Search ─────────────────────────────────────────────────────── */
+html[data-theme="dark"] .search-button__default-text,
+html:not([data-theme]) .search-button__default-text {
+    color: #7f8c8d;
+}
+
+/* ── Headings accent ────────────────────────────────────────────── */
+html[data-theme="dark"] h1,
+html:not([data-theme]) h1 {
+    color: #ffffff;
+}
+
+html[data-theme="dark"] h2,
+html:not([data-theme]) h2 {
+    color: #56beff;
+    border-bottom: 1px solid #1e1e35;
+    padding-bottom: 0.3em;
+}
+
+html[data-theme="dark"] h3,
+html:not([data-theme]) h3 {
+    color: #a78bfa;
+}
