@@ -133,6 +133,120 @@ html:not([data-theme]) table.docutils code {
     color: #2ecc71;
 }
 
+/* ── Notebook (nbsphinx) tables — uniform dark background ──────── */
+html[data-theme="dark"] .nbinput table,
+html[data-theme="dark"] .nboutput table,
+html[data-theme="dark"] .rendered_html table,
+html[data-theme="dark"] .jp-RenderedHTMLCommon table,
+html[data-theme="dark"] [class*="cell_output"] table,
+html[data-theme="dark"] .output_subarea table,
+html:not([data-theme]) .nbinput table,
+html:not([data-theme]) .nboutput table,
+html:not([data-theme]) .rendered_html table,
+html:not([data-theme]) .jp-RenderedHTMLCommon table,
+html:not([data-theme]) [class*="cell_output"] table,
+html:not([data-theme]) .output_subarea table {
+    background-color: #151525 !important;
+    border-color: #2a2a4a !important;
+    color: #e0e0e0 !important;
+}
+
+html[data-theme="dark"] .rendered_html table td,
+html[data-theme="dark"] .rendered_html table th,
+html[data-theme="dark"] .jp-RenderedHTMLCommon table td,
+html[data-theme="dark"] .jp-RenderedHTMLCommon table th,
+html[data-theme="dark"] [class*="cell_output"] table td,
+html[data-theme="dark"] [class*="cell_output"] table th,
+html[data-theme="dark"] .output_subarea table td,
+html[data-theme="dark"] .output_subarea table th,
+html:not([data-theme]) .rendered_html table td,
+html:not([data-theme]) .rendered_html table th,
+html:not([data-theme]) .jp-RenderedHTMLCommon table td,
+html:not([data-theme]) .jp-RenderedHTMLCommon table th,
+html:not([data-theme]) [class*="cell_output"] table td,
+html:not([data-theme]) [class*="cell_output"] table th,
+html:not([data-theme]) .output_subarea table td,
+html:not([data-theme]) .output_subarea table th {
+    background-color: #151525 !important;
+    border-color: #2a2a4a !important;
+    color: #e0e0e0 !important;
+}
+
+html[data-theme="dark"] .rendered_html table th,
+html[data-theme="dark"] .jp-RenderedHTMLCommon table th,
+html[data-theme="dark"] [class*="cell_output"] table th,
+html[data-theme="dark"] .output_subarea table th,
+html:not([data-theme]) .rendered_html table th,
+html:not([data-theme]) .jp-RenderedHTMLCommon table th,
+html:not([data-theme]) [class*="cell_output"] table th,
+html:not([data-theme]) .output_subarea table th {
+    background-color: #1a1a2e !important;
+    color: #56beff !important;
+}
+
+html[data-theme="dark"] .rendered_html table tr,
+html[data-theme="dark"] .rendered_html table tr:nth-child(odd),
+html[data-theme="dark"] .rendered_html table tr:nth-child(even),
+html[data-theme="dark"] .jp-RenderedHTMLCommon table tr,
+html[data-theme="dark"] .jp-RenderedHTMLCommon table tr:nth-child(odd),
+html[data-theme="dark"] .jp-RenderedHTMLCommon table tr:nth-child(even),
+html[data-theme="dark"] [class*="cell_output"] table tr,
+html[data-theme="dark"] [class*="cell_output"] table tr:nth-child(odd),
+html[data-theme="dark"] [class*="cell_output"] table tr:nth-child(even),
+html:not([data-theme]) .rendered_html table tr,
+html:not([data-theme]) .rendered_html table tr:nth-child(odd),
+html:not([data-theme]) .rendered_html table tr:nth-child(even),
+html:not([data-theme]) .jp-RenderedHTMLCommon table tr,
+html:not([data-theme]) .jp-RenderedHTMLCommon table tr:nth-child(odd),
+html:not([data-theme]) .jp-RenderedHTMLCommon table tr:nth-child(even),
+html:not([data-theme]) [class*="cell_output"] table tr,
+html:not([data-theme]) [class*="cell_output"] table tr:nth-child(odd),
+html:not([data-theme]) [class*="cell_output"] table tr:nth-child(even) {
+    background-color: #151525 !important;
+}
+
+/* Notebook inline code in tables */
+html[data-theme="dark"] .rendered_html table code,
+html[data-theme="dark"] .jp-RenderedHTMLCommon table code,
+html[data-theme="dark"] [class*="cell_output"] table code,
+html:not([data-theme]) .rendered_html table code,
+html:not([data-theme]) .jp-RenderedHTMLCommon table code,
+html:not([data-theme]) [class*="cell_output"] table code {
+    background-color: #1a1a2e !important;
+    color: #2ecc71 !important;
+}
+
+/* Catch-all: any table anywhere in the page */
+html[data-theme="dark"] table,
+html:not([data-theme]) table {
+    background-color: #151525;
+    color: #e0e0e0;
+}
+
+html[data-theme="dark"] table td,
+html[data-theme="dark"] table th,
+html:not([data-theme]) table td,
+html:not([data-theme]) table th {
+    background-color: #151525 !important;
+    color: #e0e0e0 !important;
+    border-color: #2a2a4a !important;
+}
+
+html[data-theme="dark"] table th,
+html:not([data-theme]) table th {
+    background-color: #1a1a2e !important;
+    color: #56beff !important;
+}
+
+html[data-theme="dark"] table tr,
+html[data-theme="dark"] table tr:nth-child(odd),
+html[data-theme="dark"] table tr:nth-child(even),
+html:not([data-theme]) table tr,
+html:not([data-theme]) table tr:nth-child(odd),
+html:not([data-theme]) table tr:nth-child(even) {
+    background-color: #151525 !important;
+}
+
 /* ── Admonitions (note, warning, etc.) ──────────────────────────── */
 html[data-theme="dark"] .admonition,
 html:not([data-theme]) .admonition {
@@ -173,9 +287,9 @@ html:not([data-theme]) .bd-sidebar-primary .nav-link.active {
 .sidebar-brand img,
 .sidebar-logo img,
 img.logo {
-    max-height: 200px;
+    max-height: 350px;
     width: auto;
-    margin: 0.5rem auto;
+    margin: 1rem auto;
     display: block;
 }
 
