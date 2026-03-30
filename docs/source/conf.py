@@ -69,6 +69,7 @@ autodoc_mock_imports = [
     "natsort",
     "tqdm",
     "joblib",
+    "numba",
     "leidenalg",
     "igraph",
     "umap",
