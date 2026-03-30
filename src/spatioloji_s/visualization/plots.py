@@ -133,8 +133,6 @@ def _finalize(fig, save_dir: str, filename: str, dpi: int, show: bool):
     print(f"Saved → {path}")
     if not show:
         plt.close(fig)
-        return None
-    plt.close(fig)
     return fig
 
 
@@ -1579,10 +1577,8 @@ def xenium_plot_spatial(
         fig.savefig(filepath, dpi=dpi, bbox_inches="tight")
         print(f"  Saved: {filepath}")
 
-    if not show:
+    if own_fig and not show:
         plt.close(fig)
-        return None
-    plt.close(fig)
     return fig
 
 
@@ -1797,8 +1793,6 @@ def xenium_show_staining(
 
     if not show:
         plt.close(fig)
-        return None
-    plt.close(fig)
     return fig
 
 
@@ -2087,8 +2081,6 @@ def xenium_plot_spatial_bg(
         fig.savefig(filepath, dpi=dpi, bbox_inches="tight")
         print(f"  Saved: {filepath}")
 
-    if not show:
+    if own_fig and not show:
         plt.close(fig)
-        return None
-    plt.close(fig)
     return fig
