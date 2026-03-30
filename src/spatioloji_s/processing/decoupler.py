@@ -24,6 +24,53 @@ import pandas as pd
 from scipy import sparse
 
 # ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+# Column name aliases used by different decoupler resources
+_SOURCE_ALIASES = {"geneset", "gene_set", "term", "pathway", "tf", "collection_name", "gs_name"}
+_TARGET_ALIASES = {"genesymbol", "gene_symbol", "gene", "target_gene", "gene_id", "gs_gene"}
+
+
+def _normalize_net_columns(net: pd.DataFrame) -> pd.DataFrame:
+    """Rename columns to standard (source, target, weight) format.
+
+    Different decoupler resources return varying column names
+    (e.g., 'geneset'/'genesymbol' for MSigDB vs 'source'/'target'
+    for PROGENy).  This normalizes them so downstream code works
+    uniformly.
+    """
+    col_map = {}
+
+    # Already standard
+    if "source" in net.columns and "target" in net.columns:
+        return net
+
+    # Find source column
+    for alias in _SOURCE_ALIASES:
+        matches = [c for c in net.columns if c.lower() == alias]
+        if matches:
+            col_map[matches[0]] = "source"
+            break
+
+    # Find target column
+    for alias in _TARGET_ALIASES:
+        matches = [c for c in net.columns if c.lower() == alias]
+        if matches:
+            col_map[matches[0]] = "target"
+            break
+
+    if col_map:
+        net = net.rename(columns=col_map)
+
+    # Ensure source and target exist
+    if "source" not in net.columns or "target" not in net.columns:
+        print(f"  Warning: could not identify source/target columns. Found: {list(net.columns)}")
+
+    return net
+
+
+# ---------------------------------------------------------------------------
 # Public helpers — gene set loading
 # ---------------------------------------------------------------------------
 
@@ -97,6 +144,10 @@ def load_gene_sets(
     else:
         # Generic resource via decoupler
         net = _op["resource"](collection, organism=organism)
+        # Decoupler resources may use different column names depending on
+        # the collection.  Normalize to the standard (source, target, weight)
+        # format so downstream code works uniformly.
+        net = _normalize_net_columns(net)
         print(f"  Loaded '{collection}': {net['source'].nunique()} sets, {len(net)} interactions")
 
     return net

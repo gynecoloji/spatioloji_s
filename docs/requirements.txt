@@ -1,0 +1,7 @@
+sphinx>=7.0
+sphinx-rtd-theme
+sphinx-autodoc-typehints
+sphinx-copybutton
+myst-parser
+nbsphinx
+pandoc

@@ -24,22 +24,6 @@ from .basic_plots import (
     plot_umap_grid,
     plot_violin,
 )
-from .interactive_plots import (
-    iplot_dotplot,
-    iplot_global_dots,
-    iplot_global_dots_gene,
-    iplot_global_polygon,
-    iplot_global_polygon_gene,
-    iplot_heatmap,
-    iplot_local_dots,
-    iplot_local_dots_gene,
-    iplot_local_polygon,
-    iplot_local_polygon_gene,
-    iplot_pca,
-    iplot_umap,
-    iplot_umap_grid,
-    iplot_violin,
-)
 from .plots import (
     plot_global_dots,
     plot_global_dots_gene,
@@ -158,22 +142,7 @@ __all__ = [
     "plot_nearest_neighbor_distances",
     "plot_proximity_score",
     "plot_permutation_test",
-    # interactive plots
-    "iplot_umap",
-    "iplot_pca",
-    "iplot_umap_grid",
-    "iplot_violin",
-    "iplot_heatmap",
-    "iplot_dotplot",
-    "iplot_global_dots",
-    "iplot_local_dots",
-    "iplot_global_dots_gene",
-    "iplot_local_dots_gene",
-    "iplot_global_polygon",
-    "iplot_local_polygon",
-    "iplot_global_polygon_gene",
-    "iplot_local_polygon_gene",
-    # polygon-based spatial analysis
+# polygon-based spatial analysis
     "plot_polygon_graph",
     "plot_contact_degree_distribution",
     "plot_polygon_neighborhood_enrichment",

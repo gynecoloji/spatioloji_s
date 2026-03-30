@@ -232,36 +232,60 @@ def plot_ccc_zones(
         return None
 
     zones["label"] = zones["lr_name"] + " | " + zones["sender_type"] + "→" + zones["receiver_type"]
+    labels = zones["label"].unique()
+    n_labels = len(labels)
 
     if palette is None:
         palette = {"interface": "#e74c3c", "interior_a": "#3498db", "interior_b": "#2ecc71"}
 
     if figsize is None:
-        n_labels = zones["label"].nunique()
-        figsize = (max(8, n_labels * 1.5), 5)
+        figsize = (max(4, n_labels * 3.5), 5)
 
     own_fig = ax is None
     if own_fig:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig, axes = plt.subplots(1, n_labels, figsize=figsize, sharey=False)
+        if n_labels == 1:
+            axes = [axes]
     else:
+        # Single external axes: fall back to combined plot
         fig = ax.get_figure()
+        axes = [ax]
+        labels = labels[:1] if len(labels) > 1 else labels
 
-    sns.barplot(
-        data=zones,
-        x="label",
-        y=metric,
-        hue="zone",
-        palette=palette,
-        ax=ax,
-        edgecolor="k",
-        linewidth=0.5,
+    zone_order = list(palette.keys())
+
+    for i, (cur_ax, label) in enumerate(zip(axes, labels, strict=False)):
+        sub = zones[zones["label"] == label]
+        sns.barplot(
+            data=sub,
+            x="zone",
+            y=metric,
+            hue="zone",
+            order=zone_order,
+            hue_order=zone_order,
+            palette=palette,
+            ax=cur_ax,
+            edgecolor="k",
+            linewidth=0.5,
+            legend=False,
+        )
+        cur_ax.set_xlabel("")
+        cur_ax.set_ylabel(metric if i == 0 else "")
+        cur_ax.set_title(label, fontsize=9)
+        cur_ax.tick_params(axis="x", rotation=45)
+        clean_axes(cur_ax)
+
+    # Shared legend from the zone palette
+    from matplotlib.patches import Patch
+
+    legend_elements = [Patch(facecolor=c, edgecolor="k", label=z) for z, c in palette.items()]
+    fig.legend(
+        handles=legend_elements, title="Zone", fontsize=8,
+        loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=True,
     )
-    ax.set_xlabel("")
-    ax.set_ylabel(metric)
-    ax.set_title(title or "CCC by Spatial Zone")
-    ax.tick_params(axis="x", rotation=45)
-    clean_axes(ax)
-    ax.legend(title="Zone", fontsize=8)
+
+    fig.suptitle(title or "CCC by Spatial Zone", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 0.92, 0.93])
 
     if own_fig:
         return finalize_plot(fig, save_path, dpi, show)
@@ -353,9 +377,13 @@ def plot_ccc_gradient(
         Patch(facecolor="gray", edgecolor="k", label="p < 0.05"),
         Patch(facecolor="gray", edgecolor="k", hatch="//", alpha=0.5, label="p >= 0.05"),
     ]
-    ax.legend(handles=legend_elements, fontsize=8, loc="lower right")
+    ax.legend(
+        handles=legend_elements, fontsize=8,
+        loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=True,
+    )
 
     if own_fig:
+        fig.tight_layout()
         return finalize_plot(fig, save_path, dpi, show)
     return fig
 
@@ -415,33 +443,58 @@ def plot_ccc_morphology(
         return None
 
     morph["label"] = morph["lr_name"] + " | " + morph["sender_type"] + "→" + morph["receiver_type"]
+    labels = morph["label"].unique()
+    n_labels = len(labels)
 
     if figsize is None:
-        n_labels = morph["label"].nunique()
-        figsize = (max(8, n_labels * 1.5), 5)
+        figsize = (max(4, n_labels * 3.5), 5)
 
     own_fig = ax is None
     if own_fig:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig, axes = plt.subplots(1, n_labels, figsize=figsize, sharey=False)
+        if n_labels == 1:
+            axes = [axes]
     else:
+        # Single external axes: fall back to combined plot
         fig = ax.get_figure()
+        axes = [ax]
+        labels = labels[:1] if len(labels) > 1 else labels
 
-    sns.barplot(
-        data=morph,
-        x="label",
-        y=metric,
-        hue="morphology_group",
-        palette=palette,
-        ax=ax,
-        edgecolor="k",
-        linewidth=0.5,
+    for i, (cur_ax, label) in enumerate(zip(axes, labels, strict=False)):
+        sub = morph[morph["label"] == label]
+        sns.barplot(
+            data=sub,
+            x="morphology_group",
+            y=metric,
+            hue="morphology_group",
+            palette=palette,
+            ax=cur_ax,
+            edgecolor="k",
+            linewidth=0.5,
+            legend=False,
+        )
+        cur_ax.set_xlabel("")
+        cur_ax.set_ylabel(metric if i == 0 else "")
+        cur_ax.set_title(label, fontsize=9)
+        cur_ax.tick_params(axis="x", rotation=45)
+        clean_axes(cur_ax)
+
+    # Shared legend — build from morphology groups in the data
+    from matplotlib.patches import Patch
+
+    groups = morph["morphology_group"].unique()
+    if isinstance(palette, dict):
+        leg_elements = [Patch(facecolor=palette[g], edgecolor="k", label=g) for g in groups if g in palette]
+    else:
+        colors = sns.color_palette(palette, len(groups))
+        leg_elements = [Patch(facecolor=c, edgecolor="k", label=g) for g, c in zip(groups, colors, strict=False)]
+    fig.legend(
+        handles=leg_elements, title="Morphology", fontsize=8,
+        loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=True,
     )
-    ax.set_xlabel("")
-    ax.set_ylabel(metric)
-    ax.set_title(title or "CCC by Sender Morphology")
-    ax.tick_params(axis="x", rotation=45)
-    clean_axes(ax)
-    ax.legend(title="Morphology", fontsize=8)
+
+    fig.suptitle(title or "CCC by Sender Morphology", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 0.92, 0.93])
 
     if own_fig:
         return finalize_plot(fig, save_path, dpi, show)
@@ -589,26 +642,34 @@ def plot_ccc_network(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Draw edges
+    # Draw edges with visible arrows
+    # Compute node radius in data coords (nodes are s=800 scatter points)
+    # shrink arrows so heads appear outside the node circles
+    from matplotlib.patches import FancyArrowPatch
+
     w_max = net["weight"].max()
     cm = plt.get_cmap(edge_cmap)
+    node_radius = 0.12  # approximate radius of s=800 scatter in data coords
     for _, row in net.iterrows():
         src, tgt, w = row["source"], row["target"], row["weight"]
         x0, y0 = pos[src]
         x1, y1 = pos[tgt]
-        width = max(0.5, (w / w_max) * 8)
+        width = max(0.5, (w / w_max) * 6)
         color = cm(w / w_max)
-        ax.annotate(
-            "",
-            xy=(x1, y1),
-            xytext=(x0, y0),
-            arrowprops=dict(
-                arrowstyle="-|>",
-                color=color,
-                lw=width,
-                connectionstyle="arc3,rad=0.1",
-            ),
+        head_length = max(8, width * 3)
+        head_width = max(6, width * 2)
+        arrow = FancyArrowPatch(
+            posA=(x0, y0),
+            posB=(x1, y1),
+            arrowstyle=f"-|>,head_length={head_length},head_width={head_width}",
+            connectionstyle="arc3,rad=0.1",
+            color=color,
+            linewidth=width,
+            shrinkA=node_radius * 72,  # shrink from source node edge (points)
+            shrinkB=node_radius * 72,  # shrink from target node edge (points)
+            zorder=3,
         )
+        ax.add_patch(arrow)
 
     # Draw nodes
     for i, t in enumerate(all_types):
