@@ -100,11 +100,37 @@ html[data-theme="dark"] table.docutils th,
 html:not([data-theme]) table.docutils td,
 html:not([data-theme]) table.docutils th {
     border-color: #2a2a4a;
+    color: #e0e0e0;
+    background-color: #151525;
 }
 
 html[data-theme="dark"] table.docutils th,
 html:not([data-theme]) table.docutils th {
     background-color: #1a1a2e;
+    color: #56beff;
+}
+
+/* Force all table rows to dark background — override zebra striping */
+html[data-theme="dark"] table.docutils tr,
+html[data-theme="dark"] table.docutils tr:nth-child(odd),
+html[data-theme="dark"] table.docutils tr:nth-child(even),
+html:not([data-theme]) table.docutils tr,
+html:not([data-theme]) table.docutils tr:nth-child(odd),
+html:not([data-theme]) table.docutils tr:nth-child(even) {
+    background-color: #151525 !important;
+}
+
+html[data-theme="dark"] table.docutils tr:nth-child(even) td,
+html:not([data-theme]) table.docutils tr:nth-child(even) td {
+    background-color: #12121f !important;
+    color: #e0e0e0;
+}
+
+/* Inline code in tables */
+html[data-theme="dark"] table.docutils code,
+html:not([data-theme]) table.docutils code {
+    background-color: #1a1a2e;
+    color: #2ecc71;
 }
 
 /* ── Admonitions (note, warning, etc.) ──────────────────────────── */
@@ -144,9 +170,13 @@ html:not([data-theme]) .bd-sidebar-primary .nav-link.active {
 
 /* ── Logo sizing ────────────────────────────────────────────────── */
 .navbar-brand img,
-.sidebar-brand img {
-    max-height: 80px;
+.sidebar-brand img,
+.sidebar-logo img,
+img.logo {
+    max-height: 200px;
     width: auto;
+    margin: 0.5rem auto;
+    display: block;
 }
 
 /* ── Autosummary tables ─────────────────────────────────────────── */

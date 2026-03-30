@@ -1,3 +1,12 @@
+.. image:: _static/logo.svg
+   :align: center
+   :width: 400px
+   :alt: spatioloji_s logo
+
+.. raw:: html
+
+   <br>
+
 spatioloji_s: Image-Based Spatial Transcriptomics Analysis
 ==========================================================
 

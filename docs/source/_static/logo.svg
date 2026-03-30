@@ -29,9 +29,9 @@
       <animate attributeName="x2" values="0%;200%" dur="4s" repeatCount="indefinite"/>
     </linearGradient>
     <linearGradient id="subtitleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#7f8c8d"/>
-      <stop offset="50%" stop-color="#bdc3c7"/>
-      <stop offset="100%" stop-color="#7f8c8d"/>
+      <stop offset="0%" stop-color="#95a5a6"/>
+      <stop offset="50%" stop-color="#ecf0f1"/>
+      <stop offset="100%" stop-color="#95a5a6"/>
     </linearGradient>
 
     <!-- Cell fill gradients -->
@@ -141,8 +141,7 @@
     </style>
   </defs>
 
-  <!-- Background -->
-  <rect width="600" height="600" fill="url(#bgGrad)" rx="20"/>
+  <!-- Background (transparent for embedding) -->
 
   <!-- Subtle orbital rings -->
   <g opacity="0.12">
@@ -318,20 +317,20 @@
   </g>
 
   <!-- Subtitle -->
-  <text x="300" y="480" text-anchor="middle" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="300" letter-spacing="4" fill="url(#subtitleGrad)" opacity="0.7">
+  <text x="300" y="480" text-anchor="middle" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="300" letter-spacing="4" fill="url(#subtitleGrad)" opacity="0.9">
     SPATIAL TRANSCRIPTOMICS
   </text>
 
   <!-- Decorative line under text -->
-  <line x1="200" y1="495" x2="400" y2="495" stroke="url(#textGrad)" stroke-width="1" opacity="0.3">
+  <line x1="200" y1="495" x2="400" y2="495" stroke="url(#textGrad)" stroke-width="1" opacity="0.6">
     <animate attributeName="x1" values="250;200;250" dur="3s" repeatCount="indefinite"/>
     <animate attributeName="x2" values="350;400;350" dur="3s" repeatCount="indefinite"/>
   </line>
 
   <!-- Version badge -->
-  <g transform="translate(300, 520)" opacity="0.5">
-    <rect x="-30" y="-10" width="60" height="20" rx="10" fill="none" stroke="#56beff" stroke-width="0.8" opacity="0.5"/>
-    <text x="0" y="4" text-anchor="middle" font-family="'Segoe UI', monospace" font-size="10" fill="#56beff" opacity="0.7">v0.3.0</text>
+  <g transform="translate(300, 520)" opacity="0.8">
+    <rect x="-30" y="-10" width="60" height="20" rx="10" fill="none" stroke="#56beff" stroke-width="0.8" opacity="0.7"/>
+    <text x="0" y="4" text-anchor="middle" font-family="'Segoe UI', monospace" font-size="10" fill="#56beff" opacity="0.9">v0.3.0</text>
   </g>
 
 </svg>
