@@ -176,74 +176,92 @@
     <path d="M230 340 Q300 390 375 340" fill="none" stroke="#56beff" stroke-width="1" class="edge-animated-rev" opacity="0.35"/>
   </g>
 
-  <!-- ═══ CELL POLYGONS ═══ -->
-  <!-- Central cluster of irregular polygons (tissue-like) -->
+  <!-- ═══ CELL SHAPES (diverse morphologies) ═══ -->
   <g>
-    <!-- Cell 1: top (Tumor-like, red) -->
-    <polygon points="275,155 300,140 330,152 338,180 310,200 278,195 262,175"
-      fill="url(#cell1)" stroke="#e74c3c" stroke-width="1.5" class="cell-pulse" opacity="0.85">
+    <!-- Cell 1: top — Irregular jagged tumor cell (red) -->
+    <path d="M280,148 L298,138 L318,142 L335,155 L340,172 L332,188 L318,196
+             L305,200 L288,198 L272,190 L260,178 L258,162 Z"
+      fill="url(#cell1)" stroke="#e74c3c" stroke-width="1.5" class="cell-pulse" opacity="0.85"
+      stroke-linejoin="miter">
       <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
-    </polygon>
+    </path>
 
-    <!-- Cell 2: upper-left (Stroma, green) -->
-    <polygon points="225,185 258,178 272,198 265,228 238,240 215,225 210,200"
+    <!-- Cell 2: upper-left — Spindle fibroblast (green, narrow tapered ends) -->
+    <path d="M205,212 C210,205 220,192 235,188 C245,186 255,190 265,196
+             C270,200 274,206 272,212 C270,218 262,226 250,232
+             C238,238 222,238 212,232 C206,226 202,218 205,212 Z"
       fill="url(#cell2)" stroke="#2ecc71" stroke-width="1.5" class="cell-pulse-delay1" opacity="0.85">
       <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="3.5s" repeatCount="indefinite"/>
-    </polygon>
+    </path>
 
-    <!-- Cell 3: upper-right (Immune, blue) -->
-    <polygon points="340,180 370,190 382,215 375,242 348,248 330,228 328,200"
+    <!-- Cell 3: upper-right — Round immune/T-cell (blue, nearly circular) -->
+    <circle cx="358" cy="215" r="30"
       fill="url(#cell3)" stroke="#56beff" stroke-width="1.5" class="cell-pulse-delay2" opacity="0.85">
       <animate attributeName="stroke-opacity" values="0.6;1;0.6" dur="4s" repeatCount="indefinite"/>
-    </polygon>
+    </circle>
 
-    <!-- Cell 4: lower-left (Fibroblast, orange) -->
-    <polygon points="218,248 242,242 260,260 258,290 240,308 215,300 208,272"
+    <!-- Cell 4: lower-left — Extremely elongated cell (orange, needle-like diagonal) -->
+    <path d="M190,242 C195,240 205,238 218,244 C225,248 230,255 234,265
+             C238,278 240,295 238,310 C236,322 230,332 225,335
+             C220,337 216,330 215,320 C213,305 212,288 213,272
+             C214,258 210,248 205,244 Z"
       fill="url(#cell4)" stroke="#f39c12" stroke-width="1.5" class="cell-pulse" opacity="0.85">
       <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="3.2s" repeatCount="indefinite"/>
-    </polygon>
+    </path>
 
-    <!-- Cell 5: lower-right (Endothelial, purple) -->
-    <polygon points="350,250 378,258 388,282 380,310 355,318 335,302 332,272"
-      fill="url(#cell5)" stroke="#9b59b6" stroke-width="1.5" class="cell-pulse-delay1" opacity="0.85">
+    <!-- Cell 5: lower-right — Stellate/dendritic cell (purple, star-like projections) -->
+    <path d="M358,250 L368,258 L385,255 L378,270 L392,282 L378,288
+             L380,305 L365,298 L352,315 L348,298 L332,295 L340,280
+             L328,268 L342,264 L340,252 Z"
+      fill="url(#cell5)" stroke="#9b59b6" stroke-width="1.5" class="cell-pulse-delay1" opacity="0.85"
+      stroke-linejoin="round">
       <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="3.8s" repeatCount="indefinite"/>
-    </polygon>
+    </path>
 
-    <!-- Cell 6: center (Hub cell, teal) -->
-    <polygon points="272,202 310,202 332,230 325,265 295,280 262,268 252,235"
-      fill="none" stroke="#5dade2" stroke-width="1.8" class="cell-pulse-delay2" opacity="0.9">
+    <!-- Cell 6: center — Smooth ovoid epithelial hub cell (teal, oval) -->
+    <ellipse cx="295" cy="240" rx="38" ry="30"
+      fill="none" stroke="#5dade2" stroke-width="1.8" class="cell-pulse-delay2" opacity="0.9"
+      transform="rotate(-12, 295, 240)">
       <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="2.8s" repeatCount="indefinite"/>
-      <animate attributeName="fill-opacity" values="0;0.15;0" dur="2.8s" repeatCount="indefinite"/>
-    </polygon>
+    </ellipse>
 
-    <!-- Cell 7: bottom-center (Macrophage, coral) -->
-    <polygon points="260,290 295,282 330,295 338,325 310,348 275,345 252,320"
+    <!-- Cell 7: bottom-center — Amorphous/blobby macrophage (coral, irregular blob) -->
+    <path d="M262,295 C270,282 288,278 305,282 C322,286 335,296 340,312
+             C342,325 335,340 320,346 C305,350 285,348 270,340
+             C255,330 250,312 262,295 Z"
       fill="url(#cell1)" stroke="#e67e22" stroke-width="1.5" class="cell-pulse-delay2" opacity="0.75">
       <animate attributeName="stroke-opacity" values="0.5;1;0.5" dur="3.6s" repeatCount="indefinite"/>
-    </polygon>
+    </path>
   </g>
 
-  <!-- ═══ CELL CENTROIDS (nodes) ═══ -->
+  <!-- ═══ CELL CENTROIDS (centered in each cell shape) ═══ -->
   <g filter="url(#glow)">
-    <circle cx="300" cy="172" fill="#e74c3c" opacity="0.9">
+    <!-- Cell 1: jagged tumor — center ~(300, 170) -->
+    <circle cx="300" cy="170" fill="#e74c3c" opacity="0.9">
       <animate attributeName="r" values="3.5;5.5;3.5" dur="2s" repeatCount="indefinite"/>
     </circle>
-    <circle cx="242" cy="212" fill="#2ecc71" opacity="0.9">
+    <!-- Cell 2: spindle fibroblast — center ~(238, 212) -->
+    <circle cx="238" cy="212" fill="#2ecc71" opacity="0.9">
       <animate attributeName="r" values="3.5;5.5;3.5" dur="2.5s" repeatCount="indefinite" begin="0.3s"/>
     </circle>
-    <circle cx="355" cy="218" fill="#56beff" opacity="0.9">
+    <!-- Cell 3: round immune — center (358, 215) -->
+    <circle cx="358" cy="215" fill="#56beff" opacity="0.9">
       <animate attributeName="r" values="3.5;5.5;3.5" dur="2.2s" repeatCount="indefinite" begin="0.6s"/>
     </circle>
-    <circle cx="238" cy="275" fill="#f39c12" opacity="0.9">
+    <!-- Cell 4: elongated needle — center ~(220, 288) -->
+    <circle cx="220" cy="288" fill="#f39c12" opacity="0.9">
       <animate attributeName="r" values="3.5;5.5;3.5" dur="2.8s" repeatCount="indefinite" begin="0.9s"/>
     </circle>
-    <circle cx="360" cy="280" fill="#9b59b6" opacity="0.9">
+    <!-- Cell 5: stellate dendritic — center ~(358, 280) -->
+    <circle cx="358" cy="280" fill="#9b59b6" opacity="0.9">
       <animate attributeName="r" values="3.5;5.5;3.5" dur="2.4s" repeatCount="indefinite" begin="0.4s"/>
     </circle>
+    <!-- Cell 6: ovoid epithelial — center (295, 240) -->
     <circle cx="295" cy="240" fill="#5dade2" opacity="0.9">
       <animate attributeName="r" values="4;6;4" dur="2s" repeatCount="indefinite" begin="0.7s"/>
     </circle>
-    <circle cx="298" cy="318" fill="#e67e22" opacity="0.9">
+    <!-- Cell 7: blob macrophage — center ~(300, 315) -->
+    <circle cx="300" cy="315" fill="#e67e22" opacity="0.9">
       <animate attributeName="r" values="3.5;5.5;3.5" dur="2.6s" repeatCount="indefinite" begin="0.2s"/>
     </circle>
   </g>
@@ -317,8 +335,8 @@
   </g>
 
   <!-- Subtitle -->
-  <text x="300" y="480" text-anchor="middle" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="300" letter-spacing="4" fill="url(#subtitleGrad)" opacity="0.9">
-    SPATIAL TRANSCRIPTOMICS
+  <text x="300" y="480" text-anchor="middle" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="300" letter-spacing="3" fill="url(#subtitleGrad)" opacity="0.9">
+    IMAGE-BASED SPATIAL TRANSCRIPTOMICS
   </text>
 
   <!-- Decorative line under text -->
@@ -327,10 +345,5 @@
     <animate attributeName="x2" values="350;400;350" dur="3s" repeatCount="indefinite"/>
   </line>
 
-  <!-- Version badge -->
-  <g transform="translate(300, 520)" opacity="0.8">
-    <rect x="-30" y="-10" width="60" height="20" rx="10" fill="none" stroke="#56beff" stroke-width="0.8" opacity="0.7"/>
-    <text x="0" y="4" text-anchor="middle" font-family="'Segoe UI', monospace" font-size="10" fill="#56beff" opacity="0.9">v0.3.0</text>
-  </g>
 
 </svg>
