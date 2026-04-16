@@ -166,6 +166,10 @@ class CCCResult:
             (set when ``config.interface_result`` is provided).
         morphology_comparison: Morphology-stratified scores (set when
             ``config.morphology_col`` is provided).
+        edge_df: Raw edge-level scores from
+            :func:`~spatioloji_s.ccc.scoring.score_edges`, retained for
+            post-hoc filtering (e.g. halo cell removal via
+            :func:`~spatioloji_s.ccc.halo.filter_ccc_to_core`).
         config: The :class:`CCCConfig` used to produce this result.
         n_cells: Number of cells in the analysis.
         n_edges: Number of scored edges.
@@ -180,6 +184,7 @@ class CCCResult:
     cell_scores: pd.DataFrame
     lr_pairs: list
 
+    edge_df: pd.DataFrame | None = None
     zone_comparison: pd.DataFrame | None = None
     zone_gradient: pd.DataFrame | None = None
     morphology_comparison: pd.DataFrame | None = None
@@ -399,6 +404,7 @@ def run_ccc(
         scores=summary_df,
         cell_scores=cell_scores_df,
         lr_pairs=pairs,
+        edge_df=edge_df,
         zone_comparison=zone_comparison,
         zone_gradient=zone_gradient,
         morphology_comparison=morphology_comparison,

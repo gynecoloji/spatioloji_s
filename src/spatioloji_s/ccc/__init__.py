@@ -43,6 +43,10 @@ from .zones import (
     compare_morphology,
     compare_zones,
 )
+from .halo import (
+    create_halo_subset,
+    filter_ccc_to_core,
+)
 
 __all__ = [
     # Database
@@ -63,4 +67,7 @@ __all__ = [
     "communication_gradient",
     "compare_morphology",
     "compare_zones",
+    # Halo
+    "create_halo_subset",
+    "filter_ccc_to_core",
 ]

@@ -31,7 +31,6 @@ import pandas as pd
 from scipy.sparse import issparse
 
 from .database import LRPair
-from ._accel import score_edges_batch, permutation_test_accel
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
@@ -105,12 +104,7 @@ def score_edges(
 
     # ── Expression matrix ────────────────────────────────────────────────
     expr_df = _get_expression_df(sp, layer)
-    cell_type_series = sp.cell_meta[group_col]
-
-    # Pre-compute NumPy expression matrix and index maps for fast lookups
-    expr_mat = expr_df.values
-    cell_id_to_row = {c: i for i, c in enumerate(expr_df.index)}
-    gene_to_col = {g: i for i, g in enumerate(expr_df.columns)}
+    cell_type_map = sp.cell_meta[group_col].to_dict()
 
     # ── Pre-compute edge tables per signaling type ───────────────────────
     jux_edges = _build_juxtacrine_edge_table(graph_juxtacrine) if has_juxtacrine else None
@@ -119,88 +113,56 @@ def score_edges(
     else:
         diff_edges, sigma_s, sigma_e = None, None, None
 
-    # Pre-compute distance-decay weights for diffusible edges (once, not per pair)
-    if diff_edges is not None and len(diff_edges) > 0:
-        diff_distances = diff_edges["distance"].values
-        diff_weights_secreted = np.exp(-diff_distances / sigma_s) if sigma_s and sigma_s > 0 else np.ones(len(diff_edges))
-        diff_weights_ecm = np.exp(-diff_distances / sigma_e) if sigma_e and sigma_e > 0 else np.ones(len(diff_edges))
-    else:
-        diff_weights_secreted = diff_weights_ecm = None
+    # ── Score each LR pair ───────────────────────────────────────────────
+    records: list[dict] = []
 
-    # ── Score each LR pair (accelerated batch path) ───────────────────────
-    # Separate pairs by edge table to batch within each table type
-    jux_pairs = [p for p in lr_pairs if p.lr_type == "juxtacrine"] if jux_edges is not None else []
-    diff_sec_pairs = [p for p in lr_pairs if p.lr_type == "secreted"] if diff_edges is not None else []
-    diff_ecm_pairs = [p for p in lr_pairs if p.lr_type == "ecm"] if diff_edges is not None else []
+    for pair in lr_pairs:
+        # Pick edge table and weights
+        if pair.lr_type == "juxtacrine":
+            edge_tbl = jux_edges
+        else:
+            edge_tbl = diff_edges
 
-    chunks: list[pd.DataFrame] = []
-
-    for batch_pairs, edge_tbl, batch_weights in [
-        (jux_pairs, jux_edges, jux_edges["weight"].values if jux_edges is not None and len(jux_pairs) > 0 else None),
-        (diff_sec_pairs, diff_edges, diff_weights_secreted),
-        (diff_ecm_pairs, diff_edges, diff_weights_ecm),
-    ]:
-        if not batch_pairs or edge_tbl is None or len(edge_tbl) == 0 or batch_weights is None:
+        if edge_tbl is None or len(edge_tbl) == 0:
             continue
 
         senders = edge_tbl["sender"].values
         receivers = edge_tbl["receiver"].values
-        n_edges = len(senders)
 
-        # Build integer index arrays for expression lookup
-        sender_row_idx = np.array([cell_id_to_row[c] for c in senders], dtype=np.intp)
-        receiver_row_idx = np.array([cell_id_to_row[c] for c in receivers], dtype=np.intp)
+        # Compute weights
+        if pair.lr_type == "juxtacrine":
+            weights = edge_tbl["weight"].values
+        elif pair.lr_type == "secreted":
+            weights = np.exp(-edge_tbl["distance"].values / sigma_s) if sigma_s > 0 else np.ones(len(edge_tbl))
+        else:  # ecm
+            weights = np.exp(-edge_tbl["distance"].values / sigma_e) if sigma_e > 0 else np.ones(len(edge_tbl))
 
-        # Build per-pair column index lists
-        ligand_cols: list[list[int]] = []
-        receptor_cols: list[list[int]] = []
-        valid_pairs: list[LRPair] = []
-        for pair in batch_pairs:
-            lcols = [gene_to_col[g] for g in pair.ligand_genes if g in gene_to_col]
-            rcols = [gene_to_col[g] for g in pair.receptor_genes if g in gene_to_col]
-            ligand_cols.append(lcols)
-            receptor_cols.append(rcols)
-            valid_pairs.append(pair)
+        # Expression: min across subunits for complexes
+        l_vals = _get_complex_expr(expr_df, pair.ligand_genes, senders)
+        r_vals = _get_complex_expr(expr_df, pair.receptor_genes, receivers)
 
-        if not valid_pairs:
-            continue
+        scores = np.sqrt(np.maximum(l_vals, 0.0) * np.maximum(r_vals, 0.0)) * weights
 
-        # Batch score all pairs at once (C++ or Python fallback)
-        flat_scores = score_edges_batch(
-            expr_mat, sender_row_idx, receiver_row_idx, batch_weights,
-            ligand_cols, receptor_cols,
-        )
-
-        # Cell type lookup (once per edge table, reused for all pairs)
-        sender_types = cell_type_series.reindex(senders).values
-        receiver_types = cell_type_series.reindex(receivers).values
-
-        # Split flat_scores into per-pair DataFrames
-        for i, pair in enumerate(valid_pairs):
-            offset = i * n_edges
-            pair_scores = flat_scores[offset:offset + n_edges]
-
-            chunks.append(
-                pd.DataFrame(
-                    {
-                        "sender": senders,
-                        "receiver": receivers,
-                        "lr_name": pair.lr_name,
-                        "lr_type": pair.lr_type,
-                        "score": pair_scores,
-                        "weight": batch_weights,
-                        "sender_type": sender_types,
-                        "receiver_type": receiver_types,
-                    }
-                )
+        for k in range(len(senders)):
+            records.append(
+                {
+                    "sender": senders[k],
+                    "receiver": receivers[k],
+                    "lr_name": pair.lr_name,
+                    "lr_type": pair.lr_type,
+                    "score": scores[k],
+                    "weight": weights[k],
+                    "sender_type": cell_type_map.get(senders[k], "unknown"),
+                    "receiver_type": cell_type_map.get(receivers[k], "unknown"),
+                }
             )
 
-    if not chunks:
+    if not records:
         return pd.DataFrame(
             columns=["sender", "receiver", "lr_name", "lr_type", "score", "weight", "sender_type", "receiver_type"]
         )
 
-    return pd.concat(chunks, ignore_index=True)
+    return pd.DataFrame(records)
 
 
 def aggregate_scores(
@@ -245,23 +207,16 @@ def aggregate_scores(
         }
     ).reset_index()
 
-    # ── Per-cell scores (single groupby + pivot, no per-LR loop) ────────
-    sender_agg = edge_df.groupby(["lr_name", "sender"])["score"].sum()
-    receiver_agg = edge_df.groupby(["lr_name", "receiver"])["score"].sum()
+    # ── Per-cell scores ──────────────────────────────────────────────────
+    lr_names = edge_df["lr_name"].unique()
+    cell_scores = pd.DataFrame(index=sp.cell_index)
 
-    # Unstack LR names into columns: index=cell_id, columns=lr_name
-    sender_wide = sender_agg.unstack(level=0, fill_value=0.0)
-    receiver_wide = receiver_agg.unstack(level=0, fill_value=0.0)
-
-    # Reindex to full cell set and rename columns
-    sender_wide = sender_wide.reindex(sp.cell_index, fill_value=0.0)
-    receiver_wide = receiver_wide.reindex(sp.cell_index, fill_value=0.0)
-
-    sender_wide.columns = [f"{lr}_sender" for lr in sender_wide.columns]
-    receiver_wide.columns = [f"{lr}_receiver" for lr in receiver_wide.columns]
-
-    cell_scores = pd.concat([sender_wide, receiver_wide], axis=1)
-    cell_scores.index = sp.cell_index
+    for lr in lr_names:
+        sub = edge_df[edge_df["lr_name"] == lr]
+        sender_agg = sub.groupby("sender")["score"].sum()
+        receiver_agg = sub.groupby("receiver")["score"].sum()
+        cell_scores[f"{lr}_sender"] = sender_agg.reindex(sp.cell_index, fill_value=0.0).values
+        cell_scores[f"{lr}_receiver"] = receiver_agg.reindex(sp.cell_index, fill_value=0.0).values
 
     return summary, cell_scores
 
@@ -353,22 +308,6 @@ def _get_complex_expr(expr_df: pd.DataFrame, genes: list[str], cell_ids: np.ndar
     return vals.min(axis=1) if vals.shape[1] > 1 else vals.ravel()
 
 
-def _get_complex_expr_fast(
-    expr_mat: np.ndarray,
-    cell_id_to_row: dict,
-    gene_to_col: dict,
-    genes: list[str],
-    cell_ids: np.ndarray,
-) -> np.ndarray:
-    """Min expression across subunits using NumPy integer indexing (fast path)."""
-    col_idx = [gene_to_col[g] for g in genes if g in gene_to_col]
-    if not col_idx:
-        return np.zeros(len(cell_ids))
-    row_idx = np.array([cell_id_to_row[c] for c in cell_ids], dtype=np.intp)
-    vals = expr_mat[np.ix_(row_idx, col_idx)]
-    return vals.min(axis=1) if len(col_idx) > 1 else vals.ravel()
-
-
 def _get_cell_ids_from_graph(graph) -> np.ndarray:
     """Extract cell IDs from either PointSpatialGraph or PolygonSpatialGraph."""
     if hasattr(graph, "cell_ids"):
@@ -412,7 +351,7 @@ def _build_diffusible_edge_table(graph, sigma_secreted, sigma_ecm):
     receivers = cell_ids[cols_idx]
 
     dist_csr = dist.tocsr()
-    distances = np.asarray(dist_csr[rows_idx, cols_idx], dtype=np.float64).ravel()
+    distances = np.array([dist_csr[r, c] for r, c in zip(rows_idx, cols_idx, strict=True)], dtype=np.float64)
 
     median_dist = float(np.median(distances)) if len(distances) > 0 else 1.0
     if sigma_secreted is None:
@@ -432,45 +371,49 @@ def _build_diffusible_edge_table(graph, sigma_secreted, sigma_ecm):
 
 def _analytical_test(result, edge_df, N, type_counts, norm):
     """Analytical z-score significance test."""
-    n_rows = len(result)
-    pvals = np.ones(n_rows)
-    zscores = np.zeros(n_rows)
+    pvals = np.ones(len(result))
+    zscores = np.zeros(len(result))
 
-    if N < 2:
-        result = result.copy()
-        result["z_score"] = zscores
-        result["pvalue"] = pvals
-        return result
+    for i, row in result.iterrows():
+        lr = row["lr_name"]
+        st = row["sender_type"]
+        rt = row["receiver_type"]
+        obs_sum = row["sum_score"]
 
-    # Pre-compute per-LR stats once (instead of filtering edge_df per row)
-    lr_stats = edge_df.groupby("lr_name")["score"].agg(
-        total_score="sum",
-        mean_sq=lambda x: (x**2).mean(),
-        n_total_edges="count",
-    )
+        n_s = type_counts.get(st, 0)
+        n_r = type_counts.get(rt, 0)
 
-    # Vectorized lookup of n_s, n_r for each row
-    n_s_arr = result["sender_type"].map(type_counts).fillna(0).values.astype(float)
-    n_r_arr = result["receiver_type"].map(type_counts).fillna(0).values.astype(float)
-    obs_sum_arr = result["sum_score"].values.astype(float)
-    lr_names = result["lr_name"].values
+        if n_s == 0 or n_r == 0 or N < 2:
+            pvals[i] = 1.0
+            continue
 
-    # Vectorized lookup of per-LR stats
-    total_scores = lr_stats["total_score"].reindex(lr_names).values
-    mean_sqs = lr_stats["mean_sq"].reindex(lr_names).values
-    n_total_edges = lr_stats["n_total_edges"].reindex(lr_names).values
+        # All edge scores for this LR pair (across all cell types)
+        lr_edges = edge_df[edge_df["lr_name"] == lr]
+        if lr_edges.empty:
+            pvals[i] = 1.0
+            continue
 
-    # Compute p_pair, expected sum, and variance for all rows at once
-    valid = (n_s_arr > 0) & (n_r_arr > 0) & np.isfinite(total_scores)
-    p_pair = np.where(valid, (n_s_arr * n_r_arr) / (N * (N - 1)), 0.0)
-    e_sum = p_pair * total_scores
-    var_sum = p_pair * (1.0 - p_pair) * mean_sqs * n_total_edges
+        all_scores = lr_edges["score"].values
+        total_score = all_scores.sum()
+        mean_sq = (all_scores**2).mean()
+        n_total_edges = len(all_scores)
 
-    # Compute z-scores where variance is sufficient
-    computable = valid & (var_sum > 1e-30)
-    z = np.where(computable, (obs_sum_arr - e_sum) / np.sqrt(np.maximum(var_sum, 1e-30)), 0.0)
-    zscores = z
-    pvals = np.where(computable, norm.sf(z), 1.0)
+        # Expected sum under null (random label assignment)
+        p_pair = (n_s * n_r) / (N * (N - 1)) if N > 1 else 0.0
+        e_sum = p_pair * total_score
+
+        # Variance of sum under null
+        # Var = p*(1-p) * sum(s_e^2) for independent edge assignment
+        var_sum = p_pair * (1.0 - p_pair) * mean_sq * n_total_edges
+
+        if var_sum < 1e-30:
+            pvals[i] = 1.0
+            zscores[i] = 0.0
+            continue
+
+        z = (obs_sum - e_sum) / np.sqrt(var_sum)
+        zscores[i] = z
+        pvals[i] = float(norm.sf(z))  # one-sided
 
     result = result.copy()
     result["z_score"] = zscores
@@ -509,76 +452,45 @@ def _permutation_test(result, edge_df, sp, group_col, n_subsample, n_permutation
         result["pvalue"] = 1.0
         return result
 
-    # ── Encode everything as integer arrays for fast NumPy operations ────
+    # Cell IDs in subsampled edges
     cells_in_edges = np.unique(np.concatenate([sub_edge["sender"].values, sub_edge["receiver"].values]))
     sub_types = cell_types.reindex(cells_in_edges)
 
-    # Integer-encode cell IDs
-    cell_to_idx = {c: i for i, c in enumerate(cells_in_edges)}
-    sender_idx = np.array([cell_to_idx[c] for c in sub_edge["sender"].values], dtype=np.intp)
-    receiver_idx = np.array([cell_to_idx[c] for c in sub_edge["receiver"].values], dtype=np.intp)
+    # Observed sums per (lr, sender_type, receiver_type)
+    obs_key_to_sum = {}
+    for _, row in result.iterrows():
+        key = (row["lr_name"], row["sender_type"], row["receiver_type"])
+        sub_lr = sub_edge[sub_edge["lr_name"] == row["lr_name"]]
+        mask_st = sub_lr["sender"].map(lambda c, st=row["sender_type"]: sub_types.get(c) == st)
+        mask_rt = sub_lr["receiver"].map(lambda c, rt=row["receiver_type"]: sub_types.get(c) == rt)
+        obs_key_to_sum[key] = sub_lr.loc[mask_st & mask_rt, "score"].sum()
 
-    # Integer-encode cell types
-    unique_types = sub_types.unique()
-    type_to_int = {t: i for i, t in enumerate(unique_types)}
-    type_array = np.array([type_to_int[t] for t in sub_types.values], dtype=np.intp)
+    # Permutations
+    perm_counts = {k: 0 for k in obs_key_to_sum}
 
-    # Integer-encode LR names
-    unique_lrs = sub_edge["lr_name"].unique()
-    lr_to_int = {lr: i for i, lr in enumerate(unique_lrs)}
-    lr_int = np.array([lr_to_int[lr] for lr in sub_edge["lr_name"].values], dtype=np.intp)
+    for _ in range(n_permutations):
+        shuffled = sub_types.values.copy()
+        rng.shuffle(shuffled)
+        shuffled_map = dict(zip(cells_in_edges, shuffled, strict=True))
 
-    score_arr = sub_edge["score"].values.astype(np.float64)
+        perm_sender_types = sub_edge["sender"].map(shuffled_map)
+        perm_receiver_types = sub_edge["receiver"].map(shuffled_map)
 
-    # ── Build key index: each result row → (lr_int, st_int, rt_int) ──────
-    n_keys = len(result)
-    key_lr = np.empty(n_keys, dtype=np.intp)
-    key_st = np.empty(n_keys, dtype=np.intp)
-    key_rt = np.empty(n_keys, dtype=np.intp)
-    obs_sums = np.empty(n_keys, dtype=np.float64)
-    key_valid = np.ones(n_keys, dtype=bool)
-
-    for i, (_, row) in enumerate(result.iterrows()):
-        lr_i = lr_to_int.get(row["lr_name"])
-        st_i = type_to_int.get(row["sender_type"])
-        rt_i = type_to_int.get(row["receiver_type"])
-        if lr_i is None or st_i is None or rt_i is None:
-            key_valid[i] = False
-            key_lr[i] = key_st[i] = key_rt[i] = 0
-            obs_sums[i] = 0.0
-            continue
-        key_lr[i] = lr_i
-        key_st[i] = st_i
-        key_rt[i] = rt_i
-
-    # Compute observed sums using integer matching
-    for i in range(n_keys):
-        if not key_valid[i]:
-            obs_sums[i] = 0.0
-            continue
-        mask_i = (lr_int == key_lr[i]) & (type_array[sender_idx] == key_st[i]) & (type_array[receiver_idx] == key_rt[i])
-        obs_sums[i] = score_arr[mask_i].sum()
-
-    # ── Permutation (accelerated — C++ or Python fallback) ────────────────
-    perm_counts = permutation_test_accel(
-        sender_idx=sender_idx,
-        receiver_idx=receiver_idx,
-        type_array=type_array,
-        lr_int=lr_int,
-        score_arr=score_arr,
-        key_lr=key_lr,
-        key_st=key_st,
-        key_rt=key_rt,
-        key_valid=key_valid,
-        obs_sums=obs_sums,
-        n_types=len(unique_types),
-        n_lrs=len(unique_lrs),
-        n_permutations=n_permutations,
-        seed=seed,
-    )
+        for key in obs_key_to_sum:
+            lr, st, rt = key
+            lr_mask = sub_edge["lr_name"] == lr
+            mask_st = perm_sender_types == st
+            mask_rt = perm_receiver_types == rt
+            perm_sum = sub_edge.loc[lr_mask & mask_st & mask_rt, "score"].sum()
+            if perm_sum >= obs_key_to_sum[key]:
+                perm_counts[key] += 1
 
     result = result.copy()
-    pvals = np.where(key_valid, (perm_counts + 1) / (n_permutations + 1), 1.0)
+    pvals = []
+    for _, row in result.iterrows():
+        key = (row["lr_name"], row["sender_type"], row["receiver_type"])
+        p = (perm_counts.get(key, n_permutations) + 1) / (n_permutations + 1)
+        pvals.append(p)
     result["pvalue"] = pvals
 
     return result
