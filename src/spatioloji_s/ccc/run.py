@@ -100,6 +100,11 @@ class CCCConfig:
             If set, :func:`~spatioloji_s.ccc.zones.compare_morphology` is run.
         coord_type: Coordinate type for graph building. ``'global'`` or
             ``'local'``.
+        include_autocrine: If True, also score self-edges (i, i) for
+            cells co-expressing both ligand and receptor of an LR pair.
+            Autocrine edges use weight = 1.0, are tagged
+            ``interaction_mode='autocrine'`` in ``edge_df`` / ``scores``,
+            and are tested separately from paracrine.  Default True.
         seed: Random seed. Default 42.
         verbose: Print progress messages. Default True.
 
@@ -140,6 +145,9 @@ class CCCConfig:
 
     # Morphology (optional)
     morphology_col: str | None = None
+
+    # Autocrine
+    include_autocrine: bool = True
 
     # General
     coord_type: str = "global"
@@ -322,7 +330,10 @@ def run_ccc(
     graph_diffusible = graph_secreted if graph_secreted is not None else graph_ecm
 
     # ── Step 4: Score edges ───────────────────────────────────────────────
-    _log("Scoring edges")
+    if config.include_autocrine:
+        _log("Scoring edges (incl. autocrine self-edges)")
+    else:
+        _log("Scoring edges")
     edge_df = score_edges(
         sp,
         pairs,
@@ -332,6 +343,7 @@ def run_ccc(
         layer=config.layer,
         sigma_secreted=config.sigma_secreted,
         sigma_ecm=config.sigma_ecm,
+        include_autocrine=config.include_autocrine,
     )
 
     # ── Step 5: Filter by sender/receiver types ───────────────────────────

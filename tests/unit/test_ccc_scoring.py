@@ -76,7 +76,17 @@ class TestScoreEdges:
         """score_edges returns a DataFrame with expected columns."""
         result = score_edges(sp_ccc, lr_secreted, graph_diffusible=graph_diffusible)
         assert isinstance(result, pd.DataFrame)
-        expected_cols = {"sender", "receiver", "lr_name", "lr_type", "score", "weight", "sender_type", "receiver_type"}
+        expected_cols = {
+            "sender",
+            "receiver",
+            "lr_name",
+            "lr_type",
+            "score",
+            "weight",
+            "sender_type",
+            "receiver_type",
+            "interaction_mode",
+        }
         assert expected_cols == set(result.columns)
 
     def test_scores_non_negative(self, sp_ccc, lr_secreted, graph_diffusible):
@@ -163,7 +173,15 @@ class TestAggregateScores:
         """Summary should have expected columns."""
         edges = score_edges(sp_ccc, lr_secreted, graph_diffusible=graph_diffusible)
         summary, _ = aggregate_scores(edges, sp_ccc)
-        expected = {"lr_name", "sender_type", "receiver_type", "mean_score", "sum_score", "n_edges"}
+        expected = {
+            "lr_name",
+            "sender_type",
+            "receiver_type",
+            "interaction_mode",
+            "mean_score",
+            "sum_score",
+            "n_edges",
+        }
         assert expected == set(summary.columns)
 
     def test_summary_aggregation(self, sp_ccc, lr_secreted, graph_diffusible):
@@ -175,6 +193,7 @@ class TestAggregateScores:
                 (edges["lr_name"] == row["lr_name"])
                 & (edges["sender_type"] == row["sender_type"])
                 & (edges["receiver_type"] == row["receiver_type"])
+                & (edges["interaction_mode"] == row["interaction_mode"])
             )
             expected_sum = edges.loc[mask, "score"].sum()
             assert abs(row["sum_score"] - expected_sum) < 1e-6

@@ -3,6 +3,14 @@ feature_selection.py - Feature selection methods for spatial transcriptomics
 
 Provides methods for selecting highly variable genes before dimensionality
 reduction and clustering.
+
+GPU acceleration
+----------------
+``highly_variable_genes`` accepts ``device='auto' | 'cpu' | 'gpu'``.  When
+``'auto'`` and RAPIDS is importable, the heavy per-gene mean / var /
+Pearson-residual / deviance reductions (the cell-axis sums that dominate
+runtime on Xenium-scale data) run on cupy.  Small per-bin / polynomial
+fits stay on CPU.
 """
 
 import os
@@ -14,6 +22,8 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 from scipy.stats import rankdata
+
+from ._gpu import Device, _resolve_device, _to_cupy, _to_numpy, _warn_fallback
 
 # Methods grouped by the type of input they require
 _RAW_COUNT_METHODS = {"deviance", "pearson_residuals", "cell_ranger"}
@@ -63,6 +73,114 @@ def _validate_layer_for_method(method: str, layer: str | None) -> None:
             )
 
 
+def _hvg_mean_var_gpu(X, n_cells, n_genes):
+    """Compute (mean, var, gene_sums, cell_totals) on GPU. Returns numpy.
+
+    Uses ``_to_cupy`` so integer raw-counts inputs (the typical Xenium /
+    CosMx case) are up-promoted to ``float32`` before crossing onto the
+    device — ``cupyx.scipy.sparse`` only supports float / bool / complex
+    dtypes.
+    """
+    import cupy as cp
+
+    X_gpu = _to_cupy(X)
+
+    if sparse.issparse(X):
+        gene_sums = cp.asarray(X_gpu.sum(axis=0)).ravel().astype(cp.float64)
+        gene_sumsq = cp.asarray(X_gpu.power(2).sum(axis=0)).ravel().astype(cp.float64)
+        cell_totals = cp.asarray(X_gpu.sum(axis=1)).ravel().astype(cp.float64)
+        mean = gene_sums / n_cells
+        var = gene_sumsq / n_cells - mean**2
+    else:
+        mean = X_gpu.mean(axis=0)
+        var = X_gpu.var(axis=0)
+        gene_sums = X_gpu.sum(axis=0).astype(cp.float64)
+        cell_totals = X_gpu.sum(axis=1).astype(cp.float64)
+
+    return _to_numpy(mean), _to_numpy(var), _to_numpy(gene_sums), _to_numpy(cell_totals)
+
+
+def _hvg_pearson_residual_var_gpu(X, cell_totals, gene_fractions, clip_val, batch_size: int = 512):
+    """Compute per-gene Pearson residual variance on GPU.
+
+    Gene-chunked to bound device memory to ``n_cells × batch_size × float32``
+    per iteration (≈ 1 GB at 500k cells × 512 genes), avoiding the
+    multi-tens-of-GB temporary that a one-shot densification produces on
+    Xenium-scale data.  Returns numpy.
+    """
+    import cupy as cp
+
+    n_cells, n_genes = X.shape
+    is_sparse = sparse.issparse(X)
+    if is_sparse:
+        X = X.tocsr()
+
+    ct = cp.asarray(cell_totals, dtype=cp.float32)[:, None]
+    gf_full = cp.asarray(gene_fractions, dtype=cp.float32)
+    out = cp.empty(n_genes, dtype=cp.float32)
+
+    for s in range(0, n_genes, batch_size):
+        e = min(s + batch_size, n_genes)
+        if is_sparse:
+            X_b_cpu = X[:, s:e].toarray()
+        else:
+            X_b_cpu = X[:, s:e]
+        X_b = cp.asarray(X_b_cpu, dtype=cp.float32)
+        gf_b = gf_full[s:e][None, :]
+        mu_b = ct * gf_b
+        r_b = (X_b - mu_b) / cp.sqrt(mu_b + cp.float32(1e-10))
+        cp.clip(r_b, -clip_val, clip_val, out=r_b)
+        out[s:e] = r_b.var(axis=0)
+        # let cupy's caching allocator reclaim the slice temporaries
+        del X_b, mu_b, r_b
+
+    return _to_numpy(out)
+
+
+def _hvg_deviance_gpu(X, cell_totals, gene_fractions, batch_size: int = 256):
+    """Compute per-gene binomial deviance on GPU.
+
+    Gene-chunked, like ``_hvg_pearson_residual_var_gpu``, to keep device
+    memory bounded.  Uses ``float64`` per the CPU implementation to avoid
+    overflow in ``cell_totals - X`` for cells with very high transcript
+    counts.  Returns numpy.
+    """
+    import cupy as cp
+
+    n_cells, n_genes = X.shape
+    is_sparse = sparse.issparse(X)
+    if is_sparse:
+        X = X.tocsr()
+
+    ct = cp.asarray(cell_totals, dtype=cp.float64)[:, None]
+    gf_full = cp.asarray(gene_fractions, dtype=cp.float64)
+    out = cp.empty(n_genes, dtype=cp.float64)
+    eps = cp.float64(1e-10)
+    one = cp.float64(1.0)
+
+    for s in range(0, n_genes, batch_size):
+        e = min(s + batch_size, n_genes)
+        if is_sparse:
+            X_b_cpu = X[:, s:e].toarray()
+        else:
+            X_b_cpu = X[:, s:e]
+        X_b = cp.asarray(X_b_cpu, dtype=cp.float64)
+        p_b = gf_full[s:e][None, :]
+        mu_b = ct * p_b
+        n_minus_x = ct - X_b
+        n_minus_mu = ct - mu_b
+
+        safe_x = cp.where(X_b > 0, X_b, one)
+        term1 = cp.where(X_b > 0, X_b * cp.log(safe_x / (mu_b + eps)), 0.0)
+        safe_nx = cp.where(n_minus_x > 0, n_minus_x, one)
+        term2 = cp.where(n_minus_x > 0, n_minus_x * cp.log(safe_nx / (n_minus_mu + eps)), 0.0)
+        out[s:e] = 2.0 * (term1 + term2).sum(axis=0)
+
+        del X_b, mu_b, n_minus_x, n_minus_mu, safe_x, safe_nx, term1, term2
+
+    return _to_numpy(out)
+
+
 def highly_variable_genes(
     spatioloji_obj,
     layer: str | None = None,
@@ -76,6 +194,7 @@ def highly_variable_genes(
     n_spatial_neighbors: int = 15,
     output_column: str = "highly_variable",
     inplace: bool = True,
+    device: Device = "auto",
 ):
     """
     Identify highly variable genes (HVGs) using one of six methods.
@@ -118,6 +237,11 @@ def highly_variable_genes(
         output_column: Column name written to gene_meta, by default 'highly_variable'.
         inplace: If True, writes results to gene_meta and returns None.
             If False, returns a DataFrame with per-gene statistics.
+        device: Compute backend (``'auto' | 'cpu' | 'gpu'``).  ``'auto'``
+            (default) routes the heavy per-gene mean/var reduction and the
+            ``pearson_residuals`` / ``deviance`` matrix math through cupy
+            when RAPIDS is importable; small per-bin / polynomial fits and
+            ``spatial_moran``'s KDTree stay on CPU.
 
     Returns:
         None if inplace=True; otherwise a pd.DataFrame with per-gene statistics
@@ -144,16 +268,41 @@ def highly_variable_genes(
     _validate_layer_for_method(method, layer)
     print(f"\nIdentifying highly variable genes (method={method})")
 
+    # Keep sparse on the GPU path; only densify on the CPU path or when sparse
+    # input is unavoidable (CPU path has always done so).
     if layer is None:
-        X = spatioloji_obj.expression.get_dense()
+        X_raw = (
+            spatioloji_obj.expression.get_sparse()
+            if spatioloji_obj.expression.is_sparse
+            else spatioloji_obj.expression.get_dense()
+        )
     else:
-        X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
+        X_raw = spatioloji_obj.get_layer(layer)
 
-    n_cells, n_genes = X.shape
-    mean = X.mean(axis=0)
-    var = X.var(axis=0)
+    n_cells, n_genes = X_raw.shape
+
+    backend = _resolve_device(device, "highly_variable_genes")
+
+    cell_totals = None  # only computed if needed (pearson_residuals / deviance)
+
+    if backend == "gpu":
+        try:
+            mean, var, gene_sums, cell_totals = _hvg_mean_var_gpu(X_raw, n_cells, n_genes)
+            print("  (mean/var reductions on GPU)")
+            X = X_raw  # keep original, may still be sparse — needed for GPU helpers below
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("highly_variable_genes", exc)
+            backend = "cpu"
+
+    if backend == "cpu":
+        if sparse.issparse(X_raw):
+            X = X_raw.toarray()
+        else:
+            X = X_raw
+        mean = X.mean(axis=0)
+        var = X.var(axis=0)
 
     hvg_df = pd.DataFrame({"means": mean, "variances": var}, index=spatioloji_obj.gene_index)
 
@@ -216,23 +365,43 @@ def highly_variable_genes(
 
     elif method == "pearson_residuals":
         print(f"  Using Pearson residuals method (n_top_genes={n_top_genes})")
-        # Analytic Pearson residuals under Poisson null: μ_gc = n_c * p_g
-        # Processed in gene batches to limit peak memory usage.
-        X_f = X.astype(np.float32)
-        cell_totals = X_f.sum(axis=1)  # (n_cells,)
-        total_sum = float(cell_totals.sum())
-        gene_fractions = X_f.sum(axis=0) / (total_sum + 1e-10)  # (n_genes,)
         clip_val = float(np.sqrt(n_cells))
-        resid_var = np.zeros(n_genes, dtype=np.float32)
 
-        batch_size = 256
-        for start in range(0, n_genes, batch_size):
-            end = min(start + batch_size, n_genes)
-            X_b = X_f[:, start:end]
-            mu_b = cell_totals[:, np.newaxis] * gene_fractions[np.newaxis, start:end]
-            r_b = (X_b - mu_b) / np.sqrt(mu_b + 1e-10)
-            r_b = np.clip(r_b, -clip_val, clip_val)
-            resid_var[start:end] = r_b.var(axis=0)
+        if backend == "gpu":
+            if cell_totals is None:
+                cell_totals = np.asarray(X.sum(axis=1)).ravel().astype(np.float64) if sparse.issparse(X) \
+                    else X.sum(axis=1).astype(np.float64)
+            total_sum = float(cell_totals.sum())
+            gene_fractions = (
+                np.asarray(X.sum(axis=0)).ravel().astype(np.float64) if sparse.issparse(X)
+                else X.sum(axis=0).astype(np.float64)
+            ) / (total_sum + 1e-10)
+            try:
+                resid_var = _hvg_pearson_residual_var_gpu(X, cell_totals, gene_fractions, clip_val)
+                resid_var = resid_var.astype(np.float32)
+            except Exception as exc:
+                if device == "gpu":
+                    raise
+                _warn_fallback("highly_variable_genes (pearson)", exc)
+                backend = "cpu"
+
+        if backend == "cpu":
+            # Analytic Pearson residuals under Poisson null: μ_gc = n_c * p_g
+            # Processed in gene batches to limit peak memory usage.
+            X_f = X.astype(np.float32) if not sparse.issparse(X) else X.toarray().astype(np.float32)
+            cell_totals = X_f.sum(axis=1)
+            total_sum = float(cell_totals.sum())
+            gene_fractions = X_f.sum(axis=0) / (total_sum + 1e-10)
+            resid_var = np.zeros(n_genes, dtype=np.float32)
+
+            batch_size = 256
+            for start in range(0, n_genes, batch_size):
+                end = min(start + batch_size, n_genes)
+                X_b = X_f[:, start:end]
+                mu_b = cell_totals[:, np.newaxis] * gene_fractions[np.newaxis, start:end]
+                r_b = (X_b - mu_b) / np.sqrt(mu_b + 1e-10)
+                r_b = np.clip(r_b, -clip_val, clip_val)
+                resid_var[start:end] = r_b.var(axis=0)
 
         hvg_df["pearson_residual_variance"] = resid_var.astype(float)
         hvg_df["highly_variable"] = False
@@ -241,31 +410,50 @@ def highly_variable_genes(
 
     elif method == "deviance":
         print(f"  Using binomial deviance method (n_top_genes={n_top_genes})")
-        # Binomial deviance (Townes et al. 2019): how much information each gene
-        # carries beyond the depth-only null model μ_gc = n_c * p_g.
-        X_f = X.astype(np.float32)
-        cell_totals = X_f.sum(axis=1)  # (n_cells,)
-        total_sum = float(cell_totals.sum())
-        gene_fractions = X_f.sum(axis=0) / (total_sum + 1e-10)  # (n_genes,)
-        deviance = np.zeros(n_genes, dtype=np.float64)
 
-        batch_size = 256
-        for start in range(0, n_genes, batch_size):
-            end = min(start + batch_size, n_genes)
-            X_b = X_f[:, start:end].astype(np.float64)
-            p_b = gene_fractions[start:end].astype(np.float64)
-            ct = cell_totals[:, np.newaxis].astype(np.float64)
-            mu_b = ct * p_b[np.newaxis, :]
-            n_minus_x = ct - X_b
-            n_minus_mu = ct - mu_b
-            with np.errstate(divide="ignore", invalid="ignore"):
-                term1 = np.where(X_b > 0, X_b * np.log(np.where(X_b > 0, X_b / (mu_b + 1e-10), 1.0)), 0.0)
-                term2 = np.where(
-                    n_minus_x > 0,
-                    n_minus_x * np.log(np.where(n_minus_x > 0, n_minus_x / (n_minus_mu + 1e-10), 1.0)),
-                    0.0,
-                )
-            deviance[start:end] = 2.0 * (term1 + term2).sum(axis=0)
+        if backend == "gpu":
+            if cell_totals is None:
+                cell_totals = np.asarray(X.sum(axis=1)).ravel().astype(np.float64) if sparse.issparse(X) \
+                    else X.sum(axis=1).astype(np.float64)
+            total_sum = float(cell_totals.sum())
+            gene_fractions = (
+                np.asarray(X.sum(axis=0)).ravel().astype(np.float64) if sparse.issparse(X)
+                else X.sum(axis=0).astype(np.float64)
+            ) / (total_sum + 1e-10)
+            try:
+                deviance = _hvg_deviance_gpu(X, cell_totals, gene_fractions)
+            except Exception as exc:
+                if device == "gpu":
+                    raise
+                _warn_fallback("highly_variable_genes (deviance)", exc)
+                backend = "cpu"
+
+        if backend == "cpu":
+            # Binomial deviance (Townes et al. 2019): how much information each gene
+            # carries beyond the depth-only null model μ_gc = n_c * p_g.
+            X_f = X.astype(np.float32) if not sparse.issparse(X) else X.toarray().astype(np.float32)
+            cell_totals = X_f.sum(axis=1)
+            total_sum = float(cell_totals.sum())
+            gene_fractions = X_f.sum(axis=0) / (total_sum + 1e-10)
+            deviance = np.zeros(n_genes, dtype=np.float64)
+
+            batch_size = 256
+            for start in range(0, n_genes, batch_size):
+                end = min(start + batch_size, n_genes)
+                X_b = X_f[:, start:end].astype(np.float64)
+                p_b = gene_fractions[start:end].astype(np.float64)
+                ct = cell_totals[:, np.newaxis].astype(np.float64)
+                mu_b = ct * p_b[np.newaxis, :]
+                n_minus_x = ct - X_b
+                n_minus_mu = ct - mu_b
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    term1 = np.where(X_b > 0, X_b * np.log(np.where(X_b > 0, X_b / (mu_b + 1e-10), 1.0)), 0.0)
+                    term2 = np.where(
+                        n_minus_x > 0,
+                        n_minus_x * np.log(np.where(n_minus_x > 0, n_minus_x / (n_minus_mu + 1e-10), 1.0)),
+                        0.0,
+                    )
+                deviance[start:end] = 2.0 * (term1 + term2).sum(axis=0)
 
         hvg_df["deviance"] = deviance
         hvg_df["highly_variable"] = False
@@ -274,6 +462,10 @@ def highly_variable_genes(
 
     elif method == "spatial_moran":
         print(f"  Using spatial Moran's I method (n_top_genes={n_top_genes})")
+        # spatial_moran has no GPU helper; densify here if we took the GPU
+        # path on mean/var (X may still be sparse).
+        if sparse.issparse(X):
+            X = X.toarray()
         from scipy.sparse import csr_matrix
         from scipy.spatial import KDTree
 
@@ -456,6 +648,7 @@ def compare_hvg_methods(
     layers: list[str | None] | None = None,
     n_spatial_neighbors: int = 15,
     n_jobs: int = 1,
+    device: Device = "auto",
 ) -> pd.DataFrame:
     """
     Compare HVG gene lists across multiple selection methods.
@@ -534,6 +727,7 @@ def compare_hvg_methods(
                 method=method,
                 n_spatial_neighbors=n_spatial_neighbors,
                 inplace=False,
+                device=device,
             )
             return method, hvg_df["highly_variable"].values.astype(bool)
         except Exception as exc:

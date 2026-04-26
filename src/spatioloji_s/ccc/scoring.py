@@ -11,6 +11,15 @@ juxtacrine : weight = fraction_a * fraction_b  (from contact_frac_df)
 secreted   : weight = exp(-d / sigma)          (distance decay)
 ecm        : same as secreted
 
+Autocrine (optional)
+--------------------
+When ``include_autocrine=True``, self-edges (i, i) are added for every
+cell co-expressing a pair's ligand and receptor.  Autocrine edges:
+  - use weight = 1.0 (no spatial decay)
+  - apply to all lr_types (juxtacrine, secreted, ecm)
+  - are tagged ``interaction_mode='autocrine'`` so they remain
+    separable from same-type paracrine in aggregation and significance.
+
 Multi-subunit complexes
 -----------------------
 L_i = min(subunit expressions across ligand genes)
@@ -44,6 +53,7 @@ def score_edges(
     layer: str | None = None,
     sigma_secreted: float | None = None,
     sigma_ecm: float | None = None,
+    include_autocrine: bool = True,
 ) -> pd.DataFrame:
     """
     Score every graph edge for each LR pair.
@@ -54,6 +64,12 @@ def score_edges(
 
     where L_i and R_j are expression values (min across subunits for
     complexes) and w_ij is a signaling-type-specific weight.
+
+    When ``include_autocrine=True``, self-edges (i, i) are additionally
+    scored for every cell co-expressing the pair's ligand and receptor,
+    using weight = 1.0.  Autocrine rows are tagged
+    ``interaction_mode='autocrine'``; intercellular rows are tagged
+    ``interaction_mode='paracrine'``.
 
     Args:
         sp: spatioloji object.
@@ -71,10 +87,15 @@ def score_edges(
             If None, estimated as median edge distance.
         sigma_ecm: Distance decay parameter for ECM pairs.
             If None, estimated as median edge distance.
+        include_autocrine: If True, also score self-edges (i, i) for
+            every cell co-expressing both the ligand and the receptor
+            of a given LR pair.  Applies to all lr_types.  Default
+            True — pass ``include_autocrine=False`` to recover
+            intercellular-only behavior.
 
     Returns:
         DataFrame with columns: sender, receiver, lr_name, lr_type,
-        score, weight, sender_type, receiver_type.
+        score, weight, sender_type, receiver_type, interaction_mode.
 
     Raises:
         ValueError: If a required graph is missing for a signaling type.
@@ -83,6 +104,8 @@ def score_edges(
         >>> from spatioloji_s.ccc.database import LRPair
         >>> pairs = [LRPair("L1_R1", "gene_L1", "gene_R1", "test", "secreted")]
         >>> edges = score_edges(sp, pairs, graph_diffusible=graph)
+        >>> edges = score_edges(sp, pairs, graph_diffusible=graph,
+        ...                     include_autocrine=True)
     """
     # ── Validate inputs ──────────────────────────────────────────────────
     if group_col not in sp.cell_meta.columns:
@@ -123,46 +146,106 @@ def score_edges(
         else:
             edge_tbl = diff_edges
 
-        if edge_tbl is None or len(edge_tbl) == 0:
-            continue
+        if edge_tbl is not None and len(edge_tbl) > 0:
+            senders = edge_tbl["sender"].values
+            receivers = edge_tbl["receiver"].values
 
-        senders = edge_tbl["sender"].values
-        receivers = edge_tbl["receiver"].values
+            # Compute weights
+            if pair.lr_type == "juxtacrine":
+                weights = edge_tbl["weight"].values
+            elif pair.lr_type == "secreted":
+                weights = np.exp(-edge_tbl["distance"].values / sigma_s) if sigma_s > 0 else np.ones(len(edge_tbl))
+            else:  # ecm
+                weights = np.exp(-edge_tbl["distance"].values / sigma_e) if sigma_e > 0 else np.ones(len(edge_tbl))
 
-        # Compute weights
-        if pair.lr_type == "juxtacrine":
-            weights = edge_tbl["weight"].values
-        elif pair.lr_type == "secreted":
-            weights = np.exp(-edge_tbl["distance"].values / sigma_s) if sigma_s > 0 else np.ones(len(edge_tbl))
-        else:  # ecm
-            weights = np.exp(-edge_tbl["distance"].values / sigma_e) if sigma_e > 0 else np.ones(len(edge_tbl))
+            # Expression: min across subunits for complexes
+            l_vals = _get_complex_expr(expr_df, pair.ligand_genes, senders)
+            r_vals = _get_complex_expr(expr_df, pair.receptor_genes, receivers)
 
-        # Expression: min across subunits for complexes
-        l_vals = _get_complex_expr(expr_df, pair.ligand_genes, senders)
-        r_vals = _get_complex_expr(expr_df, pair.receptor_genes, receivers)
+            scores = np.sqrt(np.maximum(l_vals, 0.0) * np.maximum(r_vals, 0.0)) * weights
 
-        scores = np.sqrt(np.maximum(l_vals, 0.0) * np.maximum(r_vals, 0.0)) * weights
+            for k in range(len(senders)):
+                records.append(
+                    {
+                        "sender": senders[k],
+                        "receiver": receivers[k],
+                        "lr_name": pair.lr_name,
+                        "lr_type": pair.lr_type,
+                        "score": scores[k],
+                        "weight": weights[k],
+                        "sender_type": cell_type_map.get(senders[k], "unknown"),
+                        "receiver_type": cell_type_map.get(receivers[k], "unknown"),
+                        "interaction_mode": "paracrine",
+                    }
+                )
 
-        for k in range(len(senders)):
-            records.append(
-                {
-                    "sender": senders[k],
-                    "receiver": receivers[k],
-                    "lr_name": pair.lr_name,
-                    "lr_type": pair.lr_type,
-                    "score": scores[k],
-                    "weight": weights[k],
-                    "sender_type": cell_type_map.get(senders[k], "unknown"),
-                    "receiver_type": cell_type_map.get(receivers[k], "unknown"),
-                }
-            )
+        # ── Autocrine self-edges (opt-in) ────────────────────────────
+        if include_autocrine:
+            auto_records = _score_autocrine_for_pair(pair, expr_df, cell_type_map)
+            records.extend(auto_records)
 
     if not records:
         return pd.DataFrame(
-            columns=["sender", "receiver", "lr_name", "lr_type", "score", "weight", "sender_type", "receiver_type"]
+            columns=[
+                "sender",
+                "receiver",
+                "lr_name",
+                "lr_type",
+                "score",
+                "weight",
+                "sender_type",
+                "receiver_type",
+                "interaction_mode",
+            ]
         )
 
     return pd.DataFrame(records)
+
+
+def _score_autocrine_for_pair(
+    pair: LRPair,
+    expr_df: pd.DataFrame,
+    cell_type_map: dict,
+) -> list[dict]:
+    """Build autocrine self-edge records for a single LR pair.
+
+    For every cell co-expressing all ligand subunits AND all receptor
+    subunits at non-zero level, emit an (i, i) edge with weight = 1.0
+    and ``interaction_mode='autocrine'``.
+    """
+    cell_ids = np.asarray(expr_df.index)
+    if len(cell_ids) == 0:
+        return []
+
+    l_vals = _get_complex_expr(expr_df, pair.ligand_genes, cell_ids)
+    r_vals = _get_complex_expr(expr_df, pair.receptor_genes, cell_ids)
+
+    coexpr_mask = (l_vals > 0.0) & (r_vals > 0.0)
+    if not coexpr_mask.any():
+        return []
+
+    sel_cells = cell_ids[coexpr_mask]
+    sel_l = np.maximum(l_vals[coexpr_mask], 0.0)
+    sel_r = np.maximum(r_vals[coexpr_mask], 0.0)
+    scores = np.sqrt(sel_l * sel_r)  # weight = 1.0
+
+    out: list[dict] = []
+    for k in range(len(sel_cells)):
+        ctype = cell_type_map.get(sel_cells[k], "unknown")
+        out.append(
+            {
+                "sender": sel_cells[k],
+                "receiver": sel_cells[k],
+                "lr_name": pair.lr_name,
+                "lr_type": pair.lr_type,
+                "score": float(scores[k]),
+                "weight": 1.0,
+                "sender_type": ctype,
+                "receiver_type": ctype,
+                "interaction_mode": "autocrine",
+            }
+        )
+    return out
 
 
 def aggregate_scores(
@@ -181,9 +264,12 @@ def aggregate_scores(
     Returns:
         Tuple of (summary_df, cell_scores_df).
 
-        **summary_df** — one row per (lr_name, sender_type, receiver_type)
-        with columns: lr_name, sender_type, receiver_type, mean_score,
-        sum_score, n_edges.
+        **summary_df** — one row per
+        (lr_name, sender_type, receiver_type, interaction_mode) with
+        columns: lr_name, sender_type, receiver_type, interaction_mode,
+        mean_score, sum_score, n_edges.  When the input ``edge_df`` has
+        no ``interaction_mode`` column (legacy callers), all rows are
+        treated as ``'paracrine'``.
 
         **cell_scores_df** — indexed by cell_id with columns
         ``{lr_name}_sender`` and ``{lr_name}_receiver`` for each LR pair.
@@ -192,13 +278,26 @@ def aggregate_scores(
         >>> summary, cell_scores = aggregate_scores(edge_df, sp)
     """
     if edge_df.empty:
-        cols = ["lr_name", "sender_type", "receiver_type", "mean_score", "sum_score", "n_edges"]
+        cols = [
+            "lr_name",
+            "sender_type",
+            "receiver_type",
+            "interaction_mode",
+            "mean_score",
+            "sum_score",
+            "n_edges",
+        ]
         summary = pd.DataFrame(columns=cols)
         cell_scores = pd.DataFrame(index=sp.cell_index)
         return summary, cell_scores
 
+    # Backfill interaction_mode for callers that produced edge_df with an
+    # older score_edges (no autocrine support) — treat every row as paracrine.
+    if "interaction_mode" not in edge_df.columns:
+        edge_df = edge_df.assign(interaction_mode="paracrine")
+
     # ── Type-pair summary ────────────────────────────────────────────────
-    grouped = edge_df.groupby(["lr_name", "sender_type", "receiver_type"])["score"]
+    grouped = edge_df.groupby(["lr_name", "sender_type", "receiver_type", "interaction_mode"])["score"]
     summary = pd.DataFrame(
         {
             "mean_score": grouped.mean(),
@@ -248,7 +347,10 @@ def test_significance(
 
     Returns:
         Updated summary_df with added columns: pvalue, fdr, and
-        z_score (analytical only).
+        z_score (analytical only).  Autocrine summary rows (where the
+        input has ``interaction_mode == 'autocrine'``) are tested
+        against a null built only from paracrine edges, so paracrine
+        and autocrine p-values are directly comparable.
 
     Example:
         >>> result = test_significance(summary, edges, sp, method="analytical")
@@ -267,6 +369,12 @@ def test_significance(
             summary_df["z_score"] = pd.Series(dtype=float)
         return summary_df
 
+    # Backfill interaction_mode for legacy callers (treat all as paracrine)
+    if "interaction_mode" not in edge_df.columns:
+        edge_df = edge_df.assign(interaction_mode="paracrine")
+    if "interaction_mode" not in summary_df.columns:
+        summary_df = summary_df.assign(interaction_mode="paracrine")
+
     cell_types = sp.cell_meta[group_col]
     N = len(cell_types)
     type_counts = cell_types.value_counts().to_dict()
@@ -274,8 +382,11 @@ def test_significance(
     result = summary_df.copy()
 
     if method == "analytical":
-        result = _analytical_test(result, edge_df, N, type_counts, norm)
+        # Paracrine-only edges as the null distribution
+        paracrine_edges = edge_df[edge_df["interaction_mode"] == "paracrine"]
+        result = _analytical_test(result, paracrine_edges, N, type_counts, norm)
     elif method == "permutation":
+        # Permutation handles paracrine and autocrine separately
         result = _permutation_test(result, edge_df, sp, group_col, n_subsample, n_permutations, seed)
     else:
         raise ValueError(f"Unknown method '{method}'. Choose 'analytical' or 'permutation'.")
@@ -370,15 +481,28 @@ def _build_diffusible_edge_table(graph, sigma_secreted, sigma_ecm):
 
 
 def _analytical_test(result, edge_df, N, type_counts, norm):
-    """Analytical z-score significance test."""
+    """Analytical z-score significance test.
+
+    For paracrine rows the pair-coincidence probability is
+    ``n_s * n_r / (N * (N - 1))`` (ordered pair of distinct cells).
+    For autocrine rows it is ``n_s / N`` (single cell of type s).
+    The null is built from ``edge_df``, which the caller has already
+    restricted to paracrine edges.
+    """
     pvals = np.ones(len(result))
     zscores = np.zeros(len(result))
+    modes = (
+        result["interaction_mode"].values
+        if "interaction_mode" in result.columns
+        else np.array(["paracrine"] * len(result))
+    )
 
     for i, row in result.iterrows():
         lr = row["lr_name"]
         st = row["sender_type"]
         rt = row["receiver_type"]
         obs_sum = row["sum_score"]
+        mode = modes[i] if i < len(modes) else "paracrine"
 
         n_s = type_counts.get(st, 0)
         n_r = type_counts.get(rt, 0)
@@ -387,7 +511,7 @@ def _analytical_test(result, edge_df, N, type_counts, norm):
             pvals[i] = 1.0
             continue
 
-        # All edge scores for this LR pair (across all cell types)
+        # Null edge scores for this LR pair (paracrine only)
         lr_edges = edge_df[edge_df["lr_name"] == lr]
         if lr_edges.empty:
             pvals[i] = 1.0
@@ -399,7 +523,13 @@ def _analytical_test(result, edge_df, N, type_counts, norm):
         n_total_edges = len(all_scores)
 
         # Expected sum under null (random label assignment)
-        p_pair = (n_s * n_r) / (N * (N - 1)) if N > 1 else 0.0
+        if mode == "autocrine":
+            # Self-edge: a single cell drawn at random has type s with
+            # prob n_s / N; sender_type == receiver_type by construction
+            # so n_r is ignored.
+            p_pair = n_s / N if N > 0 else 0.0
+        else:
+            p_pair = (n_s * n_r) / (N * (N - 1)) if N > 1 else 0.0
         e_sum = p_pair * total_score
 
         # Variance of sum under null
@@ -452,20 +582,31 @@ def _permutation_test(result, edge_df, sp, group_col, n_subsample, n_permutation
         result["pvalue"] = 1.0
         return result
 
+    # Backfill interaction_mode if absent (legacy callers)
+    if "interaction_mode" not in sub_edge.columns:
+        sub_edge["interaction_mode"] = "paracrine"
+
     # Cell IDs in subsampled edges
     cells_in_edges = np.unique(np.concatenate([sub_edge["sender"].values, sub_edge["receiver"].values]))
     sub_types = cell_types.reindex(cells_in_edges)
 
-    # Observed sums per (lr, sender_type, receiver_type)
+    has_mode = "interaction_mode" in result.columns
+
+    # Observed sums per (lr, sender_type, receiver_type, interaction_mode).
+    # Mode is part of the key so paracrine and autocrine rows for the same
+    # (lr, type, type) cell don't collide.
     obs_key_to_sum = {}
     for _, row in result.iterrows():
-        key = (row["lr_name"], row["sender_type"], row["receiver_type"])
-        sub_lr = sub_edge[sub_edge["lr_name"] == row["lr_name"]]
+        mode = row["interaction_mode"] if has_mode else "paracrine"
+        key = (row["lr_name"], row["sender_type"], row["receiver_type"], mode)
+        sub_lr = sub_edge[(sub_edge["lr_name"] == row["lr_name"]) & (sub_edge["interaction_mode"] == mode)]
         mask_st = sub_lr["sender"].map(lambda c, st=row["sender_type"]: sub_types.get(c) == st)
         mask_rt = sub_lr["receiver"].map(lambda c, rt=row["receiver_type"]: sub_types.get(c) == rt)
         obs_key_to_sum[key] = sub_lr.loc[mask_st & mask_rt, "score"].sum()
 
-    # Permutations
+    # Permutations: shuffle cell-type labels and re-score under the null.
+    # A single shuffled label per cell means autocrine self-edges keep
+    # sender_type == receiver_type (correct invariant for self-edges).
     perm_counts = {k: 0 for k in obs_key_to_sum}
 
     for _ in range(n_permutations):
@@ -477,8 +618,8 @@ def _permutation_test(result, edge_df, sp, group_col, n_subsample, n_permutation
         perm_receiver_types = sub_edge["receiver"].map(shuffled_map)
 
         for key in obs_key_to_sum:
-            lr, st, rt = key
-            lr_mask = sub_edge["lr_name"] == lr
+            lr, st, rt, mode = key
+            lr_mask = (sub_edge["lr_name"] == lr) & (sub_edge["interaction_mode"] == mode)
             mask_st = perm_sender_types == st
             mask_rt = perm_receiver_types == rt
             perm_sum = sub_edge.loc[lr_mask & mask_st & mask_rt, "score"].sum()
@@ -488,7 +629,8 @@ def _permutation_test(result, edge_df, sp, group_col, n_subsample, n_permutation
     result = result.copy()
     pvals = []
     for _, row in result.iterrows():
-        key = (row["lr_name"], row["sender_type"], row["receiver_type"])
+        mode = row["interaction_mode"] if has_mode else "paracrine"
+        key = (row["lr_name"], row["sender_type"], row["receiver_type"], mode)
         p = (perm_counts.get(key, n_permutations) + 1) / (n_permutations + 1)
         pvals.append(p)
     result["pvalue"] = pvals

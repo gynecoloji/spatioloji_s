@@ -1451,7 +1451,17 @@ def xenium_plot_spatial(
     # --- Build color mapping ---
     if kind == "categorical":
         nan_mask = pd.isna(pd.array(arr, dtype=object))
-        categories = sorted(set(str(v) for v in arr[~nan_mask]))
+        present = set(str(v) for v in arr[~nan_mask])
+
+        # Prefer the pandas Categorical level order on cell_meta[values];
+        # fall back to alphabetical sort for string/object columns or ndarrays.
+        category_order = None
+        if isinstance(values, str) and values in sp.cell_meta.columns:
+            col = sp.cell_meta[values]
+            if isinstance(col.dtype, pd.CategoricalDtype):
+                category_order = [str(c) for c in col.cat.categories if str(c) in present]
+
+        categories = category_order if category_order else sorted(present)
         n_cats = len(categories)
 
         if color_dict is not None:
@@ -1626,6 +1636,12 @@ def xenium_show_staining(
     vmax_percentile: float = 99.5,
     figsize_per_panel: tuple[float, float] = (8, 8),
     titles: list[str] | None = None,
+    colorbar: bool = True,
+    colorbar_label: str = "Intensity",
+    colorbar_orientation: str = "vertical",
+    colorbar_shrink: float = 0.85,
+    colorbar_fraction: float = 0.046,
+    colorbar_pad: float = 0.04,
     save_dir: str | None = None,
     filename: str | None = None,
     dpi: int = 150,
@@ -1680,6 +1696,20 @@ def xenium_show_staining(
         ``(width, height)`` per channel panel.
     titles : list of str or None
         Custom titles per channel.  If None, uses standard stain names.
+    colorbar : bool
+        If True (default), draw a per-panel gradient colorbar showing the
+        intensity → colour mapping for each channel.  Each colorbar uses
+        that channel's own ``cmap`` and ``vmin/vmax``.
+    colorbar_label : str
+        Label text for the colorbar, by default ``"Intensity"``.
+    colorbar_orientation : {'vertical', 'horizontal'}
+        Colorbar orientation, by default ``'vertical'``.
+    colorbar_shrink : float
+        Shrink factor for the colorbar relative to the panel, by default 0.85.
+    colorbar_fraction : float
+        Fraction of original axes to use for colorbar, by default 0.046.
+    colorbar_pad : float
+        Padding between panel and colorbar (in axes fraction), by default 0.04.
     save_dir : str or None
         Directory to save the figure.
     filename : str or None
@@ -1783,9 +1813,22 @@ def xenium_show_staining(
         ax = axes[i]
         v_lo = vmin if vmin is not None else float(img.min())
         v_hi = vmax if vmax is not None else float(np.percentile(img, vmax_percentile))
-        ax.imshow(img, cmap=cmap_name, vmin=v_lo, vmax=v_hi)
+        im = ax.imshow(img, cmap=cmap_name, vmin=v_lo, vmax=v_hi)
         ax.set_title(f"{ch_title}: {img.shape}", fontsize=12)
         ax.axis("off")
+        # Per-panel gradient colorbar. Each channel has its own cmap and
+        # intensity range (vmin/vmax), so a shared colorbar would be wrong.
+        if colorbar:
+            cbar = fig.colorbar(
+                im,
+                ax=ax,
+                fraction=colorbar_fraction,
+                pad=colorbar_pad,
+                shrink=colorbar_shrink,
+                orientation=colorbar_orientation,
+            )
+            cbar.set_label(colorbar_label, fontsize=9)
+            cbar.ax.tick_params(labelsize=8)
 
     plt.tight_layout()
 

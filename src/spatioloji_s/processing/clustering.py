@@ -3,6 +3,18 @@ clustering.py - Clustering methods for spatial transcriptomics data
 
 Provides various clustering algorithms optimized for spatioloji objects,
 including spatial-aware clustering methods.
+
+GPU acceleration
+----------------
+``leiden_clustering``, ``kmeans_clustering``, ``find_optimal_clusters``
+and ``leiden_resolution_sweep`` accept a ``device`` parameter
+(``'auto' | 'cpu' | 'gpu'``).  Internal helpers ``_build_knn`` and
+``_compute_umap_connectivities`` also accept ``device``.
+
+When ``device='auto'`` (default) and RAPIDS (``cuml``, ``cugraph``,
+``cupy``) is importable, k-NN runs on cuML, the UMAP fuzzy connectivity
+search runs on cupy, and Leiden runs on cuGraph.  Hierarchical
+clustering has no good GPU equivalent and remains CPU-only.
 """
 
 import warnings
@@ -15,6 +27,8 @@ from scipy import sparse
 from sklearn.cluster import DBSCAN, AgglomerativeClustering, KMeans
 from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
+
+from ._gpu import Device, _resolve_device, _to_cupy, _to_numpy, _warn_fallback
 
 
 def _get_expression_matrix(spatioloji_obj, layer: str | None) -> np.ndarray:
@@ -49,6 +63,7 @@ def _subset_hvg(spatioloji_obj, X: np.ndarray) -> np.ndarray:
 def _compute_umap_connectivities(
     knn_distances: np.ndarray,
     knn_indices: np.ndarray,
+    device: Device = "auto",
 ) -> "sparse.csr_matrix":
     """Build UMAP fuzzy-simplicial-set edge weights.
 
@@ -63,20 +78,29 @@ def _compute_umap_connectivities(
         Distances to the k nearest neighbours (self excluded, nearest first).
     knn_indices : np.ndarray, shape (n_cells, k)
         Global cell indices of the k nearest neighbours.
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  GPU runs the same vectorised σ search on cupy and
+        builds a cupyx CSR adjacency, then converts to scipy CSR for return.
 
     Returns
     -------
     scipy.sparse.csr_matrix
         Symmetric (n_cells × n_cells) weight matrix with values in [0, 1].
     """
+    backend = _resolve_device(device, "UMAP connectivities")
+
+    if backend == "gpu":
+        try:
+            return _compute_umap_connectivities_gpu(knn_distances, knn_indices)
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("UMAP connectivities", exc)
+
     n_cells, k = knn_distances.shape
     target = float(np.log2(k))
 
-    # ρ_i — distance to the 1st nearest neighbour (shifts the origin)
     rho = knn_distances[:, 0].astype(np.float64)
-
-    # Vectorised binary search for σ across ALL cells simultaneously.
-    # For each cell i, find σ_i such that Σ_j exp(−shifted_ij / σ_i) = target.
     shifted_all = np.maximum(knn_distances.astype(np.float64) - rho[:, np.newaxis], 0.0)
 
     lo = np.zeros(n_cells, dtype=np.float64)
@@ -84,17 +108,14 @@ def _compute_umap_connectivities(
     mid = np.ones(n_cells, dtype=np.float64)
 
     for _ in range(64):
-        # psum[i] = Σ_j exp(−shifted_all[i,j] / mid[i])
         psum = np.exp(-shifted_all / mid[:, np.newaxis]).sum(axis=1)
         converged = np.abs(psum - target) < 1e-5
         if converged.all():
             break
         too_high = psum > target
         too_low = ~too_high & ~converged
-        # too_high: hi = mid, mid = (lo + mid) / 2
         hi = np.where(too_high, mid, hi)
         mid_new = np.where(too_high, (lo + mid) / 2.0, mid)
-        # too_low: lo = mid, mid = 2*mid if hi==inf else (lo+hi)/2
         lo = np.where(too_low, mid, lo)
         hi_inf = np.isinf(hi)
         mid_new = np.where(too_low & hi_inf, mid * 2.0, mid_new)
@@ -102,26 +123,71 @@ def _compute_umap_connectivities(
         mid = mid_new
 
     sigma = np.maximum(mid, 1e-8)
-
-    # Directed weight matrix A: w_ij = exp(−shifted_ij / σ_i)
-    # shifted_all already computed above during binary search
     weights = np.exp(-shifted_all / sigma[:, np.newaxis]).astype(np.float32)
 
     row_idx = np.repeat(np.arange(n_cells, dtype=np.int32), k)
     col_idx = knn_indices.ravel().astype(np.int32)
     A = sparse.csr_matrix((weights.ravel(), (row_idx, col_idx)), shape=(n_cells, n_cells))
 
-    # Fuzzy union symmetrisation: W = A + Aᵀ − A ⊙ Aᵀ
     At = A.T.tocsr()
     W = A + At - A.multiply(At)
     return W
 
 
+def _compute_umap_connectivities_gpu(knn_distances: np.ndarray, knn_indices: np.ndarray):
+    """cupy port of the σ binary search and fuzzy-union symmetrisation."""
+    import cupy as cp
+    from cupyx.scipy import sparse as cusparse
+
+    n_cells, k = knn_distances.shape
+    target = float(np.log2(k))
+
+    d = cp.asarray(knn_distances, dtype=cp.float64)
+    rho = d[:, 0]
+    shifted_all = cp.maximum(d - rho[:, cp.newaxis], 0.0)
+
+    lo = cp.zeros(n_cells, dtype=cp.float64)
+    hi = cp.full(n_cells, cp.inf, dtype=cp.float64)
+    mid = cp.ones(n_cells, dtype=cp.float64)
+
+    for _ in range(64):
+        psum = cp.exp(-shifted_all / mid[:, cp.newaxis]).sum(axis=1)
+        converged = cp.abs(psum - target) < 1e-5
+        if bool(converged.all()):
+            break
+        too_high = psum > target
+        too_low = ~too_high & ~converged
+        hi = cp.where(too_high, mid, hi)
+        mid_new = cp.where(too_high, (lo + mid) / 2.0, mid)
+        lo = cp.where(too_low, mid, lo)
+        hi_inf = cp.isinf(hi)
+        mid_new = cp.where(too_low & hi_inf, mid * 2.0, mid_new)
+        mid_new = cp.where(too_low & ~hi_inf, (lo + hi) / 2.0, mid_new)
+        mid = mid_new
+
+    sigma = cp.maximum(mid, 1e-8)
+    weights = cp.exp(-shifted_all / sigma[:, cp.newaxis]).astype(cp.float32).ravel()
+
+    row_idx = cp.repeat(cp.arange(n_cells, dtype=cp.int32), k)
+    col_idx = cp.asarray(knn_indices, dtype=cp.int32).ravel()
+
+    A = cusparse.csr_matrix((weights, (row_idx, col_idx)), shape=(n_cells, n_cells))
+    At = A.T.tocsr()
+    W = A + At - A.multiply(At)
+    return _to_numpy(W)
+
+
 def _build_knn(
     X_reduced: np.ndarray,
     n_neighbors: int,
+    device: Device = "auto",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute k-nearest neighbours, using pynndescent (approximate) if available.
+    """Compute k-nearest neighbours.
+
+    Backends (in order of preference within each device):
+
+    - GPU: cuML ``NearestNeighbors`` (brute-force, very fast on PCA-space).
+    - CPU: pynndescent (approximate) → sklearn ``NearestNeighbors`` fallback.
 
     Parameters
     ----------
@@ -129,19 +195,40 @@ def _build_knn(
         Cell × feature matrix.
     n_neighbors : int
         Number of nearest neighbours (self excluded).
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  Default ``'auto'``.
 
     Returns
     -------
     knn_distances : np.ndarray, shape (n_cells, n_neighbors)
     knn_indices : np.ndarray, shape (n_cells, n_neighbors)
     """
+    backend = _resolve_device(device, "k-NN")
+
+    if backend == "gpu":
+        try:
+            from cuml.neighbors import NearestNeighbors as cuNN
+
+            print("    Using cuML NearestNeighbors (GPU)...")
+            X_gpu = _to_cupy(X_reduced)
+            nn = cuNN(n_neighbors=n_neighbors + 1, metric="euclidean")
+            nn.fit(X_gpu)
+            d_gpu, i_gpu = nn.kneighbors(X_gpu)
+            knn_distances_full = _to_numpy(d_gpu)
+            knn_indices_full = _to_numpy(i_gpu)
+            return knn_distances_full[:, 1:], knn_indices_full[:, 1:]
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("k-NN", exc)
+
+    # CPU path
     try:
         from pynndescent import NNDescent
 
         print("    Using pynndescent (approximate KNN)...")
         index = NNDescent(X_reduced, n_neighbors=n_neighbors + 1, metric="euclidean", n_jobs=-1)
         knn_indices_full, knn_distances_full = index.neighbor_graph
-        # Drop self (index 0)
         return knn_distances_full[:, 1:], knn_indices_full[:, 1:]
     except ImportError:
         print("    Using sklearn NearestNeighbors (install pynndescent for ~10x speedup)...")
@@ -154,7 +241,8 @@ def _build_leiden_graph(
     X_reduced: np.ndarray,
     n_neighbors: int,
     graph_method: str,
-) -> tuple["ig.Graph", np.ndarray, np.ndarray]:
+    device: Device = "auto",
+) -> tuple["ig.Graph", np.ndarray, np.ndarray, "sparse.csr_matrix"]:
     """Build the weighted igraph used by Leiden, using the chosen connectivity method.
 
     Parameters
@@ -166,6 +254,8 @@ def _build_leiden_graph(
     graph_method : {'umap', 'simple'}
         ``'umap'``   — UMAP fuzzy simplicial set weights (McInnes et al. 2018).
         ``'simple'`` — inverse-distance weights: 1 / (1 + d).
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend for the underlying k-NN and σ search.
 
     Returns
     -------
@@ -175,6 +265,9 @@ def _build_leiden_graph(
         Raw k-NN distances (self excluded).
     knn_indices : np.ndarray
         k-NN indices (self excluded).
+    W_sym : scipy.sparse.csr_matrix
+        Symmetrised adjacency (returned so cuGraph callers can skip the
+        igraph round-trip).
     """
     try:
         import igraph as ig
@@ -183,22 +276,62 @@ def _build_leiden_graph(
 
     n_cells = X_reduced.shape[0]
 
-    knn_distances, knn_indices = _build_knn(X_reduced, n_neighbors)
+    knn_distances, knn_indices = _build_knn(X_reduced, n_neighbors, device=device)
 
     if graph_method == "umap":
-        W = _compute_umap_connectivities(knn_distances, knn_indices)
-        # Build igraph from sparse adjacency matrix directly (avoids slow .tolist())
-        W_sym = (W + W.T) / 2  # ensure symmetric
-        g = ig.Graph.Weighted_Adjacency(W_sym, mode="undirected", loops=False)
-    else:  # simple — build sparse adjacency, then convert
+        W = _compute_umap_connectivities(knn_distances, knn_indices, device=device)
+        W_sym = (W + W.T) / 2
+    else:  # simple
         row_ids = np.repeat(np.arange(n_cells, dtype=np.int32), n_neighbors)
         col_ids = knn_indices.ravel().astype(np.int32)
         weights_arr = (1.0 / (1.0 + knn_distances.ravel())).astype(np.float32)
         W = sparse.csr_matrix((weights_arr, (row_ids, col_ids)), shape=(n_cells, n_cells))
         W_sym = (W + W.T) / 2
-        g = ig.Graph.Weighted_Adjacency(W_sym, mode="undirected", loops=False)
 
-    return g, knn_distances, knn_indices
+    g = ig.Graph.Weighted_Adjacency(W_sym, mode="undirected", loops=False)
+    return g, knn_distances, knn_indices, W_sym
+
+
+def _leiden_cugraph(W_sym, resolution: float, random_state: int) -> tuple[np.ndarray, float]:
+    """Run Leiden via cuGraph on a symmetric scipy CSR adjacency.
+
+    Returns ``(membership, modularity)`` where:
+
+    - ``membership`` is a numpy int64 array of cluster labels, one per row
+      of ``W_sym``.
+    - ``modularity`` is the partition modularity scalar reported by cuGraph
+      (Newman-style modularity computed against the same weighted graph
+      that igraph reports — the two backends are directly comparable, up
+      to numerical precision).
+    """
+    import cudf
+    import cugraph
+    import cupy as cp
+
+    print("  Running Leiden algorithm (cuGraph, GPU)...")
+
+    coo = W_sym.tocoo()
+    src = cp.asarray(coo.row, dtype=cp.int32)
+    dst = cp.asarray(coo.col, dtype=cp.int32)
+    w = cp.asarray(coo.data, dtype=cp.float32)
+    edge_df = cudf.DataFrame({"src": src, "dst": dst, "weight": w})
+
+    G = cugraph.Graph(directed=False)
+    G.from_cudf_edgelist(edge_df, source="src", destination="dst", edge_attr="weight", renumber=False)
+
+    parts, modularity = cugraph.leiden(
+        G,
+        resolution=resolution,
+        random_state=random_state,
+        max_iter=100,
+    )
+    parts = parts.sort_values("vertex").reset_index(drop=True)
+    membership = np.asarray(parts["partition"].to_numpy(), dtype=np.int64)
+    try:
+        mod = float(modularity)
+    except (TypeError, ValueError):
+        mod = float("nan")
+    return membership, mod
 
 
 def leiden_clustering(
@@ -213,6 +346,7 @@ def leiden_clustering(
     random_state: int = 42,
     output_column: str = "leiden",
     inplace: bool = True,
+    device: Device = "auto",
 ):
     """
     Leiden clustering for single-cell data.
@@ -255,6 +389,13 @@ def leiden_clustering(
         Column name for cluster labels, by default ``'leiden'``.
     inplace : bool, optional
         Add cluster labels to cell_meta, by default True.
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) accelerates k-NN, the UMAP
+        σ search, and Leiden itself with cuML/cupy/cuGraph when RAPIDS is
+        importable.  Falls back to leidenalg on CPU otherwise.  Note that
+        cuGraph Leiden uses a different optimisation than leidenalg, so
+        cluster *labels* will not match between backends — but cluster
+        *structure* is comparable.
 
     Returns
     -------
@@ -264,7 +405,8 @@ def leiden_clustering(
     Raises
     ------
     ImportError
-        If ``igraph`` or ``leidenalg`` are not installed.
+        If ``igraph`` or ``leidenalg`` are not installed (CPU backend), or
+        if RAPIDS is missing and ``device='gpu'`` was requested.
 
     Examples
     --------
@@ -272,17 +414,12 @@ def leiden_clustering(
     >>> sj.processing.highly_variable_genes(sp, layer='log_normalized')
     >>> sj.processing.leiden_clustering(sp, layer='scaled', resolution=0.5)
     >>>
-    >>> # Simple inverse-distance weights
-    >>> sj.processing.leiden_clustering(sp, graph_method='simple', resolution=1.0)
+    >>> # Force GPU
+    >>> sj.processing.leiden_clustering(sp, resolution=0.5, device='gpu')
     """
-    try:
-        import leidenalg
-    except ImportError as err:
-        raise ImportError(
-            "Leiden clustering requires igraph and leidenalg. Install with: pip install igraph leidenalg"
-        ) from err
-
     print(f"\nLeiden clustering (resolution={resolution}, n_neighbors={n_neighbors}, graph={graph_method})")
+
+    backend = _resolve_device(device, "Leiden")
 
     # ── PCA / feature matrix ──────────────────────────────────────────────────
     if use_pca:
@@ -305,19 +442,35 @@ def leiden_clustering(
 
     # ── Build cell graph ──────────────────────────────────────────────────────
     print(f"  Building {graph_method} connectivity graph...")
-    g, _, _ = _build_leiden_graph(X_reduced, n_neighbors, graph_method)
+    g, _, _, W_sym = _build_leiden_graph(X_reduced, n_neighbors, graph_method, device=backend)
 
     # ── Leiden ────────────────────────────────────────────────────────────────
-    print("  Running Leiden algorithm...")
-    partition = leidenalg.find_partition(
-        g,
-        leidenalg.RBConfigurationVertexPartition,
-        weights="weight",
-        resolution_parameter=resolution,
-        seed=random_state,
-    )
+    if backend == "gpu":
+        try:
+            clusters, _ = _leiden_cugraph(W_sym, resolution=resolution, random_state=random_state)
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("Leiden", exc)
+            backend = "cpu"
 
-    clusters = np.array(partition.membership)
+    if backend == "cpu":
+        try:
+            import leidenalg
+        except ImportError as err:
+            raise ImportError(
+                "Leiden clustering requires igraph and leidenalg. Install with: pip install igraph leidenalg"
+            ) from err
+        print("  Running Leiden algorithm (leidenalg, CPU)...")
+        partition = leidenalg.find_partition(
+            g,
+            leidenalg.RBConfigurationVertexPartition,
+            weights="weight",
+            resolution_parameter=resolution,
+            seed=random_state,
+        )
+        clusters = np.array(partition.membership)
+
     n_clusters = len(np.unique(clusters))
     _, counts = np.unique(clusters, return_counts=True)
 
@@ -342,6 +495,7 @@ def kmeans_clustering(
     random_state: int = 42,
     output_column: str = "kmeans",
     inplace: bool = True,
+    device: Device = "auto",
 ):
     """
     K-means clustering.
@@ -370,6 +524,9 @@ def kmeans_clustering(
         Column name for cluster labels, by default 'kmeans'
     inplace : bool, optional
         Add cluster labels to spatioloji object, by default True
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cuML KMeans on GPU when
+        RAPIDS is importable, otherwise scikit-learn on CPU.
 
     Returns
     -------
@@ -381,10 +538,12 @@ def kmeans_clustering(
     >>> # K-means with 10 clusters
     >>> sp.processing.kmeans_clustering(sp, n_clusters=10)
     >>>
-    >>> # K-means without PCA (use full expression)
-    >>> sp.processing.kmeans_clustering(sp, n_clusters=5, use_pca=False)
+    >>> # Force GPU
+    >>> sp.processing.kmeans_clustering(sp, n_clusters=10, device='gpu')
     """
     print(f"\nK-means clustering (n_clusters={n_clusters})")
+
+    backend = _resolve_device(device, "K-means")
 
     # PCA / feature matrix
     if use_pca:
@@ -400,16 +559,38 @@ def kmeans_clustering(
     else:
         X_reduced = _get_expression_matrix(spatioloji_obj, layer)
 
-    # Run k-means
-    print("  Running k-means...")
-    kmeans = KMeans(n_clusters=n_clusters, n_init=n_init, max_iter=max_iter, random_state=random_state)
-    clusters = kmeans.fit_predict(X_reduced)
+    inertia = None
+    if backend == "gpu":
+        try:
+            from cuml.cluster import KMeans as cuKMeans
+
+            print("  Running k-means (cuML GPU)...")
+            km = cuKMeans(
+                n_clusters=n_clusters, n_init=n_init,
+                max_iter=max_iter, random_state=random_state,
+            )
+            X_gpu = _to_cupy(X_reduced)
+            km.fit(X_gpu)
+            clusters = _to_numpy(km.labels_).astype(np.int64)
+            inertia = float(_to_numpy(km.inertia_)) if km.inertia_ is not None else None
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("K-means", exc)
+            backend = "cpu"
+
+    if backend == "cpu":
+        print("  Running k-means (scikit-learn)...")
+        kmeans = KMeans(n_clusters=n_clusters, n_init=n_init, max_iter=max_iter, random_state=random_state)
+        clusters = kmeans.fit_predict(X_reduced)
+        inertia = float(kmeans.inertia_)
 
     # Calculate cluster sizes
     unique, counts = np.unique(clusters, return_counts=True)
     print(f"  ✓ Clustered into {n_clusters} groups")
     print(f"    Cluster sizes - min: {counts.min()}, max: {counts.max()}, mean: {counts.mean():.1f}")
-    print(f"    Inertia: {kmeans.inertia_:.2f}")
+    if inertia is not None:
+        print(f"    Inertia: {inertia:.2f}")
 
     if inplace:
         spatioloji_obj._cell_meta[output_column] = pd.Categorical(clusters)
@@ -706,6 +887,23 @@ def spatially_constrained_clustering(
         return clusters
 
 
+def _kmeans_fit_predict(X, k: int, n_init: int, random_state: int, backend: str):
+    """Run KMeans on the chosen backend, return (labels, inertia) as numpy/float."""
+    if backend == "gpu":
+        from cuml.cluster import KMeans as cuKMeans
+
+        km = cuKMeans(n_clusters=k, n_init=n_init, random_state=random_state)
+        X_gpu = _to_cupy(X)
+        km.fit(X_gpu)
+        labels = _to_numpy(km.labels_).astype(np.int64)
+        inertia = float(_to_numpy(km.inertia_)) if km.inertia_ is not None else float("nan")
+        return labels, inertia
+
+    km = KMeans(n_clusters=k, n_init=n_init, random_state=random_state)
+    labels = km.fit_predict(X)
+    return labels, float(km.inertia_)
+
+
 def find_optimal_clusters(
     spatioloji_obj,
     layer: str | None = "normalized",
@@ -715,6 +913,7 @@ def find_optimal_clusters(
     use_pca: bool = True,
     sample_size: int | None = 5000,
     random_state: int = 42,
+    device: Device = "auto",
 ) -> dict[str, int | list[float]]:
     """
     Find optimal number of clusters using one or all quality metrics.
@@ -760,6 +959,8 @@ def find_optimal_clusters(
     print(f"\nFinding optimal number of clusters (method={method})")
     print(f"  Testing k from {k_range[0]} to {k_range[1]}")
 
+    backend = _resolve_device(device, "find_optimal_clusters")
+
     # PCA / feature matrix
     if use_pca:
         if hasattr(spatioloji_obj, "_embeddings") and "X_pca" in spatioloji_obj._embeddings:
@@ -778,25 +979,20 @@ def find_optimal_clusters(
     scores = []
 
     if method == "elbow":
-        # Elbow method (inertia)
         for k in k_values:
-            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-            kmeans.fit(X_reduced)
-            scores.append(kmeans.inertia_)
-            print(f"    k={k}: inertia={kmeans.inertia_:.2f}")
+            _, inertia = _kmeans_fit_predict(X_reduced, k, n_init=10, random_state=random_state, backend=backend)
+            scores.append(inertia)
+            print(f"    k={k}: inertia={inertia:.2f}")
 
-        # Find elbow (maximum curvature)
-        # Simple heuristic: maximum distance from line connecting first and last points
         line = np.linspace(scores[0], scores[-1], len(scores))
         distances = np.abs(np.array(scores) - line)
-        optimal_k = k_values[np.argmax(distances)]
+        optimal_k = list(k_values)[int(np.argmax(distances))]
 
     elif method == "silhouette":
         from sklearn.metrics import silhouette_score
 
         for k in k_values:
-            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-            labels = kmeans.fit_predict(X_reduced)
+            labels, _ = _kmeans_fit_predict(X_reduced, k, n_init=10, random_state=random_state, backend=backend)
             X_sil = X_reduced
             if sample_size is not None and X_reduced.shape[0] > sample_size:
                 rng = np.random.default_rng(random_state)
@@ -808,15 +1004,14 @@ def find_optimal_clusters(
             scores.append(score)
             print(f"    k={k}: silhouette={score:.4f}")
 
-        optimal_k = list(k_values)[np.argmax(scores)]
+        optimal_k = list(k_values)[int(np.argmax(scores))]
 
     elif method == "gap":
         print("  Computing gap statistic (this may take a while)...")
 
         def compute_inertia(X, k):
-            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-            kmeans.fit(X)
-            return kmeans.inertia_
+            _, inertia = _kmeans_fit_predict(X, k, n_init=10, random_state=random_state, backend=backend)
+            return inertia
 
         n_refs = 10
         gaps = []
@@ -832,31 +1027,29 @@ def find_optimal_clusters(
             print(f"    k={k}: gap={gap:.4f}")
 
         scores = gaps
-        optimal_k = list(k_values)[np.argmax(gaps)]
+        optimal_k = list(k_values)[int(np.argmax(gaps))]
 
     elif method == "davies_bouldin":
         from sklearn.metrics import davies_bouldin_score
 
         for k in k_values:
-            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-            labels = kmeans.fit_predict(X_reduced)
+            labels, _ = _kmeans_fit_predict(X_reduced, k, n_init=10, random_state=random_state, backend=backend)
             score = davies_bouldin_score(X_reduced, labels)
             scores.append(score)
             print(f"    k={k}: davies_bouldin={score:.4f}")
 
-        optimal_k = list(k_values)[np.argmin(scores)]  # lower is better
+        optimal_k = list(k_values)[int(np.argmin(scores))]
 
     elif method == "calinski_harabasz":
         from sklearn.metrics import calinski_harabasz_score
 
         for k in k_values:
-            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-            labels = kmeans.fit_predict(X_reduced)
+            labels, _ = _kmeans_fit_predict(X_reduced, k, n_init=10, random_state=random_state, backend=backend)
             score = calinski_harabasz_score(X_reduced, labels)
             scores.append(score)
             print(f"    k={k}: calinski_harabasz={score:.2f}")
 
-        optimal_k = list(k_values)[np.argmax(scores)]
+        optimal_k = list(k_values)[int(np.argmax(scores))]
 
     elif method == "all":
         from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, silhouette_score
@@ -865,8 +1058,7 @@ def find_optimal_clusters(
         print("  Running silhouette + Davies-Bouldin + Calinski-Harabasz...")
 
         for k in k_values:
-            kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-            labels = kmeans.fit_predict(X_reduced)
+            labels, _ = _kmeans_fit_predict(X_reduced, k, n_init=10, random_state=random_state, backend=backend)
 
             if sample_size is not None and X_reduced.shape[0] > sample_size:
                 rng = np.random.default_rng(random_state)
@@ -1039,6 +1231,7 @@ def leiden_resolution_sweep(
     graph_method: Literal["umap", "simple"] = "umap",
     random_state: int = 42,
     n_jobs: int = 1,
+    device: Device = "auto",
 ) -> pd.DataFrame:
     """
     Sweep Leiden resolution parameter and report stability and quality metrics.
@@ -1068,6 +1261,12 @@ def leiden_resolution_sweep(
         n_jobs: Number of parallel threads for Leiden calls, by default 1.
             Set to -1 to use all available CPUs. Values > 1 parallelize the
             ``len(resolutions) × n_runs`` Leiden calls via threads.
+            Ignored when ``device='gpu'`` (GPU runs serialise on the device).
+        device: Compute backend (``'auto' | 'cpu' | 'gpu'``).  When GPU is
+            used, the k-NN, σ search and per-resolution Leiden runs all
+            execute on cuML/cupy/cuGraph; ``modularity_mean`` is the
+            modularity scalar reported by ``cugraph.leiden`` and is directly
+            comparable to the igraph value reported on the CPU path.
 
     Returns:
         pd.DataFrame with columns:
@@ -1087,14 +1286,18 @@ def leiden_resolution_sweep(
         >>> # Pick resolution with high mean_ari and desired n_clusters
         >>> leiden_clustering(sp, resolution=0.6)
     """
-    try:
-        import leidenalg
-    except ImportError as err:
-        raise ImportError(
-            "leiden_resolution_sweep requires igraph and leidenalg. Install with: pip install igraph leidenalg"
-        ) from err
-
     from sklearn.metrics import adjusted_rand_score
+
+    backend = _resolve_device(device, "leiden_resolution_sweep")
+
+    if backend == "cpu":
+        try:
+            import leidenalg
+        except ImportError as err:
+            raise ImportError(
+                "leiden_resolution_sweep requires igraph and leidenalg on CPU. "
+                "Install with: pip install igraph leidenalg"
+            ) from err
 
     if resolutions is None:
         resolutions = [round(r, 1) for r in np.arange(0.1, 2.1, 0.1)]
@@ -1123,17 +1326,18 @@ def leiden_resolution_sweep(
 
     # --- Build cell graph once (shared across all resolutions) ---
     print(f"  Building {graph_method} connectivity graph...")
-    g, _, _ = _build_leiden_graph(X_reduced, n_neighbors, graph_method)
+    g, _, _, W_sym = _build_leiden_graph(X_reduced, n_neighbors, graph_method, device=backend)
 
     n_total = len(resolutions) * n_runs
     print(
         f"\nLeiden resolution sweep "
-        f"({len(resolutions)} resolutions × {n_runs} runs = {n_total} calls, graph={graph_method})"
+        f"({len(resolutions)} resolutions × {n_runs} runs = {n_total} calls, "
+        f"graph={graph_method}, device={backend})"
     )
     print(f"  {'Resolution':>10}  {'n_clusters':>10}  {'mean_ARI':>9}  {'modularity':>10}")
     print("  " + "-" * 46)
 
-    # --- Run all (resolution, seed) pairs, optionally in parallel ---
+    # --- Run all (resolution, seed) pairs ---
     import os
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor
@@ -1141,8 +1345,7 @@ def leiden_resolution_sweep(
     if n_jobs == -1:
         n_jobs = os.cpu_count() or 1
 
-    def _run_one(res: float, seed: int) -> tuple[float, int, np.ndarray, float]:
-        """Run one Leiden call, return (resolution, seed, membership, modularity)."""
+    def _run_one_cpu(res: float, seed: int) -> tuple[float, int, np.ndarray, float]:
         partition = leidenalg.find_partition(
             g,
             leidenalg.RBConfigurationVertexPartition,
@@ -1150,17 +1353,21 @@ def leiden_resolution_sweep(
             resolution_parameter=res,
             seed=seed,
         )
-        mem = np.array(partition.membership)
-        mod = partition.modularity
+        return res, seed, np.array(partition.membership), float(partition.modularity)
+
+    def _run_one_gpu(res: float, seed: int) -> tuple[float, int, np.ndarray, float]:
+        mem, mod = _leiden_cugraph(W_sym, resolution=res, random_state=seed)
         return res, seed, mem, mod
 
+    runner = _run_one_gpu if backend == "gpu" else _run_one_cpu
     tasks = [(res, random_state + run) for res in resolutions for run in range(n_runs)]
 
-    if n_jobs > 1:
+    # GPU runs serialise on-device, so threading there gains nothing.
+    if backend == "cpu" and n_jobs > 1:
         with ThreadPoolExecutor(max_workers=n_jobs) as pool:
-            results_list = list(pool.map(lambda args: _run_one(*args), tasks))
+            results_list = list(pool.map(lambda args: runner(*args), tasks))
     else:
-        results_list = [_run_one(*t) for t in tasks]
+        results_list = [runner(*t) for t in tasks]
 
     # --- Group results by resolution ---
     grouped = defaultdict(lambda: {"memberships": [], "modularities": []})

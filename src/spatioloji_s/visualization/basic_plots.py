@@ -615,6 +615,7 @@ def plot_violin(
     group_order: list[str] | None = None,
     color_map: str | list | None = None,
     colors: dict[str, str] | None = None,
+    ncols: int = 3,
     figsize: tuple[float, float] | None = None,
     rotation: int = 45,
     ylabel: str | None = "Expression",
@@ -634,15 +635,25 @@ def plot_violin(
     layer : str
         Expression layer to use.
     group_order : list of str, optional
-        Display order (and optional subset) of groups.
+        Display order (and optional subset) of x-axis group labels. Pass a
+        list like ``['ctrl', 'treat1', 'treat2']`` to fix the left-to-right
+        order on the x-axis. When ``None`` and ``cell_meta[group_by]`` is a
+        pandas Categorical, the categorical level order is used; otherwise
+        groups are sorted alphabetically.
     color_map / colors
         Colour specification (see ``_get_categorical_colors``).
+    ncols : int
+        Number of violin panels per row. Customise this to control the
+        layout when plotting many marker genes (e.g. ``ncols=4`` for a
+        4-column grid). Effective value is capped at ``len(genes)``.
     rotation : int
         X-tick label rotation.
 
     Examples
     --------
     >>> sj.plotting.plot_violin(sp, genes='EPCAM', group_by='leiden')
+    >>> # 4 columns for 12 marker genes -> 3 rows
+    >>> sj.plotting.plot_violin(sp, genes=marker_genes, ncols=4)
     >>> sj.plotting.plot_violin(sp, genes=['EPCAM','CD3D'],
     ...     group_order=['0','2','1'], colors={'0':'red','1':'blue','2':'green'})
     """
@@ -654,7 +665,13 @@ def plot_violin(
         raise ValueError(f"Column '{group_by}' not found in cell_meta")
 
     groups = spatioloji_obj.cell_meta[group_by]
-    unique_groups = _resolve_group_order(groups, group_order)
+
+    # Respect pandas Categorical level order unless caller overrides it
+    if group_order is None and isinstance(groups.dtype, pd.CategoricalDtype):
+        present = set(groups.astype(str).unique())
+        unique_groups = [str(c) for c in groups.cat.categories if str(c) in present]
+    else:
+        unique_groups = _resolve_group_order(groups, group_order)
     n_groups = len(unique_groups)
 
     # colours
@@ -664,10 +681,12 @@ def plot_violin(
         violin_colors = _get_categorical_colors(n_groups, color_map or "tab20")
 
     n_genes = len(genes)
+    ncols_eff = max(1, min(ncols, n_genes))
+    nrows = int(np.ceil(n_genes / ncols_eff))
     if figsize is None:
-        figsize = (max(8, n_genes * 3), 5)
+        figsize = (ncols_eff * 4, nrows * 4)
 
-    fig, axes = plt.subplots(1, n_genes, figsize=figsize, squeeze=False)
+    fig, axes = plt.subplots(nrows, ncols_eff, figsize=figsize, squeeze=False)
     axes = axes.flatten()
 
     for idx, gene in enumerate(genes):
@@ -685,17 +704,19 @@ def plot_violin(
             ax.text(0.5, 0.5, f"No data for {gene}", ha="center", va="center", transform=ax.transAxes)
             continue
 
-        parts = ax.violinplot(data_list, positions=range(len(data_list)), showmeans=True, showextrema=True)
+        parts = ax.violinplot(data_list, positions=range(len(data_list)), showmeans=False, showextrema=False)
         for i, body in enumerate(parts["bodies"]):
             body.set_facecolor(violin_colors[i])
             body.set_alpha(0.7)
 
         ax.set_xticks(range(len(labels)))
         ax.set_xticklabels(labels, rotation=rotation, ha="right")
-        ax.set_ylabel(ylabel if idx == 0 else "", fontsize=11)
+        ax.set_ylabel(ylabel if idx % ncols_eff == 0 else "", fontsize=11)
         ax.set_title(gene, fontsize=12, fontweight="bold")
         _clean_axes(ax)
-        ax.grid(axis="y", alpha=0.3)
+
+    for idx in range(n_genes, len(axes)):
+        axes[idx].axis("off")
 
     return _finalize_plot(fig, save_path, dpi, show)
 
@@ -731,6 +752,12 @@ def plot_heatmap(
 
     Parameters
     ----------
+    group_order : list of str, optional
+        Custom left-to-right order of x-axis group labels (ignored when
+        ``cluster_groups=True``, since clustering re-orders groups).
+    gene_order : list of str, optional
+        Custom top-to-bottom order of y-axis gene labels (ignored when
+        ``cluster_genes=True``).
     scale : {'none', 'row', 'column'}
         Z-score normalisation direction.
     cluster_genes / cluster_groups : bool
@@ -741,6 +768,8 @@ def plot_heatmap(
     Examples
     --------
     >>> sj.plotting.plot_heatmap(sp, genes=marker_genes, group_by='leiden')
+    >>> sj.plotting.plot_heatmap(sp, genes=marker_genes,
+    ...     group_order=['ctrl', 'treat1', 'treat2'])
     """
     from matplotlib.gridspec import GridSpec
     from scipy.cluster.hierarchy import dendrogram, linkage
@@ -907,9 +936,18 @@ def plot_dotplot(
     """
     Dot plot: dot size = fraction expressing, colour = mean expression.
 
+    Parameters
+    ----------
+    group_order : list of str, optional
+        Custom left-to-right order of x-axis group labels.
+    gene_order : list of str, optional
+        Custom top-to-bottom order of y-axis gene labels.
+
     Examples
     --------
     >>> sj.plotting.plot_dotplot(sp, genes=markers, group_by='leiden')
+    >>> sj.plotting.plot_dotplot(sp, genes=markers,
+    ...     group_order=['ctrl', 'treat1', 'treat2'])
     """
     if isinstance(genes, str):
         genes = [genes]

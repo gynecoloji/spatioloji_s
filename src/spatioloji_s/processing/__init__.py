@@ -2,7 +2,8 @@
 processing/__init__.py - Processing subpackage for spatioloji
 
 Provides normalization, feature selection, dimensionality reduction,
-clustering, batch correction, and imputation methods.
+clustering, batch correction, imputation, DEG, gene-set activity, and
+automated cell-type annotation (CellTypist).
 
 Usage
 -----
@@ -11,8 +12,14 @@ Usage
     sj.processing.highly_variable_genes(sp)
     sj.processing.pca(sp)
     sj.processing.leiden_clustering(sp)
+    sj.processing.celltypist_annotate(sp, model="Immune_All_Low.pkl")
 """
 
+from .annotation import (
+    celltypist_annotate,
+    download_celltypist_models,
+    list_celltypist_models,
+)
 from .batch_correction import (
     cca_integrate,
     combat,
@@ -127,4 +134,8 @@ __all__ = [
     "load_gene_sets",
     "make_gene_set_net",
     "score_gene_sets",
+    # Annotation — CellTypist
+    "celltypist_annotate",
+    "list_celltypist_models",
+    "download_celltypist_models",
 ]

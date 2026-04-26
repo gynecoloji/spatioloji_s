@@ -20,11 +20,41 @@ Scalability design
 from __future__ import annotations
 
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
 from scipy import sparse
+
+# ---------------------------------------------------------------------------
+# Per-method layer conventions
+# ---------------------------------------------------------------------------
+# Each statistical model expects a particular kind of input.  ``layer="auto"``
+# in run_deg() maps each method to its expected layer using this table; the
+# convenience wrappers (deg_wilcoxon, deg_ttest, ...) inherit the default by
+# leaving ``layer`` unset.  Override on a per-method basis with the
+# ``layer={...}`` dict form.
+#
+#   value=None          → main expression matrix (raw counts)
+#   value=str           → name of a derived layer expected to exist on sp
+_DEFAULT_LAYER_PER_METHOD: dict[str, str | None] = {
+    "wilcoxon": "log_normalized",   # rank-sum: log scale stabilises ties
+    "ttest":    "log_normalized",   # parametric: assumes ~normal residuals
+    "mast":     "log_normalized",   # hurdle on log(TPM+1) per the paper
+    "nb_glm":   None,               # negative-binomial: requires raw counts
+    "deseq2":   None,               # pseudobulk DESeq2: raw counts only
+}
+
+# Methods that *must* see raw counts; emit a warning when the user passes a
+# layer whose name suggests it has been log-transformed or scaled.
+_RAW_COUNT_DEG_METHODS = frozenset({"nb_glm", "deseq2"})
+
+# Methods that *expect* log-normalized input; warn when raw counts seem to
+# have been passed (layer=None and the main matrix looks like raw integers
+# is the typical case but cannot be verified without inspecting data, so we
+# only warn on the layer-name heuristic).
+_LOG_NORM_DEG_METHODS = frozenset({"wilcoxon", "ttest", "mast"})
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -384,7 +414,10 @@ def _mast_one_gene(
         return np.nan
     if len(valid_pvals) == 1:
         return valid_pvals[0]
-    _, combined = combine_pvalues(valid_pvals, method="fisher")
+    # Floor at smallest positive float so log(p) stays finite in Fisher's sum.
+    floor = np.finfo(np.float64).tiny
+    clipped = [max(p, floor) for p in valid_pvals]
+    _, combined = combine_pvalues(clipped, method="fisher")
     return float(combined)
 
 
@@ -652,13 +685,105 @@ _BACKEND_MAP: dict = {
 }
 
 
+def _validate_layer_for_method(method: str, lyr: str | None) -> None:
+    """Warn when *lyr* looks incompatible with *method*'s expected input.
+
+    This is a best-effort name-based check — it cannot inspect the actual
+    matrix contents.  Triggers a UserWarning when:
+
+    - a count-based method (``nb_glm``, ``deseq2``) is given a layer whose
+      name contains ``"log"`` or ``"scaled"``;
+    - a distribution-based method (``wilcoxon``, ``ttest``, ``mast``) is
+      given ``layer=None`` (often the raw matrix on real data).
+    """
+    name = (lyr or "").lower()
+    is_log = "log" in name
+    is_scaled = "scaled" in name
+
+    if method in _RAW_COUNT_DEG_METHODS and (is_log or is_scaled):
+        warnings.warn(
+            f"DEG method '{method}' expects raw counts but layer='{lyr}' "
+            "appears to be log-transformed or scaled. Use layer=None or pass "
+            "the raw-counts layer explicitly. Pass layer='auto' to let "
+            "run_deg pick the right layer per method.",
+            UserWarning,
+            stacklevel=3,
+        )
+    elif method in _LOG_NORM_DEG_METHODS and lyr is None:
+        warnings.warn(
+            f"DEG method '{method}' expects log-normalized data but layer=None "
+            "(main matrix is typically raw counts). Pass layer='log_normalized' "
+            "or layer='auto' for per-method routing.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def _resolve_layer_per_method(
+    layer: str | dict[str, str | None] | None,
+    methods: list[str],
+) -> dict[str, str | None]:
+    """Expand the user-facing ``layer`` argument to a {method: layer} map.
+
+    Args:
+        layer: One of:
+
+            - ``None`` — use the main expression matrix for every method.
+            - ``str`` — a layer name applied to every method, **or** the
+              special string ``"auto"`` which routes each method to its
+              recommended layer (see ``_DEFAULT_LAYER_PER_METHOD``).  ``"auto"``
+              is the recommended setting when running multiple methods that
+              expect different inputs (e.g. Wilcoxon on log-normalized,
+              DESeq2 on raw counts).
+            - ``dict`` — explicit per-method mapping, e.g.
+              ``{"wilcoxon": "log_normalized", "deseq2": None}``.  Must
+              cover every method in *methods*.
+        methods: Methods being run.
+
+    Returns:
+        Dict with an entry for every method in *methods*.
+
+    Raises:
+        ValueError: If *layer* is a dict missing entries for some methods, or
+            contains keys not in *methods*.
+    """
+    # 1) "auto" → per-method default table
+    if isinstance(layer, str) and layer == "auto":
+        return {m: _DEFAULT_LAYER_PER_METHOD.get(m) for m in methods}
+
+    # 2) Explicit dict → validate coverage, then warn per method
+    if isinstance(layer, dict):
+        extra = set(layer) - set(methods)
+        if extra:
+            raise ValueError(
+                f"layer dict contains entries for methods not being run: {sorted(extra)}. "
+                f"methods={methods}"
+            )
+        missing = [m for m in methods if m not in layer]
+        if missing:
+            raise ValueError(
+                f"layer dict is missing entries for methods: {missing}. "
+                f"Provide a layer (or None) for every method in `methods`."
+            )
+        resolved = {m: layer[m] for m in methods}
+        for m, lyr in resolved.items():
+            _validate_layer_for_method(m, lyr)
+        return resolved
+
+    # 3) Single value (None or str) → broadcast and validate per method
+    resolved = {m: layer for m in methods}
+    for m, lyr in resolved.items():
+        _validate_layer_for_method(m, lyr)
+    return resolved
+
+
 def run_deg(
     spatioloji_obj,
     groupby: str,
     group_fg: str | list[str],
     group_bg: str | list[str] = "rest",
     methods: list[str] | None = None,
-    layer: str | None = None,
+    layer: str | dict[str, str | None] | None = "auto",
     spatial_filter: dict | None = None,
     replicate_key: str | None = None,
     min_cells: int = 10,
@@ -676,7 +801,34 @@ def run_deg(
         methods: Statistical methods to run.  Any subset of
             ``["wilcoxon", "ttest", "mast", "nb_glm", "deseq2"]``.
             Default: ``["wilcoxon", "ttest"]``.
-        layer: Expression layer to use.  None uses the main matrix.
+        layer: Expression layer(s) to use.  Default ``"auto"`` routes each
+            method to its expected input via the per-method table:
+
+            ============= ================
+            Method        Default layer
+            ============= ================
+            ``wilcoxon``  ``log_normalized``
+            ``ttest``     ``log_normalized``
+            ``mast``      ``log_normalized``
+            ``nb_glm``    ``None`` (raw counts)
+            ``deseq2``    ``None`` (raw counts)
+            ============= ================
+
+            Other accepted forms:
+
+            - ``None`` — main expression matrix for every method.
+            - ``str`` (other than ``"auto"``) — that layer for every method.
+            - ``dict`` — per-method mapping, e.g.
+              ``{"wilcoxon": "log_normalized", "deseq2": None, "nb_glm": None}``.
+              Every method in ``methods`` must have an entry (``None`` is
+              allowed as a value).  When you need distribution-based methods
+              on normalized data **and** count-based methods on raw counts in
+              a single call, prefer ``layer="auto"`` over hand-rolling the
+              dict.
+
+            A ``UserWarning`` is emitted when an explicit layer name looks
+            incompatible with a method (e.g. ``layer="scaled"`` for DESeq2,
+            or ``layer=None`` for Wilcoxon).
         spatial_filter: Optional dict restricting the cell universe spatially.
             Keys: ``x_range`` (tuple), ``y_range`` (tuple), or ``polygon``
             (shapely geometry).
@@ -695,13 +847,31 @@ def run_deg(
         NaN last.
 
     Raises:
-        ValueError: Invalid method names, missing replicate_key, insufficient cells.
+        ValueError: Invalid method names, missing replicate_key, insufficient
+            cells, or a per-method ``layer`` dict that does not cover every
+            method in *methods*.
         ImportError: If statsmodels or pydeseq2 not installed for the chosen method.
 
     Examples:
-        >>> results = run_deg(sp, "leiden", "0", group_bg="rest",
-        ...                    methods=["wilcoxon", "ttest"])
-        >>> results["wilcoxon"].head()
+        >>> # Single method (uses its default layer automatically)
+        >>> results = run_deg(sp, "leiden", "0", methods=["wilcoxon"])
+        >>>
+        >>> # Multiple methods, auto-routed to the right layer per method:
+        >>> # wilcoxon / ttest → 'log_normalized', deseq2 → raw counts.
+        >>> results = run_deg(
+        ...     sp, "leiden", "0",
+        ...     methods=["wilcoxon", "ttest", "deseq2"],
+        ...     layer="auto",
+        ...     replicate_key="fov",
+        ... )
+        >>>
+        >>> # Explicit per-method override (e.g. compare on a custom layer)
+        >>> results = run_deg(
+        ...     sp, "leiden", "0",
+        ...     methods=["wilcoxon", "deseq2"],
+        ...     layer={"wilcoxon": "pearson_residuals", "deseq2": None},
+        ...     replicate_key="fov",
+        ... )
     """
     if methods is None:
         methods = ["wilcoxon", "ttest"]
@@ -717,29 +887,61 @@ def run_deg(
             f"replicate_key '{replicate_key}' not found in cell_meta columns: {list(spatioloji_obj.cell_meta.columns)}"
         )
 
+    layer_map = _resolve_layer_per_method(layer, methods)
+
+    # If layer='auto' picked a layer name that doesn't exist on this object
+    # (e.g. user hasn't run normalize/log_transform yet), fall back to the
+    # main matrix for that method.  Explicit user-supplied layer names that
+    # are missing still raise downstream — this fallback only relaxes the
+    # auto-routed case to keep "auto" safe as a default.
+    if layer == "auto":
+        try:
+            existing = set(spatioloji_obj.list_layers())
+        except AttributeError:
+            existing = set()
+        for m, lyr in list(layer_map.items()):
+            if lyr is not None and lyr not in existing:
+                print(
+                    f"  [layer=auto] '{lyr}' not found on spatioloji object — "
+                    f"falling back to main matrix for method '{m}'."
+                )
+                layer_map[m] = None
+
     # -- Build cell masks --
     fg_idx, bg_idx = _build_cell_mask(spatioloji_obj, groupby, group_fg, group_bg, spatial_filter, min_cells)
     n_fg, n_bg = len(fg_idx), len(bg_idx)
 
-    # -- Get expression matrix and densify fg/bg slices --
-    X = _get_X(spatioloji_obj, layer)
     gene_names = np.asarray(spatioloji_obj.gene_index)
     n_genes = len(gene_names)
 
     if n_genes == 0:
         return {}
 
-    if sparse.issparse(X):
-        X_fg = X[fg_idx, :].toarray().astype(np.float32)
-        X_bg = X[bg_idx, :].toarray().astype(np.float32)
-    else:
-        X_fg = X[fg_idx, :].astype(np.float32, copy=False)
-        X_bg = X[bg_idx, :].astype(np.float32, copy=False)
+    # Cache so the same layer isn't loaded and densified twice when two
+    # methods share it (e.g. Wilcoxon + t-test both on 'log_normalized').
+    # Keyed by layer name (None means main matrix).
+    matrix_cache: dict[str | None, tuple] = {}
+
+    def _load_matrices(lyr: str | None):
+        if lyr in matrix_cache:
+            return matrix_cache[lyr]
+        X_full = _get_X(spatioloji_obj, lyr)
+        if sparse.issparse(X_full):
+            X_fg_ = X_full[fg_idx, :].toarray().astype(np.float32)
+            X_bg_ = X_full[bg_idx, :].toarray().astype(np.float32)
+        else:
+            X_fg_ = X_full[fg_idx, :].astype(np.float32, copy=False)
+            X_bg_ = X_full[bg_idx, :].astype(np.float32, copy=False)
+        matrix_cache[lyr] = (X_full, X_fg_, X_bg_)
+        return matrix_cache[lyr]
 
     results: dict[str, pd.DataFrame] = {}
 
     for method in methods:
-        print(f"\nRunning DEG [{method}]: {n_fg} fg vs {n_bg} bg, {n_genes} genes")
+        this_layer = layer_map[method]
+        X, X_fg, X_bg = _load_matrices(this_layer)
+        layer_label = this_layer if this_layer is not None else "main"
+        print(f"\nRunning DEG [{method}]: {n_fg} fg vs {n_bg} bg, {n_genes} genes, layer={layer_label}")
 
         # -- DESeq2 pseudobulk path --
         if method == "deseq2":
@@ -790,7 +992,7 @@ def deg_wilcoxon(
     groupby: str,
     group_fg: str | list[str],
     group_bg: str | list[str] = "rest",
-    layer: str | None = None,
+    layer: str | None = "auto",
     spatial_filter: dict | None = None,
     min_cells: int = 10,
     n_jobs: int = 1,
@@ -798,7 +1000,12 @@ def deg_wilcoxon(
     correction: str = "fdr_bh",
     **_ignored,
 ) -> dict[str, pd.DataFrame]:
-    """Run Wilcoxon rank-sum DEG test. See ``run_deg`` for parameter docs."""
+    """Run Wilcoxon rank-sum DEG test.
+
+    ``layer`` defaults to ``"auto"`` which selects ``'log_normalized'`` per
+    the per-method table; pass an explicit layer name (or ``None`` for the
+    main matrix) to override. See ``run_deg`` for full parameter docs.
+    """
     return run_deg(
         spatioloji_obj,
         groupby,
@@ -819,7 +1026,7 @@ def deg_ttest(
     groupby: str,
     group_fg: str | list[str],
     group_bg: str | list[str] = "rest",
-    layer: str | None = None,
+    layer: str | None = "auto",
     spatial_filter: dict | None = None,
     min_cells: int = 10,
     n_jobs: int = 1,
@@ -827,7 +1034,11 @@ def deg_ttest(
     correction: str = "fdr_bh",
     **_ignored,
 ) -> dict[str, pd.DataFrame]:
-    """Run Student's t-test DEG analysis. See ``run_deg`` for parameter docs."""
+    """Run Student's t-test DEG analysis.
+
+    ``layer`` defaults to ``"auto"`` (resolves to ``'log_normalized'``).
+    See ``run_deg`` for full parameter docs.
+    """
     return run_deg(
         spatioloji_obj,
         groupby,
@@ -848,7 +1059,7 @@ def deg_mast(
     groupby: str,
     group_fg: str | list[str],
     group_bg: str | list[str] = "rest",
-    layer: str | None = None,
+    layer: str | None = "auto",
     spatial_filter: dict | None = None,
     min_cells: int = 10,
     n_jobs: int = 1,
@@ -858,7 +1069,8 @@ def deg_mast(
 ) -> dict[str, pd.DataFrame]:
     """Run MAST-inspired hurdle model DEG analysis. Requires ``statsmodels``.
 
-    See ``run_deg`` for parameter docs.
+    ``layer`` defaults to ``"auto"`` (resolves to ``'log_normalized'``).
+    See ``run_deg`` for full parameter docs.
     """
     return run_deg(
         spatioloji_obj,
@@ -880,7 +1092,7 @@ def deg_nb_glm(
     groupby: str,
     group_fg: str | list[str],
     group_bg: str | list[str] = "rest",
-    layer: str | None = None,
+    layer: str | None = "auto",
     spatial_filter: dict | None = None,
     min_cells: int = 10,
     n_jobs: int = 1,
@@ -890,7 +1102,8 @@ def deg_nb_glm(
 ) -> dict[str, pd.DataFrame]:
     """Run negative-binomial GLM DEG analysis. Requires ``statsmodels``.
 
-    See ``run_deg`` for parameter docs.
+    ``layer`` defaults to ``"auto"`` (resolves to ``None`` — raw counts).
+    See ``run_deg`` for full parameter docs.
     """
     return run_deg(
         spatioloji_obj,
@@ -912,7 +1125,7 @@ def deg_deseq2(
     groupby: str,
     group_fg: str | list[str],
     group_bg: str | list[str] = "rest",
-    layer: str | None = None,
+    layer: str | None = "auto",
     spatial_filter: dict | None = None,
     replicate_key: str | None = None,
     min_cells: int = 10,
@@ -921,7 +1134,8 @@ def deg_deseq2(
 ) -> dict[str, pd.DataFrame]:
     """Run DESeq2 pseudobulk DEG analysis. Requires ``pydeseq2``.
 
-    See ``run_deg`` for parameter docs. ``replicate_key`` is required.
+    ``layer`` defaults to ``"auto"`` (resolves to ``None`` — raw counts).
+    See ``run_deg`` for full parameter docs. ``replicate_key`` is required.
     """
     return run_deg(
         spatioloji_obj,

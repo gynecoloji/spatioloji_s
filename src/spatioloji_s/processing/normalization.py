@@ -16,6 +16,18 @@ Big-data design principles applied throughout
                          halving RAM without loss of biological precision.
   No unnecessary copies  In-place ufuncs (np.log1p(..., out=...)), view-based
                          slicing, and astype(..., copy=False) used throughout.
+
+GPU acceleration
+================
+  ``normalize_total``, ``log_transform``, ``scale``,
+  ``scale_by_batch_normalization``, ``normalize_pearson_residuals`` and
+  ``normalize_standard_workflow`` accept a ``device`` parameter
+  (``'auto' | 'cpu' | 'gpu'``).  When ``'auto'`` and RAPIDS (``cupy``,
+  ``cupyx.scipy.sparse``) is importable, the heavy reductions and
+  elementwise math run on GPU and the result is materialised back to
+  numpy / scipy.sparse before being written to the spatioloji object.
+  The GPU path is non-chunked (operates on the whole matrix), so very
+  large datasets that exceed GPU RAM should use ``device='cpu'``.
 """
 
 from __future__ import annotations
@@ -28,6 +40,8 @@ from typing import Literal
 
 import numpy as np
 from scipy import sparse
+
+from ._gpu import Device, _resolve_device, _to_cupy, _to_numpy, _warn_fallback
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -108,6 +122,43 @@ def _n_workers(n_jobs: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_total_gpu(X, target_sum, exclude_highly_expressed, max_fraction):
+    """cuML/cupy path for normalize_total. Returns (X_norm, row_sums) on host."""
+    import cupy as cp
+    from cupyx.scipy import sparse as cusparse
+
+    is_sparse = sparse.issparse(X)
+    X_gpu = _to_cupy(X)
+
+    if is_sparse:
+        X_gpu = X_gpu.tocsr()
+        X_gpu.eliminate_zeros()
+        row_sums = cp.asarray(X_gpu.sum(axis=1)).ravel()
+    else:
+        row_sums = X_gpu.sum(axis=1)
+
+    if exclude_highly_expressed:
+        col_sums = cp.asarray(X_gpu.sum(axis=0)).ravel()
+        gene_fractions = col_sums / cp.maximum(col_sums.sum(), 1.0)
+        gene_mask = gene_fractions < max_fraction
+        if int((~gene_mask).sum()) > 0:
+            if is_sparse:
+                row_sums = cp.asarray(X_gpu[:, gene_mask].sum(axis=1)).ravel()
+            else:
+                row_sums = X_gpu[:, gene_mask].sum(axis=1)
+
+    scale_factors = cp.where(row_sums > 0, target_sum / row_sums, 0.0)
+
+    if is_sparse:
+        diag = cusparse.diags(scale_factors)
+        X_norm_gpu = (diag @ X_gpu).tocsr()
+        X_norm_gpu.data = X_norm_gpu.data.astype(cp.float32, copy=False)
+    else:
+        X_norm_gpu = (X_gpu * scale_factors[:, None]).astype(cp.float32, copy=False)
+
+    return _to_numpy(X_norm_gpu), _to_numpy(row_sums)
+
+
 def normalize_total(
     spatioloji_obj,
     target_sum: float = 1e4,
@@ -119,6 +170,7 @@ def normalize_total(
     copy: bool = False,
     cell_chunk_size: int = 50_000,
     n_jobs: int = 1,
+    device: Device = "auto",
 ):
     """
     Normalize counts per cell (library-size normalization).
@@ -153,6 +205,9 @@ def normalize_total(
     n_jobs : int, optional
         Number of parallel worker threads for the dense path, by default 1.
         ``-1`` uses all available CPU cores.  Has no effect on the sparse path.
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cupy/cupyx on GPU when
+        RAPIDS is importable, otherwise the chunked CPU path.
 
     Returns
     -------
@@ -162,12 +217,36 @@ def normalize_total(
     Examples
     --------
     >>> sj.processing.normalize_total(sp, target_sum=1e4, inplace=True)
-    >>> sj.processing.normalize_total(sp, target_sum=1e4, n_jobs=-1, inplace=True)
+    >>> sj.processing.normalize_total(sp, target_sum=1e4, device='gpu', inplace=True)
     """
     X = _get_X(spatioloji_obj, layer)
     n_cells, n_genes = X.shape
 
     print(f"\nNormalizing expression to target sum: {target_sum:,.0f}")
+
+    backend = _resolve_device(device, "normalize_total")
+
+    if backend == "gpu":
+        try:
+            X_norm, row_sums = _normalize_total_gpu(
+                X, target_sum, exclude_highly_expressed, max_fraction,
+            )
+            print(f"  Counts per cell — mean: {row_sums.mean():.0f}, median: {np.median(row_sums):.0f}")
+            print(f"  ✓ Normalized {n_cells:,} cells × {n_genes:,} genes (GPU)")
+            if copy:
+                import copy as copy_module
+
+                sp_new = copy_module.deepcopy(spatioloji_obj)
+                sp_new.add_layer(output_layer, X_norm, overwrite=True)
+                return sp_new
+            elif inplace:
+                spatioloji_obj.add_layer(output_layer, X_norm, overwrite=True)
+                return None
+            return X_norm
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("normalize_total", exc)
 
     if sparse.issparse(X):
         # ── Sparse path (O(nnz), no dense materialization) ──────────────────
@@ -249,6 +328,34 @@ def normalize_total(
         return X_norm
 
 
+def _log_transform_gpu(X, base, offset):
+    """cupy path for log_transform. Returns numpy/scipy on host."""
+    import cupy as cp
+
+    use_log1p = base is None and offset == 1.0
+    is_sparse = sparse.issparse(X)
+    X_gpu = _to_cupy(X)
+
+    if is_sparse and use_log1p:
+        X_log_gpu = X_gpu.copy()
+        # cupyx CSR exposes .data — log1p in place on stored nonzeros
+        cp.log1p(X_log_gpu.data, out=X_log_gpu.data)
+        X_log_gpu = X_log_gpu.tocsr()
+    else:
+        if is_sparse:
+            X_gpu = X_gpu.toarray()
+        X_log_gpu = X_gpu.astype(cp.float32, copy=True)
+        if use_log1p:
+            cp.log1p(X_log_gpu, out=X_log_gpu)
+        elif base is None:
+            cp.log(X_log_gpu + cp.float32(offset), out=X_log_gpu)
+        else:
+            cp.log(X_log_gpu + cp.float32(offset), out=X_log_gpu)
+            X_log_gpu /= cp.float32(np.log(base))
+
+    return _to_numpy(X_log_gpu)
+
+
 def log_transform(
     spatioloji_obj,
     layer: str | None = None,
@@ -259,6 +366,7 @@ def log_transform(
     copy: bool = False,
     cell_chunk_size: int = 50_000,
     n_jobs: int = 1,
+    device: Device = "auto",
 ):
     """
     Apply log transformation to expression data.
@@ -289,6 +397,9 @@ def log_transform(
     n_jobs : int, optional
         Number of parallel worker threads for the dense path, by default 1.
         ``-1`` uses all available CPU cores.  Has no effect on the sparse log1p path.
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cupy on GPU when RAPIDS
+        is importable; sparse log1p stays sparse on the GPU path too.
 
     Returns
     -------
@@ -298,13 +409,33 @@ def log_transform(
     Examples
     --------
     >>> sj.processing.log_transform(sp, layer='normalized_counts', inplace=True)
-    >>> sj.processing.log_transform(sp, layer='normalized_counts', n_jobs=-1, inplace=True)
+    >>> sj.processing.log_transform(sp, layer='normalized_counts', device='gpu', inplace=True)
     """
     X = _get_X(spatioloji_obj, layer)
     n_cells, n_genes = X.shape
 
     use_log1p = base is None and offset == 1.0
     print(f"\nApplying log transformation (base={'e' if base is None else base})")
+
+    backend = _resolve_device(device, "log_transform")
+    if backend == "gpu":
+        try:
+            X_log = _log_transform_gpu(X, base, offset)
+            print(f"  ✓ Transformed {n_cells:,} cells × {n_genes:,} genes (GPU)")
+            if copy:
+                import copy as copy_module
+
+                sp_new = copy_module.deepcopy(spatioloji_obj)
+                sp_new.add_layer(output_layer, X_log, overwrite=True)
+                return sp_new
+            elif inplace:
+                spatioloji_obj.add_layer(output_layer, X_log, overwrite=True)
+                return None
+            return X_log
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("log_transform", exc)
 
     if sparse.issparse(X) and use_log1p:
         # ── Sparse path: log1p(0)=0, so sparsity structure is preserved ─────
@@ -356,6 +487,72 @@ def log_transform(
         return X_log
 
 
+def _scale_gpu(X, method, zero_center, max_value):
+    """cupy path for scale. Returns numpy/scipy on host."""
+    import cupy as cp
+    from cupyx.scipy import sparse as cusparse
+
+    is_sparse = sparse.issparse(X)
+    n_cells = X.shape[0]
+    X_gpu = _to_cupy(X)
+
+    # Sparse + zero_center=False preserves sparsity
+    if is_sparse and not zero_center:
+        X_csc = X_gpu.tocsc()
+        X_csc.eliminate_zeros()
+        n = float(n_cells)
+
+        if method == "standard":
+            col_sum = cp.asarray(X_csc.sum(axis=0)).ravel()
+            col_sum2 = cp.asarray(X_csc.power(2).sum(axis=0)).ravel()
+            gene_mean = col_sum / n
+            gene_var = col_sum2 / n - gene_mean**2
+            gene_std = cp.sqrt(cp.maximum(gene_var, 0.0)).astype(cp.float32)
+            gene_std = cp.where(gene_std == 0, cp.float32(1.0), gene_std)
+        else:  # robust — densify per gene-chunk on GPU
+            gene_std = cp.empty(X.shape[1], dtype=cp.float32)
+            chunk = 512
+            for s in range(0, X.shape[1], chunk):
+                e = min(s + chunk, X.shape[1])
+                col_dense = X_csc[:, s:e].toarray()
+                q75 = cp.percentile(col_dense, 75, axis=0)
+                q25 = cp.percentile(col_dense, 25, axis=0)
+                iqr = (q75 - q25).astype(cp.float32)
+                iqr = cp.where(iqr == 0, cp.float32(1.0), iqr)
+                gene_std[s:e] = iqr
+
+        inv_scale = cusparse.diags(cp.float32(1.0) / gene_std)
+        X_scaled_gpu = (X_csc @ inv_scale).tocsr()
+        X_scaled_gpu.data = X_scaled_gpu.data.astype(cp.float32, copy=False)
+        if max_value is not None:
+            X_scaled_gpu.data = cp.clip(X_scaled_gpu.data, -max_value, max_value)
+        return _to_numpy(X_scaled_gpu)
+
+    # Dense path (also where sparse + zero_center=True must densify)
+    if is_sparse:
+        X_gpu = X_gpu.toarray()
+    X_gpu = X_gpu.astype(cp.float32, copy=False)
+
+    if method == "standard":
+        gene_center = X_gpu.mean(axis=0)
+        gene_scale = X_gpu.std(axis=0, ddof=1)
+    else:  # robust
+        gene_center = cp.median(X_gpu, axis=0)
+        gene_scale = cp.percentile(X_gpu, 75, axis=0) - cp.percentile(X_gpu, 25, axis=0)
+
+    gene_scale = cp.where(gene_scale == 0, cp.float32(1.0), gene_scale).astype(cp.float32)
+    gene_center = gene_center.astype(cp.float32)
+
+    if zero_center:
+        X_scaled_gpu = (X_gpu - gene_center) / gene_scale
+    else:
+        X_scaled_gpu = X_gpu / gene_scale
+    if max_value is not None:
+        cp.clip(X_scaled_gpu, -max_value, max_value, out=X_scaled_gpu)
+
+    return _to_numpy(X_scaled_gpu)
+
+
 def scale(
     spatioloji_obj,
     layer: str | None = None,
@@ -369,6 +566,7 @@ def scale(
     cell_chunk_size: int = 50_000,
     out=None,
     n_jobs: int = 1,
+    device: Device = "auto",
 ):
     """
     Scale expression data (z-score normalization per gene).
@@ -416,6 +614,10 @@ def scale(
     n_jobs : int, optional
         Number of parallel worker threads for the dense path gene-chunk loops,
         by default 1.  ``-1`` uses all available CPU cores.
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cupy on GPU when RAPIDS
+        is importable.  The GPU path ignores ``out`` (no memory-mapped
+        output on GPU) and ``chunk_genes`` (operates on the whole matrix).
 
     Returns
     -------
@@ -427,12 +629,8 @@ def scale(
     >>> # In-memory, standard scaling
     >>> sj.processing.scale(sp, layer='log_normalized', inplace=True)
     >>>
-    >>> # Write the scaled layer directly to disk (avoids holding it in RAM)
-    >>> sj.processing.scale(sp, layer='log_normalized',
-    ...                     out='/tmp/scaled.npy', inplace=True)
-    >>>
-    >>> # Multi-threaded gene-chunk scaling
-    >>> sj.processing.scale(sp, layer='log_normalized', n_jobs=-1, inplace=True)
+    >>> # Force GPU
+    >>> sj.processing.scale(sp, layer='log_normalized', device='gpu', inplace=True)
     """
     if method not in ("standard", "robust"):
         raise ValueError(f"Unknown scaling method: {method}. Use 'standard' or 'robust'.")
@@ -441,6 +639,26 @@ def scale(
     n_cells, n_genes = X.shape
 
     print(f"\nScaling expression data (method: {method})")
+
+    backend = _resolve_device(device, "scale")
+    if backend == "gpu":
+        try:
+            X_scaled = _scale_gpu(X, method, zero_center, max_value)
+            print(f"  ✓ Scaled {n_cells:,} cells × {n_genes:,} genes (GPU)")
+            if copy:
+                import copy as copy_module
+
+                sp_new = copy_module.deepcopy(spatioloji_obj)
+                sp_new.add_layer(output_layer, X_scaled, overwrite=True)
+                return sp_new
+            elif inplace:
+                spatioloji_obj.add_layer(output_layer, X_scaled, overwrite=True)
+                return None
+            return X_scaled
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("scale", exc)
 
     # ── Sparse path: zero_center=False preserves sparsity ───────────────────
     if sparse.issparse(X) and not zero_center:
@@ -555,6 +773,45 @@ def scale(
         return X_scaled
 
 
+def _scale_by_batch_gpu(X, batch, method, zero_center, max_value):
+    """cupy path for scale_by_batch_normalization. Returns numpy on host."""
+    import cupy as cp
+
+    if sparse.issparse(X):
+        X = X.toarray()
+
+    n_cells, n_genes = X.shape
+    X_gpu = cp.asarray(X, dtype=cp.float32)
+    X_scaled_gpu = cp.empty_like(X_gpu)
+    batches = np.unique(batch)
+
+    for batch_id in batches:
+        idx_np = np.where(batch == batch_id)[0]
+        idx = cp.asarray(idx_np, dtype=cp.int64)
+        B = X_gpu[idx, :]
+        n_b = int(idx.shape[0])
+
+        if method == "standard":
+            g_center = B.mean(axis=0)
+            g_scale = B.std(axis=0, ddof=1 if n_b > 1 else 0)
+        else:  # robust
+            g_center = cp.median(B, axis=0)
+            g_scale = cp.percentile(B, 75, axis=0) - cp.percentile(B, 25, axis=0)
+
+        g_scale = cp.where(g_scale == 0, cp.float32(1.0), g_scale).astype(cp.float32)
+        g_center = g_center.astype(cp.float32)
+
+        if zero_center:
+            tile = (B - g_center) / g_scale
+        else:
+            tile = B / g_scale
+        if max_value is not None:
+            cp.clip(tile, -max_value, max_value, out=tile)
+        X_scaled_gpu[idx, :] = tile
+
+    return _to_numpy(X_scaled_gpu), batches
+
+
 def scale_by_batch_normalization(
     spatioloji_obj,
     batch_key: str,
@@ -566,6 +823,7 @@ def scale_by_batch_normalization(
     inplace: bool = False,
     copy: bool = False,
     chunk_genes: int = 500,
+    device: Device = "auto",
 ):
     """
     Scale expression separately within each batch.
@@ -596,6 +854,9 @@ def scale_by_batch_normalization(
         Return a deep copy with the output layer added, by default False.
     chunk_genes : int, optional
         Genes processed per chunk per batch, by default 500.
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cupy on GPU when RAPIDS
+        is importable.
 
     Returns
     -------
@@ -606,14 +867,40 @@ def scale_by_batch_normalization(
         raise ValueError(f"Column '{batch_key}' not found in cell_meta")
 
     X = _get_X(spatioloji_obj, layer)
+
+    n_cells = X.shape[0]
+    n_genes = X.shape[1]
+    batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
+
+    print(f"\nBatch-wise scaling (batch_key='{batch_key}', method={method})")
+
+    backend = _resolve_device(device, "scale_by_batch_normalization")
+    if backend == "gpu":
+        try:
+            X_scaled, batches = _scale_by_batch_gpu(X, batch, method, zero_center, max_value)
+            print(f"  Found {len(batches)} batches")
+            if max_value is not None:
+                print(f"  Clipped values to [{-max_value}, {max_value}]")
+            print(f"  ✓ Scaled {n_cells:,} cells × {n_genes:,} genes across {len(batches)} batches (GPU)")
+            if copy:
+                import copy as copy_module
+
+                sp_new = copy_module.deepcopy(spatioloji_obj)
+                sp_new.add_layer(output_layer, X_scaled, overwrite=True)
+                return sp_new
+            elif inplace:
+                spatioloji_obj.add_layer(output_layer, X_scaled, overwrite=True)
+                return None
+            return X_scaled
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("scale_by_batch_normalization", exc)
+
     if sparse.issparse(X):
         X = X.toarray()  # batch-wise centering; dense output unavoidable
 
-    n_cells, n_genes = X.shape
-    batch = spatioloji_obj.cell_meta[batch_key].astype(str).values
     batches = np.unique(batch)
-
-    print(f"\nBatch-wise scaling (batch_key='{batch_key}', method={method})")
     print(f"  Found {len(batches)} batches")
 
     # Pre-allocate float32 output (no sklearn copy)
@@ -670,6 +957,38 @@ def scale_by_batch_normalization(
         return X_scaled
 
 
+def _pearson_residuals_gpu(X, theta, clip_val):
+    """cupy path for normalize_pearson_residuals. Returns numpy on host."""
+    import cupy as cp
+
+    is_sparse = sparse.issparse(X)
+    n_cells, n_genes = X.shape
+    X_gpu = _to_cupy(X)
+
+    if is_sparse:
+        X_gpu = X_gpu.tocsr()
+        X_gpu.eliminate_zeros()
+        lib_size = cp.asarray(X_gpu.sum(axis=1)).ravel().astype(cp.float64)
+        gene_sums = cp.asarray(X_gpu.sum(axis=0)).ravel().astype(cp.float64)
+        X_dense_gpu = X_gpu.toarray().astype(cp.float32)
+    else:
+        X_dense_gpu = X_gpu.astype(cp.float32, copy=False)
+        lib_size = X_dense_gpu.sum(axis=1).astype(cp.float64)
+        gene_sums = X_dense_gpu.sum(axis=0).astype(cp.float64)
+
+    mean_lib = float(lib_size.mean())
+    gene_means = (gene_sums / n_cells).astype(cp.float32)
+    lib_size_f32 = lib_size.astype(cp.float32)
+    theta_f32 = cp.float32(theta)
+
+    mu = lib_size_f32[:, None] * gene_means[None, :] / cp.float32(mean_lib)
+    denom = cp.sqrt(mu + mu**2 / theta_f32)
+    denom = cp.where(denom == 0, cp.float32(1.0), denom)
+    residuals_gpu = (X_dense_gpu - mu) / denom
+    cp.clip(residuals_gpu, -clip_val, clip_val, out=residuals_gpu)
+    return _to_numpy(residuals_gpu)
+
+
 def normalize_pearson_residuals(
     spatioloji_obj,
     layer: str | None = None,
@@ -680,6 +999,7 @@ def normalize_pearson_residuals(
     copy: bool = False,
     cell_chunk_size: int = 50_000,
     out=None,
+    device: Device = "auto",
 ):
     """
     Normalize using Pearson residuals (analytic method).
@@ -713,6 +1033,9 @@ def normalize_pearson_residuals(
     out : None | str | Path | np.ndarray, optional
         Output destination — file path (memory-mapped), pre-allocated array,
         or None (regular in-memory float32 array).
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cupy on GPU when RAPIDS
+        is importable.  GPU path ignores ``out`` (no memory-mapped output).
 
     Returns
     -------
@@ -727,15 +1050,34 @@ def normalize_pearson_residuals(
     Examples
     --------
     >>> sj.processing.normalize_pearson_residuals(sp, inplace=True)
-    >>> # Write directly to disk to avoid holding residuals in RAM
-    >>> sj.processing.normalize_pearson_residuals(sp, out='/tmp/pr.npy',
-    ...                                            inplace=True)
+    >>> sj.processing.normalize_pearson_residuals(sp, device='gpu', inplace=True)
     """
     X = _get_X(spatioloji_obj, layer)
     n_cells, n_genes = X.shape
 
     clip_val = clip if clip is not None else math.sqrt(n_cells)
     print(f"\nNormalizing using Pearson residuals (theta={theta})")
+
+    backend = _resolve_device(device, "normalize_pearson_residuals")
+    if backend == "gpu":
+        try:
+            residuals = _pearson_residuals_gpu(X, theta, clip_val)
+            print(f"  Clipped residuals to [{-clip_val:.2f}, {clip_val:.2f}]")
+            print(f"  ✓ Calculated residuals for {n_cells:,} cells × {n_genes:,} genes (GPU)")
+            if copy:
+                import copy as copy_module
+
+                sp_new = copy_module.deepcopy(spatioloji_obj)
+                sp_new.add_layer(output_layer, residuals, overwrite=True)
+                return sp_new
+            elif inplace:
+                spatioloji_obj.add_layer(output_layer, residuals, overwrite=True)
+                return None
+            return residuals
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("normalize_pearson_residuals", exc)
 
     # ── Sparse-native statistics (O(nnz), no dense copy) ────────────────────
     if sparse.issparse(X):
@@ -809,6 +1151,7 @@ def normalize_standard_workflow(
     output_layer: str = "normalized",
     inplace: bool = True,
     cell_chunk_size: int = 50_000,
+    device: Device = "auto",
 ):
     """
     Apply standard normalization workflow.
@@ -852,6 +1195,7 @@ def normalize_standard_workflow(
         spatioloji_obj,
         target_sum=target_sum,
         cell_chunk_size=cell_chunk_size,
+        device=device,
     )
 
     if log_transform:
@@ -861,13 +1205,14 @@ def normalize_standard_workflow(
             spatioloji_obj,
             layer="_temp_norm",
             cell_chunk_size=cell_chunk_size,
+            device=device,
         )
         spatioloji_obj.remove_layer("_temp_norm")
 
     if scale:
         print("\nStep 3: Scaling")
         spatioloji_obj.add_layer("_temp_log", X_norm, overwrite=True)
-        X_norm = globals()["scale"](spatioloji_obj, layer="_temp_log")
+        X_norm = globals()["scale"](spatioloji_obj, layer="_temp_log", device=device)
         spatioloji_obj.remove_layer("_temp_log")
 
     print("\n" + "=" * 70)

@@ -3,6 +3,14 @@ dimension_reduction.py - Dimensionality reduction methods for spatial transcript
 
 Provides PCA, t-SNE, UMAP, and other methods for reducing high-dimensional
 expression data to lower dimensions for visualization and clustering.
+
+GPU acceleration
+----------------
+``pca``, ``tsne`` and ``umap`` accept a ``device`` parameter
+(``'auto' | 'cpu' | 'gpu'``). When ``'auto'`` (default) and RAPIDS
+(``cuml``, ``cupy``) is importable, computation runs on GPU and results
+are returned as numpy arrays. RAPIDS must be installed separately into
+the same conda env (not a pip dependency); see :mod:`._gpu`.
 """
 
 import json
@@ -10,9 +18,12 @@ import os
 import subprocess
 import tempfile
 import warnings
+from typing import Literal
 
 import numpy as np
 from scipy import sparse
+
+from ._gpu import Device, _resolve_device, _to_cupy, _to_numpy, _warn_fallback
 
 
 def _run_in_conda_env(conda_env: str, script: str, input_path: str, output_path: str) -> None:
@@ -174,6 +185,38 @@ print(f"  ✓ {{"{method}"}} complete ({{result.shape[0]}} cells, {{result.shape
 '''
 
 
+def _pca_gpu(X, n_comps: int, random_state: int):
+    """cuML PCA path. Returns (X_pca, variance, variance_ratio, components) as numpy.
+
+    Notes
+    -----
+    cuML's ``PCA.__init__`` does **not** accept ``random_state`` — full and
+    Jacobi solvers are deterministic, and the iterated-power solver controls
+    its randomness via ``iterated_power`` (an int) rather than a seed.  We
+    accept ``random_state`` to keep the public API stable with the sklearn
+    path but ignore it on the GPU side; PCA results match the CPU within
+    sign-flip / numerical tolerance regardless.
+    """
+    from cuml.decomposition import PCA as cuPCA
+
+    print("  Running PCA (cuML GPU)...")
+    X_gpu = _to_cupy(X)
+    # cuML PCA dense path is well-supported; sparse path uses TruncatedSVD
+    # under the hood for some versions, so fall back to dense on GPU if sparse.
+    if sparse.issparse(X):
+        # cupyx CSR → dense on GPU (cheap memory-wise after HVG subset)
+        X_gpu = X_gpu.toarray()
+    del random_state  # not a supported cuML PCA kwarg; see docstring
+    model = cuPCA(n_components=n_comps)
+    X_pca_gpu = model.fit_transform(X_gpu)
+    return (
+        _to_numpy(X_pca_gpu),
+        _to_numpy(model.explained_variance_),
+        _to_numpy(model.explained_variance_ratio_),
+        _to_numpy(model.components_),
+    )
+
+
 def pca(
     spatioloji_obj,
     layer: str | None = "scaled",
@@ -182,6 +225,7 @@ def pca(
     random_state: int = 42,
     output_key: str = "X_pca",
     inplace: bool = True,
+    device: Device = "auto",
 ):
     """
     Principal Component Analysis (PCA).
@@ -207,6 +251,11 @@ def pca(
         Key name for storing PCA results, by default 'X_pca'
     inplace : bool, optional
         Store results in spatioloji object, by default True
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cuML on GPU when RAPIDS
+        is importable, otherwise scikit-learn on CPU.  ``'gpu'`` requires
+        RAPIDS in the same conda env.  Sparse inputs stay sparse on the GPU
+        path (cupyx CSR), avoiding a costly densification.
 
     Returns
     -------
@@ -230,20 +279,19 @@ def pca(
     >>> pca_coords = sp.cell_meta[['PC1', 'PC2', 'PC3', ...]]
     >>> # Or if stored as embedding
     >>> pca_coords = sp.embeddings['X_pca']
+    >>>
+    >>> # Force GPU
+    >>> sj.processing.pca(sp, n_comps=50, device='gpu')
     """
-    from sklearn.decomposition import PCA
-
     print(f"\nComputing PCA (n_comps={n_comps})")
 
-    # Get expression data
+    # Get expression data — DO NOT densify yet; GPU path can take CSR.
     if layer is None:
         X = spatioloji_obj.expression.get_dense()
     else:
         X = spatioloji_obj.get_layer(layer)
-        if sparse.issparse(X):
-            X = X.toarray()
 
-    # Subset to HVGs if requested
+    # Subset to HVGs if requested (works for both sparse CSR and dense)
     if use_highly_variable:
         if "highly_variable" not in spatioloji_obj.gene_meta.columns:
             warnings.warn(
@@ -271,17 +319,30 @@ def pca(
     if n_comps_actual < n_comps:
         print(f"  Reducing n_comps to {n_comps_actual} (limited by data dimensions)")
 
-    # Run PCA
-    print("  Running PCA...")
-    pca_model = PCA(n_components=n_comps_actual, random_state=random_state)
-    X_pca = pca_model.fit_transform(X)
+    backend = _resolve_device(device, "PCA")
 
-    # Get variance explained
-    variance = pca_model.explained_variance_
-    variance_ratio = pca_model.explained_variance_ratio_
-    components = pca_model.components_
+    if backend == "gpu":
+        try:
+            X_pca, variance, variance_ratio, components = _pca_gpu(X, n_comps_actual, random_state)
+            print("  ✓ PCA complete (cuML GPU)")
+        except Exception as exc:
+            if device == "gpu":
+                raise
+            _warn_fallback("PCA", exc)
+            backend = "cpu"
 
-    print("  ✓ PCA complete")
+    if backend == "cpu":
+        from sklearn.decomposition import PCA as _SKPCA
+
+        if sparse.issparse(X):
+            X = X.toarray()
+        print("  Running PCA (scikit-learn)...")
+        pca_model = _SKPCA(n_components=n_comps_actual, random_state=random_state)
+        X_pca = pca_model.fit_transform(X)
+        variance = pca_model.explained_variance_
+        variance_ratio = pca_model.explained_variance_ratio_
+        components = pca_model.components_
+        print("  ✓ PCA complete")
     print(f"    Variance explained by first 10 PCs: {variance_ratio[:10].sum() * 100:.1f}%")
     print(f"    Variance explained by all {n_comps_actual} PCs: {variance_ratio.sum() * 100:.1f}%")
 
@@ -344,7 +405,8 @@ def tsne(
     learning_rate: float | str = "auto",
     n_iter: int = 1000,
     random_state: int = 42,
-    gpu: bool = False,
+    device: Device = "auto",
+    gpu: bool | None = None,
     n_jobs: int = 1,
     conda_env: str | None = None,
     output_key: str = "X_tsne",
@@ -387,9 +449,12 @@ def tsne(
         Number of iterations, by default 1000
     random_state : int, optional
         Random seed, by default 42
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cuML on GPU when RAPIDS
+        is importable, otherwise the CPU openTSNE/sklearn backend.
     gpu : bool, optional
-        If True, use cuML (RAPIDS) GPU implementation, by default False.
-        Requires ``cuml`` to be installed (locally or via ``conda_env``).
+        **Deprecated**, use ``device='gpu'`` instead.  When set, takes
+        precedence over ``device``.  Will be removed in a future release.
     n_jobs : int, optional
         Number of threads for openTSNE backend, by default 1.
         Set to -1 for all CPUs.  Ignored for sklearn and cuML backends.
@@ -413,22 +478,27 @@ def tsne(
     >>> # Standard t-SNE (auto-selects fastest available backend)
     >>> sj.processing.tsne(sp, perplexity=30)
     >>>
-    >>> # GPU-accelerated (requires RAPIDS cuML)
-    >>> sj.processing.tsne(sp, gpu=True, perplexity=30)
+    >>> # Force GPU (requires RAPIDS cuML in same env)
+    >>> sj.processing.tsne(sp, device='gpu', perplexity=30)
     >>>
     >>> # GPU in a separate conda env (cuML installed there)
-    >>> sj.processing.tsne(sp, gpu=True, conda_env='rapids')
-    >>>
-    >>> # openTSNE in another env
-    >>> sj.processing.tsne(sp, conda_env='tsne_env', n_jobs=-1)
+    >>> sj.processing.tsne(sp, device='gpu', conda_env='rapids')
     >>>
     >>> # Fast CPU with openTSNE (multi-threaded)
-    >>> sj.processing.tsne(sp, n_jobs=-1)
+    >>> sj.processing.tsne(sp, device='cpu', n_jobs=-1)
     """
     import os
 
     if n_jobs == -1:
         n_jobs = os.cpu_count() or 1
+
+    # Resolve deprecated gpu= flag
+    if gpu is not None:
+        warnings.warn(
+            "tsne(gpu=...) is deprecated; use device='gpu' or device='cpu' instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        device = "gpu" if gpu else "cpu"
 
     X = _get_pca_or_expr(spatioloji_obj, use_pca, n_pcs, layer, use_highly_variable)
     lr = 200.0 if learning_rate == "auto" else float(learning_rate)
@@ -439,62 +509,61 @@ def tsne(
         "n_iter": n_iter, "random_state": random_state, "n_jobs": n_jobs,
     }
 
-    # --- Remote execution in another conda env ---
+    # --- Remote execution in another conda env (subprocess path) ---
     if conda_env is not None:
-        method = "tsne_gpu" if gpu else "tsne_opentsne"
+        method = "tsne_gpu" if device == "gpu" else "tsne_opentsne"
         X_tsne = _remote_dr(conda_env, method, X, tsne_params)
 
-    # --- Local GPU ---
-    elif gpu:
-        try:
-            from cuml.manifold import TSNE as cuTSNE
-
-            print(f"\nt-SNE [cuML GPU] (n_components={n_components}, perplexity={perplexity})")
-            print("  Running t-SNE on GPU...")
-            tsne_model = cuTSNE(
-                n_components=n_components, perplexity=perplexity,
-                early_exaggeration=early_exaggeration, learning_rate=lr,
-                n_iter=n_iter, random_state=random_state, verbose=0,
-            )
-            X_tsne = tsne_model.fit_transform(X)
-            if hasattr(X_tsne, "get"):
-                X_tsne = X_tsne.get()
-            X_tsne = np.asarray(X_tsne, dtype=np.float64)
-            print("  ✓ t-SNE complete (GPU)")
-        except ImportError as err:
-            raise ImportError(
-                "gpu=True requires cuML (RAPIDS). Install in a RAPIDS conda env: "
-                "conda install -c rapidsai cuml\n"
-                "Or use conda_env='rapids_env' to run in a different env."
-            ) from err
-
-    # --- Local CPU: openTSNE → sklearn fallback ---
+    # --- In-process dispatch ---
     else:
-        try:
-            from openTSNE import TSNE as openTSNE
+        backend = _resolve_device(device, "t-SNE")
 
-            print(f"\nt-SNE [openTSNE] (n_components={n_components}, perplexity={perplexity}, n_jobs={n_jobs})")
-            print("  Running t-SNE...")
-            tsne_model = openTSNE(
-                n_components=n_components, perplexity=perplexity,
-                early_exaggeration=early_exaggeration, learning_rate=lr,
-                n_iter=n_iter, random_state=random_state, n_jobs=n_jobs, verbose=False,
-            )
-            X_tsne = np.asarray(tsne_model.fit(X))
-            print("  ✓ t-SNE complete (openTSNE)")
-        except ImportError:
-            from sklearn.manifold import TSNE
+        if backend == "gpu":
+            try:
+                from cuml.manifold import TSNE as cuTSNE
 
-            print(f"\nt-SNE [sklearn] (n_components={n_components}, perplexity={perplexity})")
-            print("  Running t-SNE (install openTSNE for ~10x speedup: pip install openTSNE)...")
-            tsne_model = TSNE(
-                n_components=n_components, perplexity=perplexity,
-                early_exaggeration=early_exaggeration,
-                learning_rate=learning_rate,  # sklearn accepts 'auto'
-                n_iter=n_iter, random_state=random_state, verbose=0,
-            )
-            X_tsne = tsne_model.fit_transform(X)
-            print(f"  ✓ t-SNE complete (KL divergence: {tsne_model.kl_divergence_:.3f})")
+                print(f"\nt-SNE [cuML GPU] (n_components={n_components}, perplexity={perplexity})")
+                print("  Running t-SNE on GPU...")
+                tsne_model = cuTSNE(
+                    n_components=n_components, perplexity=perplexity,
+                    early_exaggeration=early_exaggeration, learning_rate=lr,
+                    n_iter=n_iter, random_state=random_state, verbose=0,
+                )
+                X_tsne = tsne_model.fit_transform(_to_cupy(X))
+                X_tsne = np.asarray(_to_numpy(X_tsne), dtype=np.float64)
+                print("  ✓ t-SNE complete (GPU)")
+            except Exception as exc:
+                if device == "gpu":
+                    raise
+                _warn_fallback("t-SNE", exc)
+                backend = "cpu"
+
+        if backend == "cpu":
+            try:
+                from openTSNE import TSNE as openTSNE
+
+                print(f"\nt-SNE [openTSNE] (n_components={n_components}, perplexity={perplexity}, n_jobs={n_jobs})")
+                print("  Running t-SNE...")
+                tsne_model = openTSNE(
+                    n_components=n_components, perplexity=perplexity,
+                    early_exaggeration=early_exaggeration, learning_rate=lr,
+                    n_iter=n_iter, random_state=random_state, n_jobs=n_jobs, verbose=False,
+                )
+                X_tsne = np.asarray(tsne_model.fit(X))
+                print("  ✓ t-SNE complete (openTSNE)")
+            except ImportError:
+                from sklearn.manifold import TSNE
+
+                print(f"\nt-SNE [sklearn] (n_components={n_components}, perplexity={perplexity})")
+                print("  Running t-SNE (install openTSNE for ~10x speedup: pip install openTSNE)...")
+                tsne_model = TSNE(
+                    n_components=n_components, perplexity=perplexity,
+                    early_exaggeration=early_exaggeration,
+                    learning_rate=learning_rate,  # sklearn accepts 'auto'
+                    n_iter=n_iter, random_state=random_state, verbose=0,
+                )
+                X_tsne = tsne_model.fit_transform(X)
+                print(f"  ✓ t-SNE complete (KL divergence: {tsne_model.kl_divergence_:.3f})")
 
     if inplace:
         if not hasattr(spatioloji_obj, "_embeddings"):
@@ -518,10 +587,13 @@ def umap(
     metric: str = "euclidean",
     random_state: int | None = 42,
     n_jobs: int = 1,
-    gpu: bool = False,
+    device: Device = "auto",
+    gpu: bool | None = None,
     conda_env: str | None = None,
     output_key: str = "X_umap",
     inplace: bool = True,
+    init: Literal["spectral", "random"] = "spectral",
+    n_epochs: int | None = None,
 ):
     """
     UMAP (Uniform Manifold Approximation and Projection).
@@ -563,9 +635,12 @@ def umap(
         Number of parallel threads (CPU backend only), by default 1.
         Set to -1 for all CPUs.  Only effective when
         ``random_state=None`` (umap-learn limitation).
+    device : {'auto', 'cpu', 'gpu'}, optional
+        Compute backend.  ``'auto'`` (default) uses cuML on GPU when RAPIDS
+        is importable, otherwise umap-learn on CPU.
     gpu : bool, optional
-        If True, use cuML (RAPIDS) GPU implementation, by default False.
-        Requires ``cuml`` (locally or via ``conda_env``).
+        **Deprecated**, use ``device='gpu'`` instead.  When set, takes
+        precedence over ``device``.  Will be removed in a future release.
     conda_env : str or None, optional
         Run computation in a different conda environment via subprocess.
         Useful when cuML or umap-learn is in a separate env.
@@ -581,22 +656,26 @@ def umap(
 
     Examples
     --------
-    >>> # Standard UMAP
+    >>> # Standard UMAP (auto GPU/CPU)
     >>> sj.processing.umap(sp, n_neighbors=15)
     >>>
-    >>> # GPU-accelerated (requires RAPIDS cuML)
-    >>> sj.processing.umap(sp, gpu=True, n_neighbors=15)
-    >>>
-    >>> # GPU in a separate conda env
-    >>> sj.processing.umap(sp, gpu=True, conda_env='rapids')
+    >>> # Force GPU (requires RAPIDS cuML in same env)
+    >>> sj.processing.umap(sp, device='gpu', n_neighbors=15)
     >>>
     >>> # Fast parallel CPU (non-reproducible)
-    >>> sj.processing.umap(sp, n_jobs=-1, random_state=None)
+    >>> sj.processing.umap(sp, device='cpu', n_jobs=-1, random_state=None)
     """
     import os
 
     if n_jobs == -1:
         n_jobs = os.cpu_count() or 1
+
+    if gpu is not None:
+        warnings.warn(
+            "umap(gpu=...) is deprecated; use device='gpu' or device='cpu' instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        device = "gpu" if gpu else "cpu"
 
     X = _get_pca_or_expr(spatioloji_obj, use_pca, n_pcs, layer, use_highly_variable)
 
@@ -606,69 +685,83 @@ def umap(
         "random_state": random_state, "n_jobs": n_jobs,
     }
 
-    # --- Remote execution ---
+    # --- Remote execution (subprocess into another conda env) ---
     if conda_env is not None:
-        method = "umap_gpu" if gpu else "umap_cpu"
-        # For CPU remote, handle random_state/n_jobs conflict
-        if not gpu and n_jobs > 1 and random_state is not None:
+        method = "umap_gpu" if device == "gpu" else "umap_cpu"
+        if device != "gpu" and n_jobs > 1 and random_state is not None:
             umap_params["random_state"] = None
         X_umap = _remote_dr(conda_env, method, X, umap_params)
 
-    # --- Local GPU ---
-    elif gpu:
-        try:
-            from cuml.manifold import UMAP as cuUMAP
+    # --- In-process dispatch ---
+    else:
+        backend = _resolve_device(device, "UMAP")
+
+        if backend == "gpu":
+            try:
+                from cuml.manifold import UMAP as cuUMAP
+
+                # cuML defaults to init='random' once n_obs > 50_000, which
+                # produces dispersed / "swirly" UMAPs that don't resemble the
+                # CPU spectral-init layout.  Honor the explicit init=
+                # argument so the GPU run matches CPU appearance.
+                gpu_kw = dict(
+                    n_components=n_components, n_neighbors=n_neighbors,
+                    min_dist=min_dist, metric=metric,
+                    random_state=random_state, verbose=False,
+                    init=init,
+                )
+                if n_epochs is not None:
+                    gpu_kw["n_epochs"] = n_epochs
+
+                print(
+                    f"\nUMAP [cuML GPU] (n_components={n_components}, "
+                    f"n_neighbors={n_neighbors}, min_dist={min_dist}, "
+                    f"init={init}, n_epochs={n_epochs})"
+                )
+                print("  Running UMAP on GPU...")
+                umap_model = cuUMAP(**gpu_kw)
+                X_umap = umap_model.fit_transform(_to_cupy(X))
+                X_umap = np.asarray(_to_numpy(X_umap), dtype=np.float64)
+                print("  ✓ UMAP complete (GPU)")
+            except Exception as exc:
+                if device == "gpu":
+                    raise
+                _warn_fallback("UMAP", exc)
+                backend = "cpu"
+
+        if backend == "cpu":
+            try:
+                import umap as umap_package
+            except ImportError as err:
+                raise ImportError("UMAP requires umap-learn: pip install umap-learn") from err
+
+            rs = random_state
+            if n_jobs > 1 and rs is not None:
+                warnings.warn(
+                    f"random_state={rs} forces n_jobs=1 in umap-learn. "
+                    "Dropping random_state for parallel execution.",
+                    UserWarning, stacklevel=2,
+                )
+                rs = None
+
+            cpu_kw = dict(
+                n_components=n_components, n_neighbors=n_neighbors,
+                min_dist=min_dist, metric=metric, random_state=rs,
+                n_jobs=n_jobs, low_memory=X.shape[0] > 50_000, verbose=False,
+                init=init,
+            )
+            if n_epochs is not None:
+                cpu_kw["n_epochs"] = n_epochs
 
             print(
-                f"\nUMAP [cuML GPU] (n_components={n_components}, "
-                f"n_neighbors={n_neighbors}, min_dist={min_dist})"
+                f"\nUMAP [umap-learn] (n_components={n_components}, "
+                f"n_neighbors={n_neighbors}, min_dist={min_dist}, "
+                f"n_jobs={n_jobs}, init={init})"
             )
-            print("  Running UMAP on GPU...")
-            umap_model = cuUMAP(
-                n_components=n_components, n_neighbors=n_neighbors,
-                min_dist=min_dist, metric=metric,
-                random_state=random_state, verbose=False,
-            )
+            print("  Running UMAP...")
+            umap_model = umap_package.UMAP(**cpu_kw)
             X_umap = umap_model.fit_transform(X)
-            if hasattr(X_umap, "get"):
-                X_umap = X_umap.get()
-            X_umap = np.asarray(X_umap, dtype=np.float64)
-            print("  ✓ UMAP complete (GPU)")
-        except ImportError as err:
-            raise ImportError(
-                "gpu=True requires cuML (RAPIDS). Install in a RAPIDS conda env: "
-                "conda install -c rapidsai cuml\n"
-                "Or use conda_env='rapids_env' to run in a different env."
-            ) from err
-
-    # --- Local CPU ---
-    else:
-        try:
-            import umap as umap_package
-        except ImportError as err:
-            raise ImportError("UMAP requires umap-learn: pip install umap-learn") from err
-
-        rs = random_state
-        if n_jobs > 1 and rs is not None:
-            warnings.warn(
-                f"random_state={rs} forces n_jobs=1 in umap-learn. "
-                "Dropping random_state for parallel execution.",
-                UserWarning, stacklevel=2,
-            )
-            rs = None
-
-        print(
-            f"\nUMAP [umap-learn] (n_components={n_components}, "
-            f"n_neighbors={n_neighbors}, min_dist={min_dist}, n_jobs={n_jobs})"
-        )
-        print("  Running UMAP...")
-        umap_model = umap_package.UMAP(
-            n_components=n_components, n_neighbors=n_neighbors,
-            min_dist=min_dist, metric=metric, random_state=rs,
-            n_jobs=n_jobs, low_memory=X.shape[0] > 50_000, verbose=False,
-        )
-        X_umap = umap_model.fit_transform(X)
-        print("  ✓ UMAP complete")
+            print("  ✓ UMAP complete")
 
     if inplace:
         if not hasattr(spatioloji_obj, "_embeddings"):

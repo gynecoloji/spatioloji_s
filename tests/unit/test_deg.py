@@ -599,3 +599,90 @@ class TestConvenienceWrappers:
 
         for name in ("run_deg", "deg_wilcoxon", "deg_ttest", "deg_mast", "deg_nb_glm", "deg_deseq2"):
             assert hasattr(processing, name), f"{name} not in processing"
+
+
+# ---------------------------------------------------------------------------
+# Layer routing tests — layer="auto", per-method dict, mismatch warnings
+# ---------------------------------------------------------------------------
+
+
+class TestLayerResolution:
+    """Cover _resolve_layer_per_method's three input forms + 'auto'."""
+
+    def test_resolve_auto_picks_per_method_defaults(self):
+        from spatioloji_s.processing.DEG import _resolve_layer_per_method
+
+        out = _resolve_layer_per_method("auto", ["wilcoxon", "deseq2", "nb_glm"])
+        assert out == {
+            "wilcoxon": "log_normalized",
+            "deseq2": None,
+            "nb_glm": None,
+        }
+
+    def test_resolve_string_broadcasts(self):
+        from spatioloji_s.processing.DEG import _resolve_layer_per_method
+
+        with pytest.warns(UserWarning):
+            # 'log_normalized' broadcast to deseq2 → mismatch warning
+            out = _resolve_layer_per_method("log_normalized", ["wilcoxon", "deseq2"])
+        assert out == {"wilcoxon": "log_normalized", "deseq2": "log_normalized"}
+
+    def test_resolve_dict_explicit(self):
+        from spatioloji_s.processing.DEG import _resolve_layer_per_method
+
+        out = _resolve_layer_per_method(
+            {"wilcoxon": "log_normalized", "deseq2": None},
+            ["wilcoxon", "deseq2"],
+        )
+        assert out == {"wilcoxon": "log_normalized", "deseq2": None}
+
+    def test_resolve_dict_missing_method_raises(self):
+        from spatioloji_s.processing.DEG import _resolve_layer_per_method
+
+        with pytest.raises(ValueError, match="missing entries"):
+            _resolve_layer_per_method({"wilcoxon": None}, ["wilcoxon", "deseq2"])
+
+    def test_resolve_dict_extra_method_raises(self):
+        from spatioloji_s.processing.DEG import _resolve_layer_per_method
+
+        with pytest.raises(ValueError, match="not being run"):
+            _resolve_layer_per_method({"wilcoxon": None, "ttest": None}, ["wilcoxon"])
+
+
+class TestLayerMismatchWarnings:
+    def test_wilcoxon_with_layer_none_warns(self):
+        from spatioloji_s.processing.DEG import _resolve_layer_per_method
+
+        with pytest.warns(UserWarning, match="expects log-normalized"):
+            _resolve_layer_per_method(None, ["wilcoxon"])
+
+    def test_deseq2_with_log_layer_warns(self):
+        from spatioloji_s.processing.DEG import _resolve_layer_per_method
+
+        with pytest.warns(UserWarning, match="expects raw counts"):
+            _resolve_layer_per_method({"deseq2": "log_normalized"}, ["deseq2"])
+
+    def test_auto_does_not_warn(self):
+        """layer='auto' uses the canonical per-method table, so no warnings."""
+        from spatioloji_s.processing.DEG import _resolve_layer_per_method
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # promote any warning to an error
+            _resolve_layer_per_method("auto", ["wilcoxon", "ttest", "nb_glm", "deseq2"])
+
+
+class TestRunDegAutoFallback:
+    """Auto-routed layer that doesn't exist on the object falls back to main."""
+
+    def test_run_deg_auto_falls_back_when_layer_missing(self, sp_deg, capsys):
+        from spatioloji_s.processing import run_deg
+
+        # sp_deg has no 'log_normalized' layer; auto would pick it for ttest
+        # → fallback should kick in and the run should still succeed.
+        results = run_deg(sp_deg, "cell_type", "TypeA", methods=["ttest"], layer="auto")
+        assert "ttest" in results
+        out = capsys.readouterr().out
+        assert "[layer=auto]" in out and "falling back to main matrix" in out
+
+
+import warnings  # noqa: E402  (imported at end since only the new tests need it)
