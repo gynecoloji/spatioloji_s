@@ -1,13 +1,18 @@
 # spatioloji_s
 
+[![Tests](https://github.com/gynecoloji/spatioloji_s/actions/workflows/test.yml/badge.svg)](https://github.com/gynecoloji/spatioloji_s/actions/workflows/test.yml)
 [![PyPI version](https://img.shields.io/pypi/v/spatioloji-s.svg)](https://pypi.org/project/spatioloji-s/)
-[![Documentation Status](https://readthedocs.org/projects/spatioloji-s/badge/?version=latest)](https://spatioloji-s.readthedocs.io/en/latest/)
+[![Release](https://img.shields.io/github/v/release/gynecoloji/spatioloji_s)](https://github.com/gynecoloji/spatioloji_s/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.12-blue.svg)](https://www.python.org/)
+<!-- Uncomment once the Zenodo integration has archived a release; replace
+     XXXXXXXX with the concept DOI suffix. See RELEASING.md step 4.
+[![DOI](https://zenodo.org/badge/1123073729.svg)](https://doi.org/10.5281/zenodo.XXXXXXXX)
+-->
+
 
 **spatioloji_s** is a Python package for image-based spatial transcriptomics analysis, purpose-built for CosMx, MERFISH, and Xenium. It provides an integrated workflow from raw data loading through quality control, processing, spatial analysis, and polygon-native cell-cell communication.
 
-- **Documentation**: [spatioloji-s.readthedocs.io](https://spatioloji-s.readthedocs.io)
 - **PyPI**: [pypi.org/project/spatioloji-s](https://pypi.org/project/spatioloji-s/)
 - **GitHub**: [github.com/gynecoloji/spatioloji_s](https://github.com/gynecoloji/spatioloji_s)
 - **License**: MIT
@@ -40,10 +45,20 @@ pip install "spatioloji-s[reduction]"    # UMAP
 pip install "spatioloji-s[batch]"        # Harmony, ComBat
 pip install "spatioloji-s[deg]"          # DESeq2, statsmodels
 pip install "spatioloji-s[anndata]"      # AnnData/scanpy interop
+pip install "spatioloji-s[annotation]"   # Cell type annotation (CellTypist)
 pip install "spatioloji-s[decoupler]"    # Pathway scoring
 pip install "spatioloji-s[ripley]"       # Ripley's K/L
-pip install "spatioloji-s[all]"          # Everything
+pip install "spatioloji-s[all]"          # All of the above
 ```
+
+`[all]` covers every pip-installable analysis feature. The deep-learning
+imputation backends are excluded on purpose — scVI and MAGIC are meant to run in
+a dedicated environment (pass `conda_env=` to `scvi_impute` / `magic_impute`),
+and pulling PyTorch into a default install costs several GB. Install them
+in-process with `pip install "spatioloji-s[imputation]"` if you prefer.
+
+Not sure what you have? `spatioloji_s info` lists every optional feature and
+whether it is available.
 
 ---
 
@@ -179,13 +194,23 @@ The `spatioloji` object stores all data aligned to a **master cell index**:
 
 ## Examples
 
-See the [example notebooks](https://spatioloji-s.readthedocs.io/en/latest/examples/index.html):
+Example notebooks are being reworked alongside the documentation rebuild. The
+workflows they cover:
 
 - **Basic Workflow** --- Loading, QC, normalization, clustering, visualization
 - **Spatial Analysis** --- Graphs, neighborhoods, Moran's I, interface detection
 - **CCC Analysis** --- LR scoring, significance, zone comparison, morphology
 - **Interface Detection** --- Tumor-stroma boundary, gradient analysis
 - **Pathway Scoring** --- Gene set analysis via decoupler
+
+---
+
+## Citation
+
+If you use spatioloji_s in your research, please cite it. Use the **"Cite this
+repository"** button on the GitHub repository page (generated from
+[`CITATION.cff`](CITATION.cff)), or cite the archived release on Zenodo via the
+DOI badge above --- the concept DOI always resolves to the latest version.
 
 ---
 
@@ -197,7 +222,7 @@ MIT License --- see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-Contributions are welcome! See the [contributing guide](https://spatioloji-s.readthedocs.io/en/latest/contributing.html).
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 git clone https://github.com/gynecoloji/spatioloji_s.git
@@ -206,3 +231,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ruff check src/ tests/ --fix
 ```
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org);
+versioning, [`CHANGELOG.md`](CHANGELOG.md), and releases are automated with
+release-please. See [RELEASING.md](RELEASING.md).
