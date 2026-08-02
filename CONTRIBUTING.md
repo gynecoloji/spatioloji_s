@@ -102,17 +102,33 @@ To run a subset of tests:
 pytest tests.test_spatioloji_s
 ```
 
+## Commit messages & releases
+
+This repo uses **[Conventional Commits](https://www.conventionalcommits.org)**
+and [release-please](https://github.com/googleapis/release-please) to automate
+versioning, the changelog, and releases. Prefix your commits:
+
+| Prefix | Effect |
+|---|---|
+| `feat: …` | new feature → minor version bump, listed under *Added* |
+| `fix: …` | bug fix → patch bump, under *Fixed* |
+| `feat!: …` or a `BREAKING CHANGE:` footer | major bump (minor while pre-1.0) |
+| `perf:` / `refactor:` / `docs:` | no bump of their own; shown under *Performance* / *Changed* / *Documentation* |
+| `test:` / `build:` / `ci:` / `chore:` | no bump; hidden from the changelog |
+
+Only `feat`, `fix`, and breaking changes decide the version number. The other
+prefixes control where a commit is filed in `CHANGELOG.md`.
+
+On merge to `dev`, release-please opens/updates a "release PR"; merging that PR
+tags the version, publishes a GitHub Release, updates `CHANGELOG.md`,
+`pyproject.toml`, `src/spatioloji_s/__init__.py`, and `CITATION.cff`, and (via
+the Zenodo integration) mints a new DOI. You do **not** edit the changelog or
+version numbers by hand.
+
 ## Deploying
 
-A reminder for the maintainers on how to deploy. Make sure all your changes are committed (including an entry in HISTORY.md). Then run:
-
-```sh
-bump2version patch # possible: major / minor / patch
-git push
-git push --tags
-```
-
-You can set up a [GitHub Actions workflow](https://docs.github.com/en/actions/use-cases-and-examples/building-and-testing/building-and-testing-python#publishing-to-pypi) to automatically deploy your package to PyPI when you push a new tag.
+Maintainers: see [RELEASING.md](RELEASING.md) for the full release flow, the
+one-time Zenodo and GitHub Actions setup, and the manual PyPI upload step.
 
 ## Code of Conduct
 

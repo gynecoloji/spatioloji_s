@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "spatioloji_s: image-based spatial transcriptomics analysis in Python"
+abstract: >-
+  A Python package for image-based spatial transcriptomics (CosMx, MERFISH,
+  Xenium) providing an integrated workflow from raw data loading through quality
+  control, normalization and clustering, point- and polygon-based spatial
+  analysis, polygon-native cell-cell communication, and visualization.
+type: software
+authors:
+  - given-names: "Ji"
+    family-names: "Wang"
+    email: "gynecoloji@gmail.com"
+    orcid: "https://orcid.org/0000-0003-3443-5857"
+repository-code: "https://github.com/gynecoloji/spatioloji_s"
+url: "https://github.com/gynecoloji/spatioloji_s"
+license: MIT
+keywords:
+  - spatial transcriptomics
+  - single cell
+  - CosMx
+  - MERFISH
+  - Xenium
+  - cell-cell communication
+  - bioinformatics
+# `version` + `date-released` are bumped automatically by release-please on each
+# release (via the annotations below) — do not edit them by hand.
+version: "0.3.0" # x-release-please-version
+date-released: "2026-03-01" # x-release-please-date
+# TODO(one-time): after enabling the Zenodo integration and publishing the first
+# GitHub Release, uncomment the block below and paste the *concept* DOI (the one
+# that always resolves to the latest version). See RELEASING.md.
+# identifiers:
+#   - type: doi
+#     value: "10.5281/zenodo.XXXXXXXX"
+#     description: "Concept DOI (resolves to the latest version)"
