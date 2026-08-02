@@ -113,13 +113,15 @@ versioning, the changelog, and releases. Prefix your commits:
 | `feat: …` | new feature → minor version bump, listed under *Added* |
 | `fix: …` | bug fix → patch bump, under *Fixed* |
 | `feat!: …` or a `BREAKING CHANGE:` footer | major bump (minor while pre-1.0) |
-| `perf:` / `refactor:` / `docs:` | no bump of their own; shown under *Performance* / *Changed* / *Documentation* |
-| `test:` / `build:` / `ci:` / `chore:` | no bump; hidden from the changelog |
+| `perf:` / `refactor:` / `docs:` | patch bump, under *Performance* / *Changed* / *Documentation* |
+| `test:` / `build:` / `ci:` / `chore:` | no release; hidden from the changelog |
 
-Only `feat`, `fix`, and breaking changes decide the version number. The other
-prefixes control where a commit is filed in `CHANGELOG.md`.
+Any commit type that appears in a *visible* changelog section triggers at least
+a patch release — `docs:` alone produced both v0.4.1 and v0.4.2. Only the hidden
+types (`test`, `build`, `ci`, `chore`) release nothing on their own. If you want
+a change to ride along without cutting a version, use one of those.
 
-On merge to `dev`, release-please opens/updates a "release PR"; merging that PR
+On merge to `main`, release-please opens/updates a "release PR"; merging that PR
 tags the version, publishes a GitHub Release, updates `CHANGELOG.md`,
 `pyproject.toml`, `src/spatioloji_s/__init__.py`, and `CITATION.cff`, and (via
 the Zenodo integration) mints a new DOI. You do **not** edit the changelog or
@@ -127,8 +129,9 @@ version numbers by hand.
 
 ## Deploying
 
-Maintainers: see [RELEASING.md](RELEASING.md) for the full release flow, the
-one-time Zenodo and GitHub Actions setup, and the manual PyPI upload step.
+Maintainers: see [RELEASING.md](RELEASING.md). Merging a release PR tags the
+version, publishes a GitHub Release, mints a Zenodo DOI, and uploads to PyPI —
+there is no manual publishing step.
 
 ## Code of Conduct
 

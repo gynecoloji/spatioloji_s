@@ -9,7 +9,7 @@ document covers the one-time setup and the day-to-day flow.
 
 ## How a release happens
 
-1. You merge Conventional Commits into `dev` (the default branch).
+1. You merge Conventional Commits into `main` (the default branch).
 2. The `release-please` workflow opens — or updates — a **release PR** titled
    something like `chore(main): release 0.4.0`. It contains only version and
    changelog edits.
@@ -53,7 +53,8 @@ if you want your work released, make sure at least one commit is a `feat:` or a
 
 ## One-time setup
 
-These steps have **not** been done yet. Do them in order.
+Steps 1–3 are **done**. Step 4 is partly done: the DOI badge is in `README.md`,
+but `CITATION.cff` still carries the placeholder. Step 5 is outstanding.
 
 ### 1. Allow GitHub Actions to open pull requests
 
@@ -78,7 +79,7 @@ Zenodo only archives releases published *after* the toggle is on — the existin
 
 Two options:
 
-- **Wait for the first release PR.** Land any `feat:`/`fix:` commit on `dev`,
+- **Wait for the first release PR.** Land any `feat:`/`fix:` commit on `main`,
   then merge the release PR that appears.
 - **Seed it immediately.** Create a GitHub Release manually against the existing
   `v0.3.0` tag (Releases → Draft a new release → choose tag `v0.3.0` → Publish).
@@ -90,31 +91,76 @@ After the first archive, Zenodo shows two DOIs. You want the **concept DOI** —
 the one described as *"Cite all versions? … represents all versions"* — because
 it always resolves to the newest release.
 
-Update three places:
+The concept DOI for this project is **`10.5281/zenodo.21753918`**.
 
-1. **`README.md`** — uncomment the DOI badge near the top and replace
-   `XXXXXXXX` with the concept DOI's numeric suffix. The badge image URL is
-   already correct (`1123073729` is this repository's GitHub ID).
-2. **`CITATION.cff`** — uncomment the `identifiers:` block at the bottom and
-   fill in the same DOI.
-3. Commit as `docs: add Zenodo DOI badge and citation identifier`.
+1. **`README.md`** — done; the badge is in the header block.
+2. **`CITATION.cff`** — still to do. Uncomment the `identifiers:` block at the
+   bottom and fill in the concept DOI above. This feeds both GitHub's "Cite this
+   repository" button and the metadata Zenodo attaches to future deposits.
+
+### 5. Register the PyPI trusted publisher
+
+See the [PyPI](#pypi) section below. Until that is configured, the publish
+workflow will run on each release and fail at the upload step.
 
 ---
 
 ## PyPI
 
-Publishing to PyPI is still **manual** and is not wired into the release. After
-a release PR merges:
+Publishing is automatic. `.github/workflows/publish.yml` runs on
+`release: published`, so merging a release PR uploads to PyPI as part of the
+same chain that tags the version and mints the DOI.
+
+Authentication is [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/):
+PyPI accepts a short-lived OIDC identity token minted by GitHub for that one
+workflow. There is no API token in the repository, in Actions secrets, or on any
+developer machine — nothing to leak, rotate, or revoke.
+
+### One-time PyPI setup
+
+On pypi.org → your project → **Manage → Publishing → Add a new publisher →
+GitHub**, enter exactly:
+
+| Field | Value |
+|---|---|
+| Owner | `gynecoloji` |
+| Repository | `spatioloji_s` |
+| Workflow name | `publish.yml` |
+| Environment name | `pypi` |
+
+All four are matched literally. A mismatch makes PyPI reject the upload with an
+authentication error rather than a helpful one, so check them character by
+character.
+
+### What the workflow does before uploading
+
+Three gates, all of which must pass:
+
+1. **Clean build** — `rm -rf build dist src/*.egg-info` first, because
+   setuptools reuses a stale `build/lib` and can ship files deleted from source.
+2. **`twine check`** — confirms the metadata renders on PyPI.
+3. **Install-and-import** — installs the built wheel into an empty virtualenv
+   with only its declared dependencies and imports it. This is the gate that
+   catches a module importing something missing from `pyproject.toml`.
+
+On a release it also asserts the built `__version__` matches the tag, so a
+mismatched version can never reach PyPI.
+
+### Manual publish
+
+`workflow_dispatch` is enabled, so you can publish from the Actions tab without
+cutting a release — useful for a version tagged before this workflow existed.
+To publish from your machine instead, the old path still works:
 
 ```bash
-git checkout dev && git pull
+rm -rf build dist src/*.egg-info
 python -m build
+python -m twine check dist/*
 python -m twine upload dist/*
 ```
 
-If you want this automated, add a workflow triggered on `release: published`
-that uses [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/);
-it needs a matching publisher configured on the PyPI project first.
+Remember that **a version number can never be reused** on PyPI. If a bad release
+goes out, you yank it and ship the next patch; you cannot re-upload.
 
 ---
 

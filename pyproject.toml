@@ -162,7 +162,7 @@ all = [
 # ── Project URLs ───────────────────────────────────────────────────────────────
 [project.urls]
 bugs = "https://github.com/gynecoloji/spatioloji_s/issues"
-changelog = "https://github.com/gynecoloji/spatioloji_s/blob/dev/CHANGELOG.md"
+changelog = "https://github.com/gynecoloji/spatioloji_s/blob/main/CHANGELOG.md"
 homepage = "https://github.com/gynecoloji/spatioloji_s"
 
 # ── CLI entry point ────────────────────────────────────────────────────────────

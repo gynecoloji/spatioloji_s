@@ -1,0 +1,102 @@
+name: publish
+
+# Publishes to PyPI whenever a GitHub Release is published — which is exactly
+# what merging a release-please PR does. Together with release-please.yml this
+# closes the loop: merge the release PR → tag → GitHub Release → Zenodo DOI →
+# PyPI upload, with no manual step.
+#
+# Authentication uses PyPI Trusted Publishing (OIDC). No API token is stored in
+# this repository, in Actions secrets, or on any developer machine: PyPI accepts
+# a short-lived identity token that GitHub mints for this specific workflow.
+#
+# ── One-time PyPI setup (see RELEASING.md) ───────────────────────────────────
+# pypi.org → your project → Manage → Publishing → Add a new publisher → GitHub
+#     Owner:            gynecoloji
+#     Repository:       spatioloji_s
+#     Workflow name:    publish.yml
+#     Environment name: pypi
+# All four must match this file exactly or PyPI rejects the upload.
+#
+# NOTE: a release only publishes if this workflow file exists in the released
+# commit, so the first release that uploads automatically is the next one after
+# this lands. Use the workflow_dispatch trigger below to publish anything older.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Least privilege by default; the publish job widens only what it needs.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          # Start from a clean tree. setuptools reuses build/lib when it exists,
+          # which can silently ship files that were deleted from the source —
+          # this repository has been bitten by exactly that.
+          rm -rf build dist src/*.egg-info
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Check metadata renders on PyPI
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+
+      - name: Install the wheel with only its declared dependencies
+        run: |
+          # Catches the failure mode where a module imports something that is
+          # not declared in pyproject.toml: this venv gets the wheel and its
+          # declared dependencies and nothing else, exactly like a real user.
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install --quiet dist/*.whl
+          /tmp/verify/bin/python -c "import spatioloji_s; print('imported', spatioloji_s.__version__)"
+          /tmp/verify/bin/spatioloji_s version
+
+      - name: Confirm the built version matches the release tag
+        if: github.event_name == 'release'
+        run: |
+          BUILT=$(/tmp/verify/bin/python -c "import spatioloji_s; print(spatioloji_s.__version__)")
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "built=$BUILT tag=$TAG"
+          if [ "$BUILT" != "$TAG" ]; then
+            echo "::error::built version $BUILT does not match release tag $TAG"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Upload to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/spatioloji-s/
+    permissions:
+      # The OIDC token PyPI verifies. This is the only permission the upload
+      # needs — deliberately no contents: write, no packages, no secrets.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
