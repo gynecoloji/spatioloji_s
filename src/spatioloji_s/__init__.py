@@ -17,7 +17,8 @@ from .data.config import SpatialData, SpatiolojiConfig
 from .data.core import spatioloji
 from .data.qc import QCConfig, XeniumQCConfig, spatioloji_qc, xenium_qc
 
-__version__ = "0.1.0"
+# Bumped automatically by release-please on each release — do not edit by hand.
+__version__ = "0.3.0"
 
 __all__ = [
     # Core classes

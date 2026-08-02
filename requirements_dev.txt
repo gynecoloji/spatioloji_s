@@ -1,20 +1,34 @@
+# Kept in sync with [project.dependencies] and [project.optional-dependencies]
+# in pyproject.toml. CI installs this file, so anything imported at module scope
+# must be listed here or the test run fails during collection.
+
 # Core runtime
 numpy
 pandas
 scipy
 scikit-learn
+scikit-image
 matplotlib
 seaborn
 opencv-python
-typer
-
-# Optional features
-anndata
+networkx
+natsort
+tqdm
 geopandas
+shapely
+joblib>=1.3
+numba
+typer
+rich
+
+# Optional features exercised by the test suite
+anndata
 umap-learn
 harmonypy
+statsmodels
 igraph
 leidenalg
+pynndescent
 
 # Dev/test
 pytest
