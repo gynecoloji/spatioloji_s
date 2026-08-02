@@ -4,11 +4,8 @@
 [![PyPI version](https://img.shields.io/pypi/v/spatioloji-s.svg)](https://pypi.org/project/spatioloji-s/)
 [![Release](https://img.shields.io/github/v/release/gynecoloji/spatioloji_s)](https://github.com/gynecoloji/spatioloji_s/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/python-%3E%3D3.12-blue.svg)](https://www.python.org/)
-<!-- Uncomment once the Zenodo integration has archived a release; replace
-     XXXXXXXX with the concept DOI suffix. See RELEASING.md step 4.
-[![DOI](https://zenodo.org/badge/1123073729.svg)](https://doi.org/10.5281/zenodo.XXXXXXXX)
--->
+[![Python](https://img.shields.io/pypi/pyversions/spatioloji-s)](https://pypi.org/project/spatioloji-s/)
+[![DOI](https://zenodo.org/badge/1123073729.svg)](https://doi.org/10.5281/zenodo.21753918)
 
 
 **spatioloji_s** is a Python package for image-based spatial transcriptomics analysis, purpose-built for CosMx, MERFISH, and Xenium. It provides an integrated workflow from raw data loading through quality control, processing, spatial analysis, and polygon-native cell-cell communication.
