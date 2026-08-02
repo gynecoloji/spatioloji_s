@@ -10,6 +10,13 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.1](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.0...v0.4.1) (2026-08-02)
+
+
+### Documentation
+
+* **changelog:** drop reverted C++ entries from the 0.4.0 notes ([8b3f5bd](https://github.com/gynecoloji/spatioloji_s/commit/8b3f5bda2f72adf6fd3c7deadda07dc9e5a3bf0f))
+
 ## [0.4.0](https://github.com/gynecoloji/spatioloji_s/compare/v0.3.0...v0.4.0) (2026-08-02)
 
 
