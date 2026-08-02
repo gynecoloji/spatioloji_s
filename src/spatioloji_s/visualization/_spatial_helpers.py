@@ -14,16 +14,34 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize, TwoSlopeNorm
 
 
-def finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) -> plt.Figure | None:
-    """Shared save / show / close logic."""
+def finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) -> plt.Figure:
+    """Shared save / show / close logic.
+
+    Always returns ``fig``, so the ~50 public plotting functions that delegate
+    here honour their documented ``Returns: matplotlib Figure`` contract on both
+    the interactive and the scripted path.
+
+    When ``show`` is False the figure is closed to drop it from pyplot's global
+    registry — this matters when plotting in a loop — but the returned object
+    remains usable for ``fig.savefig(...)`` or a later ``display(fig)``.
+
+    Args:
+        fig: The figure to finalize.
+        save_path: If given, write the figure here before showing or closing.
+        dpi: Resolution used when saving.
+        show: If True, call ``plt.show()``; otherwise close the figure.
+
+    Returns:
+        The same ``fig`` that was passed in.
+    """
     plt.tight_layout()
     if save_path is not None:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         print(f"Saved to {save_path}")
-    if not show:
+    if show:
+        plt.show()
+    else:
         plt.close(fig)
-        return None
-    plt.close(fig)
     return fig
 
 
