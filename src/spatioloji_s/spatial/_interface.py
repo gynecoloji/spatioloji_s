@@ -178,7 +178,12 @@ def _grid_method(
     Returns:
         InterfaceResult.
     """
-    from skimage.measure import find_contours
+    try:
+        from skimage.measure import find_contours
+    except ImportError as err:  # pragma: no cover - scikit-image is a core dependency
+        raise ImportError(
+            "Interface detection requires scikit-image. Install with: pip install scikit-image"
+        ) from err
 
     labels = sp.cell_meta[group_col]
 

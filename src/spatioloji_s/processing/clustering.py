@@ -18,9 +18,14 @@ clustering has no good GPU equivalent and remains CPU-only.
 """
 
 import warnings
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import igraph as ig
+if TYPE_CHECKING:
+    # igraph is an optional dependency ([clustering]); it is imported lazily
+    # inside _build_igraph(). This binding exists only so the quoted
+    # "ig.Graph" annotations below resolve for type checkers.
+    import igraph as ig
+
 import numpy as np
 import pandas as pd
 from scipy import sparse

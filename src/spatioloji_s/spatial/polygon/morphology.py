@@ -22,7 +22,6 @@ import numba as nb
 import numpy as np
 import pandas as pd
 from scipy import stats
-from statsmodels.stats.multitest import multipletests
 
 from .graph import _get_gdf
 
@@ -1052,6 +1051,14 @@ def morphology_gene_correlation(
             "n_cells": n_cells,
         }
     )
+
+    try:
+        from statsmodels.stats.multitest import multipletests
+    except ImportError as err:
+        raise ImportError(
+            "morphology_gene_correlation requires statsmodels for BH-FDR correction. "
+            "Install with: pip install spatioloji_s[deg]"
+        ) from err
 
     res_df["p_adj"] = multipletests(res_df["p_value"], method="fdr_bh")[1]
     res_df["significant"] = res_df["p_adj"] < 0.05
