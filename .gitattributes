@@ -1,0 +1,41 @@
+# Line-ending policy. Without this file, each contributor's editor and git
+# core.autocrlf setting decide independently, which is how ~65 tracked files
+# ended up with CRLF while .editorconfig declared lf — and why unrelated edits
+# produced hundred-file whitespace diffs.
+#
+# `text=auto` lets git detect text vs binary; `eol=lf` normalizes every text
+# file to LF in the repository and in the working tree on all platforms.
+* text=auto eol=lf
+
+# Windows batch files are the one thing that genuinely needs CRLF.
+# Matches the [*.bat] block in .editorconfig.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Explicitly binary: never normalize, never try to diff as text. None of these
+# are tracked today, but the docs tree carried images and notebooks before and
+# is expected to return.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.so    binary
+*.pyd   binary
+*.npy   binary
+*.npz   binary
+*.pkl   binary
+*.h5    binary
+*.sif   binary
+
+# Jupyter notebooks are JSON, so they stay text and normalize like everything
+# else, but mark the language so GitHub's diff view treats them sensibly.
+*.ipynb text linguist-language=Jupyter
+
+# Keep generated/vendored paths out of language statistics and diff noise.
+CHANGELOG.md linguist-generated=true
