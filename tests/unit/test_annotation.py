@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import warnings
 
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.linear_model import LogisticRegression
 
 from spatioloji_s.processing.annotation import (
     _build_celltypist_anndata,
@@ -20,6 +22,21 @@ CELLTYPIST_AVAILABLE = (
 )
 celltypist_only = pytest.mark.skipif(
     not CELLTYPIST_AVAILABLE, reason="celltypist + anndata not installed"
+)
+
+# celltypist <= 1.7.1 calls LogisticRegression(multi_class='ovr'), a parameter
+# scikit-learn removed in 1.7. Only celltypist.train() is affected — the annotate
+# path that annotation.py actually wraps never builds a LogisticRegression — so
+# this gates just the tests that train a model. The check is a capability probe
+# rather than a version pin, so it starts passing again on its own once
+# celltypist drops the argument.
+CELLTYPIST_CAN_TRAIN = "multi_class" in inspect.signature(LogisticRegression).parameters
+celltypist_can_train = pytest.mark.skipif(
+    not CELLTYPIST_CAN_TRAIN,
+    reason=(
+        "celltypist<=1.7.1 passes multi_class= to LogisticRegression, "
+        "which scikit-learn removed in 1.7; celltypist.train() is unusable"
+    ),
 )
 
 
@@ -71,6 +88,7 @@ class TestAnnDataBridge:
 
 @celltypist_only
 class TestCellTypistAnnotate:
+    @celltypist_can_train
     def test_annotate_with_minimal_custom_model(self, sp_basic, tmp_path, monkeypatch):
         """Train a tiny in-memory CellTypist model on synthetic data and annotate
         sp_basic with it. Avoids any network download from celltypist's CDN."""
