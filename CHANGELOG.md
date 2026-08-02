@@ -10,6 +10,13 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.2](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.1...v0.4.2) (2026-08-02)
+
+
+### Documentation
+
+* add Zenodo DOI badge and sync Python badge to PyPI metadata ([442e82a](https://github.com/gynecoloji/spatioloji_s/commit/442e82a678a385be565019e194d3baa2d503ffe5))
+
 ## [0.4.1](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.0...v0.4.1) (2026-08-02)
 
 
