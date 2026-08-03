@@ -9,9 +9,11 @@ name: release-please
 # One-time repo setting required: Settings → Actions → General →
 # "Allow GitHub Actions to create and approve pull requests" → enabled.
 #
-# NOTE: `dev` is this repository's default branch. If release cutting ever moves
-# to `main`, change the branch below — release-please must run on exactly one
-# branch, otherwise it opens competing release PRs.
+# NOTE: `main` is this repository's only long-lived branch — release cutting and
+# the default branch both live here, and `dev` has been retired. Feature work
+# branches off `main` and merges back via PR. If a second integration branch is
+# ever reintroduced, release-please must still run on exactly one of them,
+# otherwise it opens competing release PRs.
 
 on:
   push:
