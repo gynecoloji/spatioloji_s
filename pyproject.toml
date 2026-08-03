@@ -76,6 +76,14 @@ reduction = [
     "umap-learn",
 ]
 
+# scikit-misc provides the LOESS that Seurat v3 and scanpy use to fit the
+# mean-variance trend in highly_variable_genes(method='seurat_v3'). Without it
+# the package falls back to a built-in LOESS, which agrees closely but not
+# exactly; install this extra to reproduce scanpy's gene list bit for bit.
+hvg = [
+    "scikit-misc",
+]
+
 batch = [
     "harmonypy",
     "combat",
