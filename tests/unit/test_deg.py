@@ -213,7 +213,8 @@ class TestWilcoxonBackend:
 
         X_fg, X_bg = _make_fg_bg(n_genes=10)
         result = _wilcoxon_backend(X_fg, X_bg)
-        assert set(result.keys()) == {"pval", "mean_fg", "mean_bg", "pct_fg", "pct_bg"}
+        # 'score' is the signed rank-sum z-score markers are ranked on
+        assert set(result.keys()) == {"score", "pval", "mean_fg", "mean_bg", "pct_fg", "pct_bg"}
 
     def test_pval_shape(self):
         from spatioloji_s.processing.DEG import _wilcoxon_backend
@@ -301,10 +302,19 @@ class TestRunDegCore:
         assert required.issubset(set(df.columns))
         assert df.shape[0] == 50  # 50 genes in sp_deg
 
-    def test_sorted_by_padj(self, sp_deg):
+    def test_wilcoxon_sorted_by_score(self, sp_deg):
+        """Wilcoxon ranks by the signed z-score, so the head is the group's markers."""
         from spatioloji_s.processing.DEG import run_deg
 
         df = run_deg(sp_deg, "cell_type", "TypeA", methods=["wilcoxon"])["wilcoxon"]
+        scores = df["score"].dropna()
+        assert (scores.diff().dropna() <= 0).all()
+
+    def test_non_directional_methods_sorted_by_padj(self, sp_deg):
+        """Backends without a directional statistic keep the padj ordering."""
+        from spatioloji_s.processing.DEG import run_deg
+
+        df = run_deg(sp_deg, "cell_type", "TypeA", methods=["ttest"])["ttest"]
         non_nan = df["padj"].dropna()
         assert (non_nan.diff().dropna() >= 0).all()
 

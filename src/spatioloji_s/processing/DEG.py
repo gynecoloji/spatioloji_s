@@ -252,12 +252,17 @@ def _build_result_df(
         n_bg: Number of background cells (scalar, stored in every row).
 
     Returns:
-        pd.DataFrame sorted by ``padj`` ascending (NaN last).
+        pd.DataFrame. Sorted by ``score`` descending when the backend produced a
+        directional statistic — so the head of the frame is the group's markers,
+        as ``scanpy.tl.rank_genes_groups`` orders them — and by ``padj``
+        ascending (NaN last) otherwise.
     """
     log2fc = np.log2((stats["mean_fg"].astype(np.float64) + 1e-9) / (stats["mean_bg"].astype(np.float64) + 1e-9))
-    df = pd.DataFrame(
+    columns = {"gene": gene_names}
+    if "score" in stats:
+        columns["score"] = stats["score"].astype(np.float64)
+    columns.update(
         {
-            "gene": gene_names,
             "log2fc": log2fc,
             "mean_fg": stats["mean_fg"].astype(np.float64),
             "mean_bg": stats["mean_bg"].astype(np.float64),
@@ -269,7 +274,15 @@ def _build_result_df(
             "n_bg": n_bg,
         }
     )
-    return df.sort_values("padj", na_position="last").reset_index(drop=True)
+    df = pd.DataFrame(columns)
+
+    if "score" in df.columns:
+        # Ranking on padj would be non-deterministic here: past ~10k cells the
+        # two-sided p-values underflow to exactly 0.0 for hundreds of genes.
+        df = df.sort_values("score", ascending=False, na_position="last")
+    else:
+        df = df.sort_values("padj", na_position="last")
+    return df.reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -277,52 +290,89 @@ def _build_result_df(
 # ---------------------------------------------------------------------------
 
 
+def _tie_correction(ranks: np.ndarray) -> np.ndarray:
+    """Per-gene variance correction for tied ranks (``scipy.stats.tiecorrect``).
+
+    Args:
+        ranks: Rank matrix, shape (n_cells, chunk_genes).
+
+    Returns:
+        np.ndarray: Correction coefficient per gene, shape (chunk_genes,).
+    """
+    n_cells, chunk_genes = ranks.shape
+    tc = np.ones(chunk_genes, dtype=np.float64)
+    if n_cells < 2:
+        return tc
+
+    denom = float(n_cells) ** 3 - float(n_cells)
+    for j in range(chunk_genes):
+        arr = np.sort(ranks[:, j])
+        bounds = np.flatnonzero(np.concatenate(([True], arr[1:] != arr[:-1], [True])))
+        cnt = np.diff(bounds).astype(np.float64)
+        tc[j] = 1.0 - (cnt**3 - cnt).sum() / denom
+
+    return tc
+
+
 def _wilcoxon_backend(
     X_fg: np.ndarray,
     X_bg: np.ndarray,
     n_jobs: int = 1,
+    tie_correct: bool = False,
     **_kwargs,
 ) -> dict[str, np.ndarray]:
-    """Per-gene Mann-Whitney U test (Wilcoxon rank-sum).
+    """Per-gene Mann-Whitney U test (Wilcoxon rank-sum), as scanpy computes it.
+
+    Returns the **signed** z-score of the rank sum, not just a two-sided
+    p-value.  Direction is what makes a marker a marker, and callers rank on it:
+    a two-sided p-value cannot tell "high in this group" from "absent from it",
+    and past ~10k cells it underflows to exactly 0.0 for hundreds of genes, so
+    ranking on it degenerates into an arbitrary tie-break.  The z-score stays
+    finite and ordered at any scale.
+
+    Ranks are taken over the pooled foreground+background, matching
+    ``scanpy.tl.rank_genes_groups(method='wilcoxon')``; the p-value is derived
+    from the same z so score and p-value can never disagree.
+
+    Peak memory is one ``(n_fg + n_bg, chunk_genes)`` float64 rank matrix — turn
+    ``gene_chunk_size`` down if that is too much.
 
     Args:
         X_fg: Foreground expression, shape (n_fg, chunk_genes). Dense float32.
         X_bg: Background expression, shape (n_bg, chunk_genes). Dense float32.
-        n_jobs: Worker threads for parallelism across genes in this chunk.
+        n_jobs: Accepted for API consistency; ignored (vectorized path).
+        tie_correct: Adjust the variance for tied ranks. Off by default, as in
+            scanpy. Worth enabling on sparse panels where many cells share a
+            zero, at the cost of a sort per gene.
 
     Returns:
-        Dict with keys ``pval``, ``mean_fg``, ``mean_bg``, ``pct_fg``, ``pct_bg``.
+        Dict with keys ``score``, ``pval``, ``mean_fg``, ``mean_bg``,
+        ``pct_fg``, ``pct_bg``.
     """
-    from scipy.stats import mannwhitneyu
+    from scipy.stats import norm, rankdata
 
-    chunk_genes = X_fg.shape[1]
-    mean_fg = X_fg.mean(axis=0)
-    mean_bg = X_bg.mean(axis=0)
-    pct_fg = (X_fg > 0).mean(axis=0)
-    pct_bg = (X_bg > 0).mean(axis=0)
-    pvals = np.empty(chunk_genes, dtype=np.float64)
+    n_fg, n_bg = X_fg.shape[0], X_bg.shape[0]
+    n_total = n_fg + n_bg
 
-    def _test_gene(j: int) -> float:
-        try:
-            _, p = mannwhitneyu(X_fg[:, j], X_bg[:, j], alternative="two-sided")
-        except Exception:
-            p = np.nan
-        return p
+    ranks = rankdata(np.vstack((X_fg, X_bg)), axis=0)
+    rank_sum_fg = ranks[:n_fg].sum(axis=0)
 
-    if n_jobs == 1:
-        for j in range(chunk_genes):
-            pvals[j] = _test_gene(j)
-    else:
-        with ThreadPoolExecutor(max_workers=_n_workers(n_jobs)) as ex:
-            for j, p in zip(range(chunk_genes), ex.map(_test_gene, range(chunk_genes)), strict=True):
-                pvals[j] = p
+    coef = _tie_correction(ranks) if tie_correct else 1.0
+    std_dev = np.sqrt(coef * n_fg * n_bg * (n_total + 1) / 12.0)
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        score = (rank_sum_fg - n_fg * (n_total + 1) / 2.0) / std_dev
+    # A constant gene has zero rank variance; scanpy scores those 0, not NaN.
+    score = np.asarray(score, dtype=np.float64)
+    score[~np.isfinite(score)] = 0.0
 
     return {
-        "pval": pvals,
-        "mean_fg": mean_fg.astype(np.float64),
-        "mean_bg": mean_bg.astype(np.float64),
-        "pct_fg": pct_fg.astype(np.float64),
-        "pct_bg": pct_bg.astype(np.float64),
+        "score": score,
+        "pval": 2.0 * norm.sf(np.abs(score)),
+        "mean_fg": X_fg.mean(axis=0).astype(np.float64),
+        "mean_bg": X_bg.mean(axis=0).astype(np.float64),
+        "pct_fg": (X_fg > 0).mean(axis=0).astype(np.float64),
+        "pct_bg": (X_bg > 0).mean(axis=0).astype(np.float64),
     }
 
 
@@ -790,6 +840,7 @@ def run_deg(
     n_jobs: int = 1,
     gene_chunk_size: int = 500,
     correction: str = "fdr_bh",
+    tie_correct: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Run differentially expressed gene analysis.
 
@@ -839,12 +890,16 @@ def run_deg(
         gene_chunk_size: Genes processed per backend call.
         correction: Multiple-testing correction method (``'fdr_bh'``,
             ``'bonferroni'``, or any statsmodels method string).
+        tie_correct: ``'wilcoxon'`` only — adjust the rank-sum variance for tied
+            ranks. Off by default, matching scanpy.
 
     Returns:
         Dict mapping method name -> pd.DataFrame with columns:
         ``gene``, ``log2fc``, ``mean_fg``, ``mean_bg``, ``pct_fg``, ``pct_bg``,
-        ``pval``, ``padj``, ``n_fg``, ``n_bg``.  Sorted by ``padj`` ascending,
-        NaN last.
+        ``pval``, ``padj``, ``n_fg``, ``n_bg``.  ``'wilcoxon'`` adds a signed
+        ``score`` (the rank-sum z-score) and is sorted by it descending, so the
+        head of the frame is the foreground group's markers; the other methods
+        are sorted by ``padj`` ascending, NaN last.
 
     Raises:
         ValueError: Invalid method names, missing replicate_key, insufficient
@@ -960,6 +1015,8 @@ def run_deg(
 
         # MAST needs CDR computed from the full gene set before chunking
         extra_kwargs: dict = {}
+        if method == "wilcoxon":
+            extra_kwargs["tie_correct"] = tie_correct
         if method == "mast":
             extra_kwargs["cdr_fg"] = (X_fg > 0).mean(axis=1).astype(np.float32)
             extra_kwargs["cdr_bg"] = (X_bg > 0).mean(axis=1).astype(np.float32)
@@ -998,9 +1055,15 @@ def deg_wilcoxon(
     n_jobs: int = 1,
     gene_chunk_size: int = 500,
     correction: str = "fdr_bh",
+    tie_correct: bool = False,
     **_ignored,
 ) -> dict[str, pd.DataFrame]:
     """Run Wilcoxon rank-sum DEG test.
+
+    Results carry a signed ``score`` (the rank-sum z-score) and are sorted by it
+    descending, so ``df.head(n)`` is the foreground group's top *n* markers —
+    the same statistic and ordering as
+    ``scanpy.tl.rank_genes_groups(method='wilcoxon')``.
 
     ``layer`` defaults to ``"auto"`` which selects ``'log_normalized'`` per
     the per-method table; pass an explicit layer name (or ``None`` for the
@@ -1018,6 +1081,7 @@ def deg_wilcoxon(
         n_jobs=n_jobs,
         gene_chunk_size=gene_chunk_size,
         correction=correction,
+        tie_correct=tie_correct,
     )
 
 
