@@ -109,14 +109,17 @@ def _smooth_knn_bandwidth(
     ``k`` real neighbours instead shrinks every σ, and with it every edge
     weight in the graph.
 
-    One deliberate quirk is reproduced.  UMAP compiles its search with
-    ``fastmath=True``, which lets LLVM assume no infinities and so drops the
-    ``hi == inf`` guard that would otherwise keep the bracket expanding.  The
-    effect is exact and deterministic: a row whose sum at the initial ``mid=1``
-    is still below target has its bandwidth escape to ``inf`` on the very first
-    step, which makes *every* membership in that row 1.0.  This is typically
-    10-20% of cells, it is what ``sc.pp.neighbors`` produces, and skipping it
-    leaves the graph's edge weights ~20% too small overall.
+    The search always converges. umap-learn up to 0.5.9 compiled this with
+    ``fastmath=True``, which let LLVM assume no infinities and so dropped the
+    ``hi == inf`` guard keeping the bracket open; rows whose sum at the initial
+    ``mid=1`` was still below target had their bandwidth escape to ``inf``,
+    making every membership in the row 1.0 (typically 10-20% of cells).
+    umap-learn 0.5.12 fixed that by dropping ``fastmath`` and seeding ``hi``
+    with ``NPY_FLOATMAX`` instead of infinity.  We deliberately do *not*
+    reproduce the old behaviour: against a current umap/scanpy it would be the
+    thing introducing the discrepancy.  On an environment still pinned below
+    0.5.11, expect our graph to differ from ``sc.pp.neighbors`` on those rows —
+    upgrade umap-learn rather than matching the bug.
 
     Args:
         knn_distances: Distances to the real neighbours (self excluded,
@@ -125,9 +128,8 @@ def _smooth_knn_bandwidth(
         n_iter: Maximum bisection steps, by default 64 (UMAP's value).
 
     Returns:
-        tuple: ``(sigma, rho)``, each shape (n_cells,). ``rho`` is the distance
-        to the nearest neighbour at non-zero distance. ``sigma`` is ``inf`` for
-        the escaped rows described above.
+        tuple: ``(sigma, rho)``, each shape (n_cells,), both finite. ``rho`` is
+        the distance to the nearest neighbour at non-zero distance.
     """
     n_cells = knn_distances.shape[0]
     target = float(np.log2(n_neighbors))
@@ -143,10 +145,6 @@ def _smooth_knn_bandwidth(
     )
 
     shifted = np.maximum(knn_distances - rho[:, np.newaxis], 0.0)
-
-    # Rows whose bandwidth escapes to infinity in UMAP (see docstring): the very
-    # first evaluation, at mid = 1, is still below target.
-    escaped = np.exp(-shifted).sum(axis=1) < target
 
     lo = np.zeros(n_cells, dtype=np.float64)
     hi = np.full(n_cells, np.inf, dtype=np.float64)
@@ -172,9 +170,7 @@ def _smooth_knn_bandwidth(
     mean_all = knn_distances.sum() / (n_cells * n_neighbors)
     floor = np.where(rho > 0.0, _MIN_K_DIST_SCALE * mean_per_cell, _MIN_K_DIST_SCALE * mean_all)
 
-    sigma = np.maximum(mid, floor)
-    sigma[escaped] = np.inf
-    return sigma, rho
+    return np.maximum(mid, floor), rho
 
 
 def _compute_umap_connectivities(
@@ -272,9 +268,6 @@ def _compute_umap_connectivities_gpu(
     )
     shifted_all = cp.maximum(d - rho[:, cp.newaxis], 0.0)
 
-    # Same escape-to-infinity rows as the CPU path; see _smooth_knn_bandwidth.
-    escaped = cp.exp(-shifted_all).sum(axis=1) < target
-
     lo = cp.zeros(n_cells, dtype=cp.float64)
     hi = cp.full(n_cells, cp.inf, dtype=cp.float64)
     mid = cp.ones(n_cells, dtype=cp.float64)
@@ -295,7 +288,6 @@ def _compute_umap_connectivities_gpu(
     mean_all = d.sum() / (n_cells * n_neighbors)
     floor = cp.where(rho > 0.0, _MIN_K_DIST_SCALE * mean_per_cell, _MIN_K_DIST_SCALE * mean_all)
     sigma = cp.maximum(mid, floor)
-    sigma[escaped] = cp.inf
 
     weights = cp.exp(-shifted_all / sigma[:, cp.newaxis]).astype(cp.float32)
     idx_gpu = cp.asarray(knn_indices, dtype=cp.int32)

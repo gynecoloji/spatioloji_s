@@ -21,6 +21,25 @@ from sklearn.neighbors import NearestNeighbors
 
 from spatioloji_s.processing.clustering import _build_leiden_graph, _compute_umap_connectivities
 
+def _skip_if_umap_has_fastmath_bug():
+    """Skip when the installed umap-learn escapes its bandwidth to infinity.
+
+    Up to 0.5.9 the bisection was compiled with fastmath=True, which let LLVM
+    drop the `hi == inf` guard, so rows still below target at mid=1 escaped to
+    sigma=inf and got all-1.0 memberships. 0.5.12 removed fastmath and seeds hi
+    with NPY_FLOATMAX. We implement the corrected behaviour, so against an old
+    umap -- and against a scanpy built on one -- the graphs legitimately differ.
+    """
+    umap_mod = pytest.importorskip("umap.umap_", reason="umap-learn not installed")
+    rng = np.random.default_rng(0)
+    probe = np.sort(rng.lognormal(1.0, 0.5, (200, K)).astype(np.float32), axis=1)
+    probe[:, 0] = 0.0
+    sigma, _ = umap_mod.smooth_knn_dist(probe, float(K), local_connectivity=1.0)
+    if np.isinf(sigma).any():
+        pytest.skip("installed umap-learn (<0.5.11) has the fastmath escape-to-infinity "
+                    "bug; upgrade umap-learn to compare against a correct reference")
+
+
 K = 15
 
 
@@ -57,6 +76,7 @@ def knn(blobs):
 def test_connectivities_match_umap(knn):
     """Edge weights must equal umap.fuzzy_simplicial_set on the same neighbours."""
     umap_mod = pytest.importorskip("umap.umap_", reason="umap-learn not installed")
+    _skip_if_umap_has_fastmath_bug()
 
     d_incl, i_incl = knn["incl"]
     ref = umap_mod.fuzzy_simplicial_set(
@@ -95,24 +115,21 @@ def test_bandwidth_targets_log2_n_neighbors(knn):
     )
 
 
-def test_bandwidth_escapes_where_umap_escapes(knn):
-    """The rows UMAP sends to sigma=inf must be exactly the rows we do."""
-    umap_mod = pytest.importorskip("umap.umap_", reason="umap-learn not installed")
+def test_bandwidth_always_converges(knn):
+    """Our search must always produce a finite bandwidth.
+
+    We deliberately do not reproduce umap's pre-0.5.11 escape-to-infinity bug;
+    matching it would be the thing causing a discrepancy against a current
+    umap/scanpy.
+    """
     from spatioloji_s.processing.clustering import _smooth_knn_bandwidth
 
-    d_incl, _ = knn["incl"]
     d_real, _ = knn["real"]
+    sigma, rho = _smooth_knn_bandwidth(d_real.astype(np.float64), n_neighbors=K)
 
-    # scanpy feeds smooth_knn_dist a self column of exactly 0.0
-    d_ref = np.hstack([np.zeros((d_real.shape[0], 1)), d_real]).astype(np.float32)
-    sigma_ref, _ = umap_mod.smooth_knn_dist(d_ref, float(K), local_connectivity=1.0)
-    sigma_got, _ = _smooth_knn_bandwidth(d_real.astype(np.float64), n_neighbors=K)
-
-    assert np.array_equal(np.isinf(sigma_ref), np.isinf(sigma_got)), (
-        f"escaped rows differ: umap={int(np.isinf(sigma_ref).sum())} "
-        f"ours={int(np.isinf(sigma_got).sum())}"
-    )
-    assert np.isinf(sigma_got).any(), "expected some escaped rows in this fixture"
+    assert np.isfinite(sigma).all(), f"{int(np.isinf(sigma).sum())} bandwidths escaped to inf"
+    assert (sigma > 0).all()
+    assert np.isfinite(rho).all()
 
 
 def test_n_neighbors_counts_self(blobs):
@@ -127,6 +144,7 @@ def _scanpy_reference(blobs, resolution=None):
     sc = pytest.importorskip("scanpy", reason="scanpy not installed")
     ad = pytest.importorskip("anndata", reason="anndata not installed")
     pytest.importorskip("umap", reason="umap-learn not installed")
+    _skip_if_umap_has_fastmath_bug()
 
     adata = ad.AnnData(blobs.copy())
     adata.obsm["X_pca"] = blobs.copy()
