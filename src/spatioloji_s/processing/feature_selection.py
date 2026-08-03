@@ -92,10 +92,12 @@ def _hvg_mean_var_gpu(X, n_cells, n_genes):
         mean = gene_sums / n_cells
         var = gene_sumsq / n_cells - mean**2
     else:
-        mean = X_gpu.mean(axis=0)
-        var = X_gpu.var(axis=0)
-        gene_sums = X_gpu.sum(axis=0).astype(cp.float64)
-        cell_totals = X_gpu.sum(axis=1).astype(cp.float64)
+        # float64 accumulator, matching the CPU path — a float32 reduction over
+        # ~600k cells is off by ~3e-3 relative, which reshuffles the HVG cut.
+        mean = X_gpu.mean(axis=0, dtype=cp.float64)
+        var = X_gpu.var(axis=0, dtype=cp.float64)
+        gene_sums = X_gpu.sum(axis=0, dtype=cp.float64)
+        cell_totals = X_gpu.sum(axis=1, dtype=cp.float64)
 
     return _to_numpy(mean), _to_numpy(var), _to_numpy(gene_sums), _to_numpy(cell_totals)
 
@@ -179,6 +181,143 @@ def _hvg_deviance_gpu(X, cell_totals, gene_fractions, batch_size: int = 256):
         del X_b, mu_b, n_minus_x, n_minus_mu, safe_x, safe_nx, term1, term2
 
     return _to_numpy(out)
+
+
+def _loess_quadratic(x: np.ndarray, y: np.ndarray, span: float = 0.3) -> np.ndarray:
+    """Local quadratic regression with tricube weights, evaluated at every x.
+
+    A dependency-free stand-in for ``skmisc.loess.loess(..., degree=2)``, which
+    is what Seurat v3 and scanpy use to fit the mean-variance trend.  A global
+    polynomial cannot follow that trend: it is close to Poisson at low
+    expression and flattens at high expression, so a single quadratic
+    systematically over- or under-predicts the expected variance across whole
+    ranges of the panel and mis-ranks the genes there.
+
+    Args:
+        x: Predictor values (log10 mean expression), 1-D.
+        y: Response values (log10 variance), same shape as *x*.
+        span: Fraction of points in each local neighbourhood, by default 0.3.
+
+    Returns:
+        np.ndarray: Fitted values, one per element of *x*.
+    """
+    n = x.size
+    q = int(np.clip(np.floor(span * n), 3, n))
+    fitted = np.empty(n, dtype=np.float64)
+
+    # Chunk over evaluation points so the (chunk x n) neighbour matrices stay small.
+    chunk = max(1, int(2_000_000 // max(n, 1)))
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        dx = x[None, :] - x[start:end, None]  # (c, n)
+        dist = np.abs(dx)
+
+        bandwidth = np.partition(dist, q - 1, axis=1)[:, q - 1]
+        bandwidth = np.where(bandwidth > 0, bandwidth, 1.0)
+        w = np.clip(dist / bandwidth[:, None], 0.0, 1.0)
+        w = (1.0 - w**3) ** 3
+
+        # Weighted normal equations for the local basis [1, dx, dx^2].
+        wd = w
+        moments = []
+        for _ in range(5):
+            moments.append(wd.sum(axis=1))
+            wd = wd * dx
+        wy = w * y[None, :]
+        rhs = []
+        for _ in range(3):
+            rhs.append(wy.sum(axis=1))
+            wy = wy * dx
+
+        m = moments
+        A = np.stack(
+            [
+                np.stack([m[0], m[1], m[2]], axis=-1),
+                np.stack([m[1], m[2], m[3]], axis=-1),
+                np.stack([m[2], m[3], m[4]], axis=-1),
+            ],
+            axis=-2,
+        )
+        b = np.stack(rhs, axis=-1)[..., None]  # (c, 3, 1) for batched solve
+
+        try:
+            sol = np.linalg.solve(A, b)
+        except np.linalg.LinAlgError:
+            # A neighbourhood collapsed to fewer than 3 distinct x values.
+            sol = np.linalg.pinv(A) @ b
+
+        # The fit is centred on the evaluation point, so the intercept IS the fit.
+        fitted[start:end] = sol[:, 0, 0]
+
+    return fitted
+
+
+def _fit_mean_var_trend(log_mean: np.ndarray, log_var: np.ndarray, span: float = 0.3) -> np.ndarray:
+    """Fit log10(variance) ~ log10(mean) exactly as Seurat v3 / scanpy do.
+
+    Uses ``skmisc.loess`` when installed so the fit is bit-comparable with
+    ``scanpy.pp.highly_variable_genes(flavor='seurat_v3')``, and falls back to
+    :func:`_loess_quadratic` otherwise.
+
+    Args:
+        log_mean: log10 mean expression of the non-constant genes.
+        log_var: log10 variance of the same genes.
+        span: LOESS span, by default 0.3 (the Seurat v3 / scanpy default).
+
+    Returns:
+        np.ndarray: Fitted log10 variance, one per gene.
+    """
+    try:
+        from skmisc.loess import loess
+    except ImportError:
+        warnings.warn(
+            "scikit-misc is not installed, so the seurat_v3 mean-variance trend uses "
+            "a built-in LOESS instead of the one scanpy and Seurat use. Gene ranks "
+            "agree closely but not exactly. Install with: pip install spatioloji_s[hvg]",
+            UserWarning,
+            stacklevel=3,
+        )
+        return _loess_quadratic(log_mean, log_var, span=span)
+
+    model = loess(log_mean, log_var, span=span, degree=2)
+    model.fit()
+    return np.asarray(model.outputs.fitted_values, dtype=np.float64)
+
+
+def _clipped_gene_sums(X, clip_val: np.ndarray, batch_size: int = 512) -> tuple[np.ndarray, np.ndarray]:
+    """Per-gene sums of the data clipped from above at *clip_val*.
+
+    Seurat v3 caps each standardised value at ``sqrt(n_cells)`` before measuring
+    its variance, so a gene expressed enormously in a handful of cells does not
+    outrank a gene that varies across the whole tissue.  Returns the sums needed
+    to evaluate that variance in closed form.
+
+    Args:
+        X: Expression matrix (n_cells x n_genes), dense or scipy sparse.
+        clip_val: Per-gene upper bound, shape (n_genes,).
+        batch_size: Genes per chunk on the dense path, by default 512.
+
+    Returns:
+        tuple: ``(sum_of_squares, sum)``, each shape (n_genes,).
+    """
+    n_genes = X.shape[1]
+
+    if sparse.issparse(X):
+        # clip_val > 0 for count data, so structural zeros are never clipped.
+        csr = X.tocsr()
+        vals = np.minimum(csr.data.astype(np.float64), clip_val[csr.indices])
+        sq_sum = np.bincount(csr.indices, weights=vals * vals, minlength=n_genes)
+        val_sum = np.bincount(csr.indices, weights=vals, minlength=n_genes)
+        return sq_sum, val_sum
+
+    sq_sum = np.empty(n_genes, dtype=np.float64)
+    val_sum = np.empty(n_genes, dtype=np.float64)
+    for start in range(0, n_genes, batch_size):
+        end = min(start + batch_size, n_genes)
+        block = np.minimum(np.asarray(X[:, start:end], dtype=np.float64), clip_val[start:end])
+        sq_sum[start:end] = np.square(block).sum(axis=0)
+        val_sum[start:end] = block.sum(axis=0)
+    return sq_sum, val_sum
 
 
 def highly_variable_genes(
@@ -301,8 +440,13 @@ def highly_variable_genes(
             X = X_raw.toarray()
         else:
             X = X_raw
-        mean = X.mean(axis=0)
-        var = X.var(axis=0)
+        # Accumulate in float64. numpy does not use pairwise summation for a
+        # strided axis-0 reduction, so a float32 accumulator over ~600k cells
+        # costs ~3e-3 relative error in the variance — a thousand times the gap
+        # between adjacent genes at the HVG cut, and enough to reshuffle ~8% of
+        # the selection. scanpy forces float64 here for the same reason.
+        mean = X.mean(axis=0, dtype=np.float64)
+        var = X.var(axis=0, dtype=np.float64)
 
     hvg_df = pd.DataFrame({"means": mean, "variances": var}, index=spatioloji_obj.gene_index)
 
@@ -340,28 +484,53 @@ def highly_variable_genes(
 
     elif method == "seurat_v3":
         print(f"  Using Seurat v3 VST method (n_top_genes={n_top_genes})")
-        # Fit polynomial regression log10(var) ~ poly(log10(mean), 2) to model the
-        # mean-variance trend, then normalise variance by the expected value from the fit.
-        valid = mean > 0
-        log_mean = np.zeros(n_genes)
-        log_var = np.zeros(n_genes)
-        log_mean[valid] = np.log10(mean[valid])
-        log_var[valid] = np.log10(np.clip(var[valid], 1e-12, None))
+        # Variance-stabilising transform (Stuart et al. 2019, as implemented in
+        # Seurat's FindVariableFeatures(selection.method='vst') and
+        # scanpy's highly_variable_genes(flavor='seurat_v3')):
+        #   1. LOESS-fit log10(var) ~ log10(mean) to get each gene's expected sd
+        #   2. standardise the counts by that expected sd, capping at sqrt(n_cells)
+        #   3. rank genes by the variance of those capped standardised values
+        # Steps 2-3 are what separate genuinely variable genes from genes whose
+        # raw variance comes from a few extreme cells, so the cap has to be
+        # applied to the data — not to the resulting variance ratio.
 
-        if valid.sum() > 10:
-            coeffs = np.polyfit(log_mean[valid], log_var[valid], deg=2)
-            log_var_expected = np.polyval(coeffs, log_mean)
-        else:
-            log_var_expected = log_mean  # fallback: Poisson
+        if n_cells < 2:
+            raise ValueError(
+                f"seurat_v3 needs at least 2 cells to estimate a variance, got {n_cells}. "
+                "Use method='seurat' or supply more cells."
+            )
 
-        var_expected = 10.0**log_var_expected
-        var_norm = var / (var_expected + 1e-12)
-        var_norm = np.clip(var_norm, 0.0, float(np.sqrt(n_cells)))
+        # Seurat and scanpy report the unbiased (ddof=1) variance; `mean`/`var`
+        # above are population moments, shared with the other methods.
+        var_unbiased = var * (n_cells / (n_cells - 1))
+        hvg_df["variances"] = var_unbiased
+
+        # mean > 0 is implied by var > 0 for count data; the guard only keeps
+        # log10 finite if someone passes a layer that can go negative.
+        not_const = (var_unbiased > 0) & (mean > 0)
+        log_var_expected = np.zeros(n_genes, dtype=np.float64)
+        if not_const.sum() > 2:
+            log_var_expected[not_const] = _fit_mean_var_trend(
+                np.log10(mean[not_const]), np.log10(var_unbiased[not_const])
+            )
+        reg_std = np.sqrt(10.0**log_var_expected)
+
+        clip_val = reg_std * np.sqrt(n_cells) + mean
+        sq_sum, val_sum = _clipped_gene_sums(X, clip_val)
+
+        var_norm = (1.0 / ((n_cells - 1) * np.square(reg_std))) * (
+            (n_cells * np.square(mean)) + sq_sum - 2.0 * val_sum * mean
+        )
+
+        # Rank 0 = most variable; genes outside the top-N get no rank, as in scanpy.
+        order = np.argsort(-var_norm, kind="stable")
+        rank = np.empty(n_genes, dtype=np.float64)
+        rank[order] = np.arange(n_genes, dtype=np.float64)
+        rank[rank >= n_top_genes] = np.nan
 
         hvg_df["variances_norm"] = var_norm
-        hvg_df["highly_variable"] = False
-        top_indices = np.argsort(-var_norm)[:n_top_genes]
-        hvg_df.iloc[top_indices, hvg_df.columns.get_loc("highly_variable")] = True
+        hvg_df["highly_variable_rank"] = rank
+        hvg_df["highly_variable"] = ~np.isnan(rank)
 
     elif method == "pearson_residuals":
         print(f"  Using Pearson residuals method (n_top_genes={n_top_genes})")

@@ -65,17 +65,126 @@ def _subset_hvg(spatioloji_obj, X: np.ndarray) -> np.ndarray:
     return X[:, hvg_mask]
 
 
+# UMAP's own constants (umap.umap_), reproduced so the bandwidth search and its
+# floor behave identically here.
+_SMOOTH_K_TOLERANCE = 1e-5
+_MIN_K_DIST_SCALE = 1e-3
+
+
+def _fallback_pca(X: np.ndarray, n_pcs: int, random_state: int | None = None) -> PCA:
+    """Build the PCA estimator used by this module's "no stored embedding" paths.
+
+    Pins the same exact solver :func:`~spatioloji_s.processing.pca` uses.
+    scikit-learn's default ``svd_solver='auto'`` selects the approximate
+    randomized SVD at these shapes, and its trailing components drift far enough
+    to change the cell graph, and with it the clusters.
+
+    Args:
+        X: Cell × feature matrix to be decomposed.
+        n_pcs: Requested number of components; clipped to the rank of *X*.
+        random_state: Seed forwarded to scikit-learn.
+
+    Returns:
+        PCA: An unfitted estimator; callers run ``fit_transform``.
+    """
+    n_comps = min(n_pcs, X.shape[0], X.shape[1])
+    # arpack computes at most min(shape) - 1 components
+    solver = "full" if n_comps >= min(X.shape) else "arpack"
+    return PCA(n_components=n_comps, svd_solver=solver, random_state=random_state)
+
+
+def _smooth_knn_bandwidth(
+    knn_distances: np.ndarray,
+    n_neighbors: int,
+    n_iter: int = 64,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorised port of ``umap.umap_.smooth_knn_dist``.
+
+    Solves, per cell, for the bandwidth σ_i making
+    ``sum_j exp(-(d_ij - rho_i) / sigma_i) == log2(n_neighbors)``.
+
+    The target is ``log2(n_neighbors)`` while the sum runs over the
+    ``n_neighbors - 1`` *real* neighbours, because UMAP counts the cell itself
+    in ``n_neighbors`` but skips it in the sum.  Targeting ``log2(k)`` over
+    ``k`` real neighbours instead shrinks every σ, and with it every edge
+    weight in the graph.
+
+    The search always converges. umap-learn up to 0.5.9 compiled this with
+    ``fastmath=True``, which let LLVM assume no infinities and so dropped the
+    ``hi == inf`` guard keeping the bracket open; rows whose sum at the initial
+    ``mid=1`` was still below target had their bandwidth escape to ``inf``,
+    making every membership in the row 1.0 (typically 10-20% of cells).
+    umap-learn 0.5.12 fixed that by dropping ``fastmath`` and seeding ``hi``
+    with ``NPY_FLOATMAX`` instead of infinity.  We deliberately do *not*
+    reproduce the old behaviour: against a current umap/scanpy it would be the
+    thing introducing the discrepancy.  On an environment still pinned below
+    0.5.11, expect our graph to differ from ``sc.pp.neighbors`` on those rows —
+    upgrade umap-learn rather than matching the bug.
+
+    Args:
+        knn_distances: Distances to the real neighbours (self excluded,
+            nearest first), shape (n_cells, n_neighbors - 1).
+        n_neighbors: Neighbourhood size *including* the cell itself.
+        n_iter: Maximum bisection steps, by default 64 (UMAP's value).
+
+    Returns:
+        tuple: ``(sigma, rho)``, each shape (n_cells,), both finite. ``rho`` is
+        the distance to the nearest neighbour at non-zero distance.
+    """
+    n_cells = knn_distances.shape[0]
+    target = float(np.log2(n_neighbors))
+
+    # rho = first strictly positive distance; 0.0 when the cell has duplicates
+    # at distance 0 in every column, as in UMAP.
+    positive = knn_distances > 0.0
+    has_positive = positive.any(axis=1)
+    rho = np.where(
+        has_positive,
+        knn_distances[np.arange(n_cells), np.argmax(positive, axis=1)],
+        0.0,
+    )
+
+    shifted = np.maximum(knn_distances - rho[:, np.newaxis], 0.0)
+
+    lo = np.zeros(n_cells, dtype=np.float64)
+    hi = np.full(n_cells, np.inf, dtype=np.float64)
+    mid = np.ones(n_cells, dtype=np.float64)
+
+    for _ in range(n_iter):
+        psum = np.exp(-shifted / mid[:, np.newaxis]).sum(axis=1)
+        converged = np.abs(psum - target) < _SMOOTH_K_TOLERANCE
+        if converged.all():
+            break
+        # UMAP stops bisecting a row the moment it converges; keep those frozen.
+        too_high = (psum > target) & ~converged
+        too_low = ~too_high & ~converged
+        hi = np.where(too_high, mid, hi)
+        lo = np.where(too_low, mid, lo)
+        with np.errstate(invalid="ignore"):
+            bisect = (lo + hi) / 2.0
+        mid = np.where(converged, mid, np.where(too_low & np.isinf(hi), mid * 2.0, bisect))
+
+    # UMAP's MIN_K_DIST_SCALE floor. Its means are taken over the neighbourhood
+    # *including* the cell's own zero distance, hence the n_neighbors divisor.
+    mean_per_cell = knn_distances.sum(axis=1) / n_neighbors
+    mean_all = knn_distances.sum() / (n_cells * n_neighbors)
+    floor = np.where(rho > 0.0, _MIN_K_DIST_SCALE * mean_per_cell, _MIN_K_DIST_SCALE * mean_all)
+
+    return np.maximum(mid, floor), rho
+
+
 def _compute_umap_connectivities(
     knn_distances: np.ndarray,
     knn_indices: np.ndarray,
     device: Device = "auto",
+    n_neighbors: int | None = None,
 ) -> "sparse.csr_matrix":
-    """Build UMAP fuzzy-simplicial-set edge weights.
+    """Build UMAP fuzzy-simplicial-set edge weights, as ``sc.pp.neighbors`` does.
 
-    For each cell *i* we estimate a local bandwidth σ_i via binary search so
-    that the sum of fuzzy membership strengths over its k neighbours equals
-    log₂(k).  The directed weights are then symmetrised with the fuzzy union
-    (W = A + Aᵀ − A ⊙ Aᵀ), matching the UMAP paper (McInnes et al. 2018).
+    For each cell *i* a local bandwidth σ_i is estimated by binary search so the
+    fuzzy membership strengths over its neighbours sum to log₂(``n_neighbors``).
+    The directed weights are then symmetrised with the fuzzy union
+    (W = A + Aᵀ − A ⊙ Aᵀ), matching UMAP (McInnes et al. 2018).
 
     Parameters
     ----------
@@ -86,49 +195,38 @@ def _compute_umap_connectivities(
     device : {'auto', 'cpu', 'gpu'}, optional
         Compute backend.  GPU runs the same vectorised σ search on cupy and
         builds a cupyx CSR adjacency, then converts to scipy CSR for return.
+    n_neighbors : int, optional
+        Neighbourhood size *including* the cell itself, i.e. scanpy's and
+        UMAP's convention.  Defaults to ``k + 1``, which is the value that makes
+        the ``k`` supplied columns the real neighbours of such a neighbourhood.
 
     Returns
     -------
     scipy.sparse.csr_matrix
         Symmetric (n_cells × n_cells) weight matrix with values in [0, 1].
     """
+    if n_neighbors is None:
+        n_neighbors = knn_distances.shape[1] + 1
+
     backend = _resolve_device(device, "UMAP connectivities")
 
     if backend == "gpu":
         try:
-            return _compute_umap_connectivities_gpu(knn_distances, knn_indices)
+            return _compute_umap_connectivities_gpu(knn_distances, knn_indices, n_neighbors)
         except Exception as exc:
             if device == "gpu":
                 raise
             _warn_fallback("UMAP connectivities", exc)
 
     n_cells, k = knn_distances.shape
-    target = float(np.log2(k))
+    d = np.asarray(knn_distances, dtype=np.float64)
 
-    rho = knn_distances[:, 0].astype(np.float64)
-    shifted_all = np.maximum(knn_distances.astype(np.float64) - rho[:, np.newaxis], 0.0)
+    sigma, rho = _smooth_knn_bandwidth(d, n_neighbors)
 
-    lo = np.zeros(n_cells, dtype=np.float64)
-    hi = np.full(n_cells, np.inf, dtype=np.float64)
-    mid = np.ones(n_cells, dtype=np.float64)
-
-    for _ in range(64):
-        psum = np.exp(-shifted_all / mid[:, np.newaxis]).sum(axis=1)
-        converged = np.abs(psum - target) < 1e-5
-        if converged.all():
-            break
-        too_high = psum > target
-        too_low = ~too_high & ~converged
-        hi = np.where(too_high, mid, hi)
-        mid_new = np.where(too_high, (lo + mid) / 2.0, mid)
-        lo = np.where(too_low, mid, lo)
-        hi_inf = np.isinf(hi)
-        mid_new = np.where(too_low & hi_inf, mid * 2.0, mid_new)
-        mid_new = np.where(too_low & ~hi_inf, (lo + hi) / 2.0, mid_new)
-        mid = mid_new
-
-    sigma = np.maximum(mid, 1e-8)
-    weights = np.exp(-shifted_all / sigma[:, np.newaxis]).astype(np.float32)
+    shifted = np.maximum(d - rho[:, np.newaxis], 0.0)
+    weights = np.exp(-shifted / sigma[:, np.newaxis]).astype(np.float32)
+    # UMAP drops self-edges; approximate k-NN can return the cell itself.
+    weights[knn_indices == np.arange(n_cells, dtype=knn_indices.dtype)[:, np.newaxis]] = 0.0
 
     row_idx = np.repeat(np.arange(n_cells, dtype=np.int32), k)
     col_idx = knn_indices.ravel().astype(np.int32)
@@ -136,19 +234,38 @@ def _compute_umap_connectivities(
 
     At = A.T.tocsr()
     W = A + At - A.multiply(At)
+    W.eliminate_zeros()
     return W
 
 
-def _compute_umap_connectivities_gpu(knn_distances: np.ndarray, knn_indices: np.ndarray):
-    """cupy port of the σ binary search and fuzzy-union symmetrisation."""
+def _compute_umap_connectivities_gpu(
+    knn_distances: np.ndarray,
+    knn_indices: np.ndarray,
+    n_neighbors: int | None = None,
+):
+    """cupy port of the σ binary search and fuzzy-union symmetrisation.
+
+    Mirrors :func:`_smooth_knn_bandwidth` exactly — same target, same frozen
+    converged rows, same ``MIN_K_DIST_SCALE`` floor — so the GPU graph matches
+    the CPU graph and therefore scanpy.
+    """
     import cupy as cp
     from cupyx.scipy import sparse as cusparse
 
     n_cells, k = knn_distances.shape
-    target = float(np.log2(k))
+    if n_neighbors is None:
+        n_neighbors = k + 1
+    target = float(np.log2(n_neighbors))
 
     d = cp.asarray(knn_distances, dtype=cp.float64)
-    rho = d[:, 0]
+
+    positive = d > 0.0
+    has_positive = positive.any(axis=1)
+    rho = cp.where(
+        has_positive,
+        d[cp.arange(n_cells), cp.argmax(positive, axis=1)],
+        cp.float64(0.0),
+    )
     shifted_all = cp.maximum(d - rho[:, cp.newaxis], 0.0)
 
     lo = cp.zeros(n_cells, dtype=cp.float64)
@@ -157,28 +274,32 @@ def _compute_umap_connectivities_gpu(knn_distances: np.ndarray, knn_indices: np.
 
     for _ in range(64):
         psum = cp.exp(-shifted_all / mid[:, cp.newaxis]).sum(axis=1)
-        converged = cp.abs(psum - target) < 1e-5
+        converged = cp.abs(psum - target) < _SMOOTH_K_TOLERANCE
         if bool(converged.all()):
             break
-        too_high = psum > target
+        too_high = (psum > target) & ~converged
         too_low = ~too_high & ~converged
         hi = cp.where(too_high, mid, hi)
-        mid_new = cp.where(too_high, (lo + mid) / 2.0, mid)
         lo = cp.where(too_low, mid, lo)
-        hi_inf = cp.isinf(hi)
-        mid_new = cp.where(too_low & hi_inf, mid * 2.0, mid_new)
-        mid_new = cp.where(too_low & ~hi_inf, (lo + hi) / 2.0, mid_new)
-        mid = mid_new
+        bisect = (lo + hi) / 2.0
+        mid = cp.where(converged, mid, cp.where(too_low & cp.isinf(hi), mid * 2.0, bisect))
 
-    sigma = cp.maximum(mid, 1e-8)
-    weights = cp.exp(-shifted_all / sigma[:, cp.newaxis]).astype(cp.float32).ravel()
+    mean_per_cell = d.sum(axis=1) / n_neighbors
+    mean_all = d.sum() / (n_cells * n_neighbors)
+    floor = cp.where(rho > 0.0, _MIN_K_DIST_SCALE * mean_per_cell, _MIN_K_DIST_SCALE * mean_all)
+    sigma = cp.maximum(mid, floor)
+
+    weights = cp.exp(-shifted_all / sigma[:, cp.newaxis]).astype(cp.float32)
+    idx_gpu = cp.asarray(knn_indices, dtype=cp.int32)
+    weights[idx_gpu == cp.arange(n_cells, dtype=cp.int32)[:, cp.newaxis]] = 0.0
 
     row_idx = cp.repeat(cp.arange(n_cells, dtype=cp.int32), k)
-    col_idx = cp.asarray(knn_indices, dtype=cp.int32).ravel()
+    col_idx = idx_gpu.ravel()
 
-    A = cusparse.csr_matrix((weights, (row_idx, col_idx)), shape=(n_cells, n_cells))
+    A = cusparse.csr_matrix((weights.ravel(), (row_idx, col_idx)), shape=(n_cells, n_cells))
     At = A.T.tocsr()
     W = A + At - A.multiply(At)
+    W.eliminate_zeros()
     return _to_numpy(W)
 
 
@@ -186,6 +307,7 @@ def _build_knn(
     X_reduced: np.ndarray,
     n_neighbors: int,
     device: Device = "auto",
+    random_state: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute k-nearest neighbours.
 
@@ -193,6 +315,11 @@ def _build_knn(
 
     - GPU: cuML ``NearestNeighbors`` (brute-force, very fast on PCA-space).
     - CPU: pynndescent (approximate) → sklearn ``NearestNeighbors`` fallback.
+
+    The pynndescent index is configured exactly as ``umap.umap_.nearest_neighbors``
+    configures it — same ``n_trees``, ``n_iters`` and ``max_candidates`` — so the
+    neighbour sets agree with ``sc.pp.neighbors`` rather than merely being a
+    valid approximation of their own.
 
     Parameters
     ----------
@@ -202,6 +329,9 @@ def _build_knn(
         Number of nearest neighbours (self excluded).
     device : {'auto', 'cpu', 'gpu'}, optional
         Compute backend.  Default ``'auto'``.
+    random_state : int or None, optional
+        Seed for the approximate index.  Without it pynndescent is seeded
+        non-deterministically and repeated runs return different neighbours.
 
     Returns
     -------
@@ -232,7 +362,18 @@ def _build_knn(
         from pynndescent import NNDescent
 
         print("    Using pynndescent (approximate KNN)...")
-        index = NNDescent(X_reduced, n_neighbors=n_neighbors + 1, metric="euclidean", n_jobs=-1)
+        n_obs = X_reduced.shape[0]
+        index = NNDescent(
+            X_reduced,
+            n_neighbors=n_neighbors + 1,
+            metric="euclidean",
+            random_state=random_state,
+            # umap.umap_.nearest_neighbors' tuning
+            n_trees=min(64, 5 + int(round(n_obs**0.5 / 20.0))),
+            n_iters=max(5, int(round(np.log2(n_obs)))),
+            max_candidates=60,
+            n_jobs=-1,
+        )
         knn_indices_full, knn_distances_full = index.neighbor_graph
         return knn_distances_full[:, 1:], knn_indices_full[:, 1:]
     except ImportError:
@@ -247,6 +388,7 @@ def _build_leiden_graph(
     n_neighbors: int,
     graph_method: str,
     device: Device = "auto",
+    random_state: int | None = None,
 ) -> tuple["ig.Graph", np.ndarray, np.ndarray, "sparse.csr_matrix"]:
     """Build the weighted igraph used by Leiden, using the chosen connectivity method.
 
@@ -255,21 +397,24 @@ def _build_leiden_graph(
     X_reduced : np.ndarray
         Cell × feature matrix (PCA space or raw features).
     n_neighbors : int
-        Number of nearest neighbours (self excluded).
+        Neighbourhood size *including the cell itself*, matching scanpy, UMAP
+        and Seurat.  ``n_neighbors=15`` therefore builds 14 real edges per cell.
     graph_method : {'umap', 'simple'}
         ``'umap'``   — UMAP fuzzy simplicial set weights (McInnes et al. 2018).
         ``'simple'`` — inverse-distance weights: 1 / (1 + d).
     device : {'auto', 'cpu', 'gpu'}, optional
         Compute backend for the underlying k-NN and σ search.
+    random_state : int or None, optional
+        Seed forwarded to the approximate k-NN index.
 
     Returns
     -------
     g : ig.Graph
         Undirected igraph with ``weight`` edge attribute.
     knn_distances : np.ndarray
-        Raw k-NN distances (self excluded).
+        Raw k-NN distances (self excluded), shape (n_cells, n_neighbors - 1).
     knn_indices : np.ndarray
-        k-NN indices (self excluded).
+        k-NN indices (self excluded), same shape.
     W_sym : scipy.sparse.csr_matrix
         Symmetrised adjacency (returned so cuGraph callers can skip the
         igraph round-trip).
@@ -280,14 +425,17 @@ def _build_leiden_graph(
         raise ImportError("igraph is required. Install with: pip install igraph leidenalg") from err
 
     n_cells = X_reduced.shape[0]
+    k_real = max(int(n_neighbors) - 1, 1)
 
-    knn_distances, knn_indices = _build_knn(X_reduced, n_neighbors, device=device)
+    knn_distances, knn_indices = _build_knn(X_reduced, k_real, device=device, random_state=random_state)
 
     if graph_method == "umap":
-        W = _compute_umap_connectivities(knn_distances, knn_indices, device=device)
-        W_sym = (W + W.T) / 2
+        # Already symmetric by construction (fuzzy union), so no extra averaging.
+        W_sym = _compute_umap_connectivities(
+            knn_distances, knn_indices, device=device, n_neighbors=n_neighbors
+        )
     else:  # simple
-        row_ids = np.repeat(np.arange(n_cells, dtype=np.int32), n_neighbors)
+        row_ids = np.repeat(np.arange(n_cells, dtype=np.int32), k_real)
         col_ids = knn_indices.ravel().astype(np.int32)
         weights_arr = (1.0 / (1.0 + knn_distances.ravel())).astype(np.float32)
         W = sparse.csr_matrix((weights_arr, (row_ids, col_ids)), shape=(n_cells, n_cells))
@@ -372,7 +520,9 @@ def leiden_clustering(
     resolution : float, optional
         Resolution parameter (higher = more clusters), by default 1.0.
     n_neighbors : int, optional
-        Number of nearest neighbours for the cell graph, by default 15.
+        Size of the local neighbourhood for the cell graph, by default 15.
+        Counts the cell itself, matching ``sc.pp.neighbors``, UMAP and Seurat,
+        so the default builds 14 real edges per cell.
     n_pcs : int, optional
         Number of PCs to use when ``use_pca=True``, by default 50.
     use_pca : bool, optional
@@ -436,7 +586,7 @@ def leiden_clustering(
             X = _get_expression_matrix(spatioloji_obj, layer)
             if use_highly_variable:
                 X = _subset_hvg(spatioloji_obj, X)
-            pca_model = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
+            pca_model = _fallback_pca(X, n_pcs, random_state)
             X_reduced = pca_model.fit_transform(X)
             print(f"    Variance explained: {pca_model.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
@@ -447,7 +597,9 @@ def leiden_clustering(
 
     # ── Build cell graph ──────────────────────────────────────────────────────
     print(f"  Building {graph_method} connectivity graph...")
-    g, _, _, W_sym = _build_leiden_graph(X_reduced, n_neighbors, graph_method, device=backend)
+    g, _, _, W_sym = _build_leiden_graph(
+        X_reduced, n_neighbors, graph_method, device=backend, random_state=random_state
+    )
 
     # ── Leiden ────────────────────────────────────────────────────────────────
     if backend == "gpu":
@@ -558,7 +710,7 @@ def kmeans_clustering(
         else:
             print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
             X = _get_expression_matrix(spatioloji_obj, layer)
-            pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
+            pca = _fallback_pca(X, n_pcs, random_state)
             X_reduced = pca.fit_transform(X)
             print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
@@ -666,7 +818,7 @@ def hierarchical_clustering(
         else:
             print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
             X = _get_expression_matrix(spatioloji_obj, layer)
-            pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]))
+            pca = _fallback_pca(X, n_pcs)
             X_reduced = pca.fit_transform(X)
             print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
@@ -850,7 +1002,7 @@ def spatially_constrained_clustering(
         else:
             print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
             X_expr = _get_expression_matrix(spatioloji_obj, layer)
-            pca = PCA(n_components=min(n_pcs, X_expr.shape[0], X_expr.shape[1]), random_state=random_state)
+            pca = _fallback_pca(X_expr, n_pcs, random_state)
             X_expr_reduced = pca.fit_transform(X_expr)
             print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
@@ -974,7 +1126,7 @@ def find_optimal_clusters(
         else:
             print(f"  No stored PCA found, computing PCA (n_pcs={n_pcs})...")
             X = _get_expression_matrix(spatioloji_obj, layer)
-            pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
+            pca = _fallback_pca(X, n_pcs, random_state)
             X_reduced = pca.fit_transform(X)
             print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
     else:
@@ -1187,7 +1339,7 @@ def assess_clustering_quality(
             X = np.asarray(spatioloji_obj._embeddings["X_pca"])[:, :n_pcs]
         else:
             X_raw = _get_expression_matrix(spatioloji_obj, layer)
-            pca = PCA(n_components=min(n_pcs, X_raw.shape[0], X_raw.shape[1]), random_state=random_state)
+            pca = _fallback_pca(X_raw, n_pcs, random_state)
             X = pca.fit_transform(X_raw)
     else:
         X = _get_expression_matrix(spatioloji_obj, layer)
@@ -1257,7 +1409,8 @@ def leiden_resolution_sweep(
         use_highly_variable: Use only highly variable genes when computing
             PCA on the fly, by default True. Ignored if ``X_pca`` exists.
         n_pcs: Number of PCs to use, by default 50.
-        n_neighbors: k for the k-NN graph, by default 15.
+        n_neighbors: Size of the local neighbourhood for the k-NN graph, by
+            default 15. Counts the cell itself, matching ``sc.pp.neighbors``.
         graph_method: Edge-weight method — ``'umap'`` (default, fuzzy simplicial
             set) or ``'simple'`` (inverse-distance).  See :func:`leiden_clustering`
             for details.
@@ -1325,13 +1478,15 @@ def leiden_resolution_sweep(
             if hvg_mask.sum() > 0:
                 X = X[:, hvg_mask]
 
-        pca = PCA(n_components=min(n_pcs, X.shape[0], X.shape[1]), random_state=random_state)
+        pca = _fallback_pca(X, n_pcs, random_state)
         X_reduced = pca.fit_transform(X)
         print(f"    Variance explained: {pca.explained_variance_ratio_.sum() * 100:.1f}%")
 
     # --- Build cell graph once (shared across all resolutions) ---
     print(f"  Building {graph_method} connectivity graph...")
-    g, _, _, W_sym = _build_leiden_graph(X_reduced, n_neighbors, graph_method, device=backend)
+    g, _, _, W_sym = _build_leiden_graph(
+        X_reduced, n_neighbors, graph_method, device=backend, random_state=random_state
+    )
 
     n_total = len(resolutions) * n_runs
     print(
