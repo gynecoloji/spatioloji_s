@@ -10,6 +10,13 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.4](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.3...v0.4.4) (2026-08-03)
+
+
+### Fixed
+
+* update publish.yml and release-please.yml to turn publish into automatic move ([9b875f4](https://github.com/gynecoloji/spatioloji_s/commit/9b875f43a81eb573acd7307dedeb34547a4e7c2e))
+
 ## [0.4.3](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.2...v0.4.3) (2026-08-03)
 
 
