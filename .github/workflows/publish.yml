@@ -22,9 +22,20 @@ name: publish
 # this lands. Use the workflow_dispatch trigger below to publish anything older.
 
 on:
+  # Kept so a release published by a human (or by a PAT-authenticated bot) still
+  # publishes. It does NOT fire for release-please, because GitHub refuses to
+  # start workflows from events created with the default GITHUB_TOKEN — which is
+  # why release-please.yml calls this workflow directly instead.
   release:
     types: [published]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to verify the built version against, e.g. v0.4.3"
+        required: false
+        type: string
+        default: ""
 
 # Least privilege by default; the publish job widens only what it needs.
 permissions:
@@ -66,10 +77,18 @@ jobs:
           /tmp/verify/bin/spatioloji_s version
 
       - name: Confirm the built version matches the release tag
-        if: github.event_name == 'release'
+        env:
+          # On a `release` event the ref IS the tag. When called from
+          # release-please.yml the ref is the default branch, so the tag is
+          # passed in explicitly.
+          EXPECTED_TAG: ${{ inputs.tag != '' && inputs.tag || (github.event_name == 'release' && github.ref_name || '') }}
         run: |
           BUILT=$(/tmp/verify/bin/python -c "import spatioloji_s; print(spatioloji_s.__version__)")
-          TAG="${GITHUB_REF_NAME#v}"
+          if [ -z "$EXPECTED_TAG" ]; then
+            echo "::warning::no release tag to check against (manual dispatch); built version $BUILT"
+            exit 0
+          fi
+          TAG="${EXPECTED_TAG#v}"
           echo "built=$BUILT tag=$TAG"
           if [ "$BUILT" != "$TAG" ]; then
             echo "::error::built version $BUILT does not match release tag $TAG"
