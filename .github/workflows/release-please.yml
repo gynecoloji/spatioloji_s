@@ -30,7 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       released: ${{ steps.release.outputs.releases_created }}
-      tag: ${{ steps.release.outputs['.--tag_name'] }}
+      # In manifest mode release-please prefixes per-package outputs with the
+      # package path, except for the root package which is unprefixed. Take the
+      # unprefixed name first and fall back, so this works either way.
+      tag: ${{ steps.release.outputs.tag_name || steps.release.outputs['.--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
