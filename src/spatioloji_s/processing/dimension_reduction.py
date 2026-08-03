@@ -217,6 +217,50 @@ def _pca_gpu(X, n_comps: int, random_state: int):
     )
 
 
+def _pca_cpu(X, n_comps: int, random_state: int, svd_solver: str):
+    """scikit-learn PCA path. Returns (X_pca, variance, variance_ratio, components).
+
+    Notes
+    -----
+    ``svd_solver`` defaults to ``'arpack'`` rather than scikit-learn's own
+    ``'auto'``.  ``'auto'`` resolves to the *randomized* solver for the shapes
+    typical of transcriptomics (many cells, a few thousand genes, ~50
+    components), and randomized SVD only approximates the trailing
+    components.  On a slowly-decaying covariance spectrum — the normal case
+    for log-normalized expression — that approximation puts the top-50
+    subspace >10 degrees away from the exact one and away from scanpy, which
+    defaults to ``'arpack'`` for the same reason.
+
+    ``'arpack'`` requires ``n_comps < min(n_cells, n_genes)``; a request for
+    the full rank falls back to the exact dense ``'full'`` solver.
+    """
+    from sklearn.decomposition import PCA as _SKPCA
+
+    solver = svd_solver
+    if solver == "arpack" and n_comps >= min(X.shape):
+        # arpack computes at most min(shape) - 1 singular triplets
+        solver = "full"
+
+    def _fit(matrix):
+        model = _SKPCA(n_components=n_comps, svd_solver=solver, random_state=random_state)
+        coords = model.fit_transform(matrix)
+        return coords, model.explained_variance_, model.explained_variance_ratio_, model.components_
+
+    print(f"  Running PCA (scikit-learn, svd_solver='{solver}')...")
+
+    if sparse.issparse(X):
+        if solver in ("randomized", "full"):
+            X = X.toarray()  # neither solver accepts sparse input
+        else:
+            try:
+                return _fit(X)
+            except TypeError:
+                # scikit-learn < 1.4 has no sparse PCA path
+                X = X.toarray()
+
+    return _fit(X)
+
+
 def pca(
     spatioloji_obj,
     layer: str | None = "scaled",
@@ -226,6 +270,7 @@ def pca(
     output_key: str = "X_pca",
     inplace: bool = True,
     device: Device = "auto",
+    svd_solver: Literal["arpack", "full", "randomized", "covariance_eigh", "auto"] = "arpack",
 ):
     """
     Principal Component Analysis (PCA).
@@ -233,18 +278,20 @@ def pca(
     Reduces dimensionality by finding orthogonal directions of maximum variance.
     This is typically the first step before clustering or other analyses.
 
+    The data is always zero-centered (never scaled to unit variance) before
+    decomposition, matching ``scanpy.pp.pca``'s ``zero_center=True`` default.
+    Scale the input beforehand — e.g. ``layer='scaled'`` — if you want that.
+
     Parameters
     ----------
     spatioloji_obj : spatioloji
         Spatioloji object with expression data
     layer : str, optional
-        Which layer to use, by default 'log_normalized'
+        Which layer to use, by default 'scaled'
     use_highly_variable : bool, optional
         Use only highly variable genes if available, by default True
     n_comps : int, optional
         Number of principal components to compute, by default 50
-    zero_center : bool, optional
-        Center data to zero mean before PCA, by default True
     random_state : int, optional
         Random seed for reproducibility, by default 42
     output_key : str, optional
@@ -256,6 +303,13 @@ def pca(
         is importable, otherwise scikit-learn on CPU.  ``'gpu'`` requires
         RAPIDS in the same conda env.  Sparse inputs stay sparse on the GPU
         path (cupyx CSR), avoiding a costly densification.
+    svd_solver : {'arpack', 'full', 'randomized', 'covariance_eigh', 'auto'}, optional
+        scikit-learn SVD solver for the CPU path, by default ``'arpack'`` —
+        the same default ``scanpy.pp.pca`` uses, and the reason results agree
+        with it.  ``'randomized'`` (and ``'auto'``, which selects it for
+        typical shapes) is faster but only approximates the trailing
+        components; on expression data that moves the top-50 subspace >10
+        degrees off the exact answer.  Ignored on the GPU path.
 
     Returns
     -------
@@ -279,6 +333,9 @@ def pca(
     >>> pca_coords = sp.cell_meta[['PC1', 'PC2', 'PC3', ...]]
     >>> # Or if stored as embedding
     >>> pca_coords = sp.embeddings['X_pca']
+    >>>
+    >>> # Trade exactness for speed on a very large panel
+    >>> sj.processing.pca(sp, n_comps=50, svd_solver='randomized')
     >>>
     >>> # Force GPU
     >>> sj.processing.pca(sp, n_comps=50, device='gpu')
@@ -332,16 +389,9 @@ def pca(
             backend = "cpu"
 
     if backend == "cpu":
-        from sklearn.decomposition import PCA as _SKPCA
-
-        if sparse.issparse(X):
-            X = X.toarray()
-        print("  Running PCA (scikit-learn)...")
-        pca_model = _SKPCA(n_components=n_comps_actual, random_state=random_state)
-        X_pca = pca_model.fit_transform(X)
-        variance = pca_model.explained_variance_
-        variance_ratio = pca_model.explained_variance_ratio_
-        components = pca_model.components_
+        X_pca, variance, variance_ratio, components = _pca_cpu(
+            X, n_comps_actual, random_state, svd_solver
+        )
         print("  ✓ PCA complete")
     print(f"    Variance explained by first 10 PCs: {variance_ratio[:10].sum() * 100:.1f}%")
     print(f"    Variance explained by all {n_comps_actual} PCs: {variance_ratio.sum() * 100:.1f}%")
