@@ -10,6 +10,13 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.5](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.4...v0.4.5) (2026-08-03)
+
+
+### Fixed
+
+* ci read release-pleases's unprefixed tag_name output ([09b956f](https://github.com/gynecoloji/spatioloji_s/commit/09b956f897ee02daef2d48c015b2997c2d65a778))
+
 ## [0.4.4](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.3...v0.4.4) (2026-08-03)
 
 
