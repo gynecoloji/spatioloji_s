@@ -10,6 +10,18 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.3](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.2...v0.4.3) (2026-08-03)
+
+
+### Fixed
+
+* **clustering:** build the neighbor graph the way sc.pp.neighbors does ([50670de](https://github.com/gynecoloji/spatioloji_s/commit/50670def0932cff748e09ff1718e0575d5cb8786))
+* **clustering:** do not reproduce umap's pre-0.5.11 bandwidth bug ([271a90c](https://github.com/gynecoloji/spatioloji_s/commit/271a90c3dab348e3d89206e7f87ab0497a57659a))
+* **deg:** rank wilcoxon markers by signed z-score, not two-sided padj ([5f17d89](https://github.com/gynecoloji/spatioloji_s/commit/5f17d894a9dda016972b1d7915e37b8155f85e82))
+* **hvg:** implement Seurat v3 VST and accumulate moments in float64 ([251b7fe](https://github.com/gynecoloji/spatioloji_s/commit/251b7fe5e1391bbc18bb8f548d44ea7416737cdb))
+* **pca:** use arpack solver to match scanpy ([a789a9f](https://github.com/gynecoloji/spatioloji_s/commit/a789a9f521c0149b65383909b382ab1c6a1410ef))
+* scanpy numerical concordance ([ccb9e48](https://github.com/gynecoloji/spatioloji_s/commit/ccb9e488e19144cf68deb171656406003517d1ab))
+
 ## [0.4.2](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.1...v0.4.2) (2026-08-02)
 
 
