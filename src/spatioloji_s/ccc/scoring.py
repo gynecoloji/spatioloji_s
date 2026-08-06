@@ -489,41 +489,65 @@ def _analytical_test(result, edge_df, N, type_counts, norm):
     The null is built from ``edge_df``, which the caller has already
     restricted to paracrine edges.
     """
-    pvals = np.ones(len(result))
-    zscores = np.zeros(len(result))
+    n_rows = len(result)
+    pvals = np.ones(n_rows)
+    zscores = np.zeros(n_rows)
+
+    if n_rows == 0:
+        result = result.copy()
+        result["z_score"] = zscores
+        result["pvalue"] = pvals
+        return result
+
     modes = (
-        result["interaction_mode"].values
+        result["interaction_mode"].to_numpy()
         if "interaction_mode" in result.columns
-        else np.array(["paracrine"] * len(result))
+        else np.array(["paracrine"] * n_rows)
     )
 
-    for i, row in result.iterrows():
-        lr = row["lr_name"]
-        st = row["sender_type"]
-        rt = row["receiver_type"]
-        obs_sum = row["sum_score"]
-        mode = modes[i] if i < len(modes) else "paracrine"
+    # Per-LR null statistics, computed once over the whole edge table rather
+    # than re-filtering it for every summary row. The naive form is
+    # O(rows x edges) and dominates runtime once the edge table reaches
+    # millions of rows; this is O(edges) + O(rows) for identical output.
+    if edge_df is None or len(edge_df) == 0:
+        result = result.copy()
+        result["z_score"] = zscores
+        result["pvalue"] = pvals
+        return result
 
-        n_s = type_counts.get(st, 0)
-        n_r = type_counts.get(rt, 0)
+    grouped = edge_df.groupby("lr_name")["score"]
+    total_by_lr = grouped.sum().to_dict()
+    count_by_lr = grouped.size().to_dict()
+    # mean of squared edge scores, per LR pair
+    meansq_by_lr = (
+        edge_df.assign(_sq=edge_df["score"].to_numpy() ** 2)
+        .groupby("lr_name")["_sq"]
+        .mean()
+        .to_dict()
+    )
+
+    lr_names = result["lr_name"].to_numpy()
+    senders = result["sender_type"].to_numpy()
+    receivers = result["receiver_type"].to_numpy()
+    obs_sums = result["sum_score"].to_numpy(dtype=float)
+
+    for i in range(n_rows):
+        lr = lr_names[i]
+        n_s = type_counts.get(senders[i], 0)
+        n_r = type_counts.get(receivers[i], 0)
 
         if n_s == 0 or n_r == 0 or N < 2:
-            pvals[i] = 1.0
             continue
 
         # Null edge scores for this LR pair (paracrine only)
-        lr_edges = edge_df[edge_df["lr_name"] == lr]
-        if lr_edges.empty:
-            pvals[i] = 1.0
+        total_score = total_by_lr.get(lr)
+        if total_score is None:
             continue
-
-        all_scores = lr_edges["score"].values
-        total_score = all_scores.sum()
-        mean_sq = (all_scores**2).mean()
-        n_total_edges = len(all_scores)
+        mean_sq = meansq_by_lr[lr]
+        n_total_edges = count_by_lr[lr]
 
         # Expected sum under null (random label assignment)
-        if mode == "autocrine":
+        if modes[i] == "autocrine":
             # Self-edge: a single cell drawn at random has type s with
             # prob n_s / N; sender_type == receiver_type by construction
             # so n_r is ignored.
@@ -537,11 +561,9 @@ def _analytical_test(result, edge_df, N, type_counts, norm):
         var_sum = p_pair * (1.0 - p_pair) * mean_sq * n_total_edges
 
         if var_sum < 1e-30:
-            pvals[i] = 1.0
-            zscores[i] = 0.0
             continue
 
-        z = (obs_sum - e_sum) / np.sqrt(var_sum)
+        z = (obs_sums[i] - e_sum) / np.sqrt(var_sum)
         zscores[i] = z
         pvals[i] = float(norm.sf(z))  # one-sided
 
