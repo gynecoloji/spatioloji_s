@@ -10,6 +10,20 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.6](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.5...v0.4.6) (2026-08-12)
+
+
+### Fixed
+
+* **scale:** accumulate per-gene mean/std in float64 ([f23817b](https://github.com/gynecoloji/spatioloji_s/commit/f23817b8fcc6ad3dbffd7795b5d8171f1cada918))
+* **scale:** accumulate per-gene mean/std in float64 ([f580164](https://github.com/gynecoloji/spatioloji_s/commit/f58016411f89c905af542528ebe39fb3c3400504))
+
+
+### Performance
+
+* **ccc:** vectorize the analytical significance test ([117a591](https://github.com/gynecoloji/spatioloji_s/commit/117a5918d0b07ee1076e36da052d8103cbef9e95))
+* **ccc:** vectorize the analytical significance test ([8dc03ac](https://github.com/gynecoloji/spatioloji_s/commit/8dc03ac5f92844a2e497a9db378624805be97a92))
+
 ## [0.4.5](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.4...v0.4.5) (2026-08-03)
 
 
