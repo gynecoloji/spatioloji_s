@@ -73,8 +73,17 @@ def _naive_permutation_test(result, edge_df, sp, group_col, n_subsample,
         key = (row["lr_name"], row["sender_type"], row["receiver_type"], mode)
         sub_lr = sub_edge[(sub_edge["lr_name"] == row["lr_name"])
                           & (sub_edge["interaction_mode"] == mode)]
-        mask_st = sub_lr["sender"].map(lambda c, st=row["sender_type"]: sub_types.get(c) == st)
-        mask_rt = sub_lr["receiver"].map(lambda c, rt=row["receiver_type"]: sub_types.get(c) == rt)
+        # .to_numpy(bool) is the ONLY deviation from the original here. Under
+        # pandas' string dtype inference (CI runs a newer pandas than the pinned
+        # dev env) Series.map over a string column returns a StringArray, and
+        # `StringArray & StringArray` raises TypeError. The original code carried
+        # that latent break; the vectorised implementation does not, because it
+        # never does boolean algebra on string columns. Coercing to bool changes
+        # dtype, not logic, so the comparison remains exact.
+        mask_st = sub_lr["sender"].map(
+            lambda c, st=row["sender_type"]: sub_types.get(c) == st).to_numpy(bool)
+        mask_rt = sub_lr["receiver"].map(
+            lambda c, rt=row["receiver_type"]: sub_types.get(c) == rt).to_numpy(bool)
         obs_key_to_sum[key] = sub_lr.loc[mask_st & mask_rt, "score"].sum()
 
     perm_counts = {k: 0 for k in obs_key_to_sum}
@@ -82,11 +91,12 @@ def _naive_permutation_test(result, edge_df, sp, group_col, n_subsample,
         shuffled = sub_types.values.copy()
         rng.shuffle(shuffled)
         shuffled_map = dict(zip(cells_in_edges, shuffled, strict=True))
-        perm_sender_types = sub_edge["sender"].map(shuffled_map)
-        perm_receiver_types = sub_edge["receiver"].map(shuffled_map)
+        perm_sender_types = sub_edge["sender"].map(shuffled_map).to_numpy()
+        perm_receiver_types = sub_edge["receiver"].map(shuffled_map).to_numpy()
         for key in obs_key_to_sum:
             lr, st, rt, mode = key
-            lr_mask = (sub_edge["lr_name"] == lr) & (sub_edge["interaction_mode"] == mode)
+            lr_mask = ((sub_edge["lr_name"] == lr).to_numpy(bool)
+                       & (sub_edge["interaction_mode"] == mode).to_numpy(bool))
             perm_sum = sub_edge.loc[lr_mask & (perm_sender_types == st)
                                     & (perm_receiver_types == rt), "score"].sum()
             if perm_sum >= obs_key_to_sum[key]:
