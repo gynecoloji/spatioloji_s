@@ -574,13 +574,34 @@ def _analytical_test(result, edge_df, N, type_counts, norm):
 
 
 def _permutation_test(result, edge_df, sp, group_col, n_subsample, n_permutations, seed):
-    """Permutation-based significance test."""
+    """Permutation-based significance test.
+
+    Vectorised 2026-08-22. The previous form re-scanned the whole edge table
+    once per result row *inside* every permutation, costing
+    O(n_permutations x n_rows x n_edges): on a LymphNode ROI that was ~39,555 s
+    at n_permutations=100, against 7.3 s for squidpy doing the same 100
+    permutations, and six ROIs would have needed ~660 h.
+
+    The statistic being computed is only a group-sum of edge scores keyed by
+    (lr_name, interaction_mode, sender_type, receiver_type), so the entire inner
+    double loop collapses to one integer-keyed ``np.bincount`` per permutation --
+    O(n_permutations x n_edges), every group updated in a single pass.
+
+    **The RNG call sequence is preserved deliberately**, so this returns p-values
+    identical to the naive form rather than merely equivalent ones.
+    ``RandomState.shuffle`` is Fisher-Yates and draws once per position
+    regardless of dtype, so shuffling the integer-coded label array consumes the
+    same stream as shuffling the original object array. That premise is asserted
+    directly in tests/unit/test_ccc_permutation_equivalence.py; if it ever fails,
+    the equivalence claim fails with it.
+    """
     rng = np.random.RandomState(seed)
     cell_types = sp.cell_meta[group_col].copy()
     all_cells = np.asarray(sp.cell_index)
     N = len(all_cells)
 
-    # Stratified subsample
+    # Stratified subsample -- unchanged, and it must stay first so the rng
+    # stream reaching the permutation loop is the same as before.
     n_sub = min(n_subsample, N)
     if n_sub < N:
         type_fracs = cell_types.value_counts(normalize=True)
@@ -595,7 +616,6 @@ def _permutation_test(result, edge_df, sp, group_col, n_subsample, n_permutation
     else:
         sub_cells = set(all_cells)
 
-    # Subset edge_df to subsampled cells
     mask = edge_df["sender"].isin(sub_cells) & edge_df["receiver"].isin(sub_cells)
     sub_edge = edge_df[mask].copy()
 
@@ -604,61 +624,75 @@ def _permutation_test(result, edge_df, sp, group_col, n_subsample, n_permutation
         result["pvalue"] = 1.0
         return result
 
-    # Backfill interaction_mode if absent (legacy callers)
     if "interaction_mode" not in sub_edge.columns:
         sub_edge["interaction_mode"] = "paracrine"
 
-    # Cell IDs in subsampled edges
-    cells_in_edges = np.unique(np.concatenate([sub_edge["sender"].values, sub_edge["receiver"].values]))
+    cells_in_edges = np.unique(
+        np.concatenate([sub_edge["sender"].values, sub_edge["receiver"].values])
+    )
     sub_types = cell_types.reindex(cells_in_edges)
-
     has_mode = "interaction_mode" in result.columns
 
-    # Observed sums per (lr, sender_type, receiver_type, interaction_mode).
-    # Mode is part of the key so paracrine and autocrine rows for the same
-    # (lr, type, type) cell don't collide.
-    obs_key_to_sum = {}
-    for _, row in result.iterrows():
-        mode = row["interaction_mode"] if has_mode else "paracrine"
-        key = (row["lr_name"], row["sender_type"], row["receiver_type"], mode)
-        sub_lr = sub_edge[(sub_edge["lr_name"] == row["lr_name"]) & (sub_edge["interaction_mode"] == mode)]
-        mask_st = sub_lr["sender"].map(lambda c, st=row["sender_type"]: sub_types.get(c) == st)
-        mask_rt = sub_lr["receiver"].map(lambda c, rt=row["receiver_type"]: sub_types.get(c) == rt)
-        obs_key_to_sum[key] = sub_lr.loc[mask_st & mask_rt, "score"].sum()
+    # ---- integer coding, computed once ------------------------------------
+    # Labels -> codes. Shuffling `type_codes` is what keeps the rng in lockstep
+    # with the old `rng.shuffle(sub_types.values.copy())`.
+    uniq_types, type_codes = np.unique(sub_types.values.astype(object),
+                                       return_inverse=True)
+    n_types = len(uniq_types)
+    type_to_code = {t: i for i, t in enumerate(uniq_types)}
 
-    # Permutations: shuffle cell-type labels and re-score under the null.
-    # A single shuffled label per cell means autocrine self-edges keep
-    # sender_type == receiver_type (correct invariant for self-edges).
-    perm_counts = {k: 0 for k in obs_key_to_sum}
+    cell_pos = {c: i for i, c in enumerate(cells_in_edges)}
+    send_idx = sub_edge["sender"].map(cell_pos).to_numpy(dtype=np.int64)
+    recv_idx = sub_edge["receiver"].map(cell_pos).to_numpy(dtype=np.int64)
 
+    lm_codes, lm_uniques = pd.factorize(
+        pd.Series(list(zip(sub_edge["lr_name"], sub_edge["interaction_mode"])))
+    )
+    lm_codes = lm_codes.astype(np.int64)
+    lm_to_code = {lm: i for i, lm in enumerate(lm_uniques)}
+    n_flat = max(len(lm_uniques), 1) * n_types * n_types
+    score = sub_edge["score"].to_numpy(dtype=np.float64)
+
+    def _group_sums(labels_by_cell):
+        st = labels_by_cell[send_idx]
+        rt = labels_by_cell[recv_idx]
+        flat = (lm_codes * n_types + st) * n_types + rt
+        return np.bincount(flat, weights=score, minlength=n_flat)
+
+    obs_sums = _group_sums(type_codes)
+
+    # ---- where each result row lands in the flat array ---------------------
+    # A row whose (lr, mode) or whose cell type never appears in the edge table
+    # has no edges at all. The naive form gave it observed 0 and permuted 0 every
+    # iteration, so 0 >= 0 counted every time and p was 1.0; -1 reproduces that.
+    flat_of_row = np.full(len(result), -1, dtype=np.int64)
+    for i, row in enumerate(result.itertuples(index=False)):
+        mode = row.interaction_mode if has_mode else "paracrine"
+        lm = lm_to_code.get((row.lr_name, mode))
+        st = type_to_code.get(row.sender_type)
+        rt = type_to_code.get(row.receiver_type)
+        if lm is not None and st is not None and rt is not None:
+            flat_of_row[i] = (lm * n_types + st) * n_types + rt
+
+    # ---- permutations ------------------------------------------------------
+    counts = np.zeros(n_flat, dtype=np.int64)
     for _ in range(n_permutations):
-        shuffled = sub_types.values.copy()
+        # The copy MUST be inside the loop. Fisher-Yates applied to an
+        # already-shuffled array consumes the same rng draws but yields a
+        # different permutation, so hoisting this out silently changes the null
+        # -- it shifted p-values by up to 8 permutation counts before the
+        # equivalence test caught it.
+        shuffled = type_codes.copy()
         rng.shuffle(shuffled)
-        shuffled_map = dict(zip(cells_in_edges, shuffled, strict=True))
-
-        perm_sender_types = sub_edge["sender"].map(shuffled_map)
-        perm_receiver_types = sub_edge["receiver"].map(shuffled_map)
-
-        for key in obs_key_to_sum:
-            lr, st, rt, mode = key
-            lr_mask = (sub_edge["lr_name"] == lr) & (sub_edge["interaction_mode"] == mode)
-            mask_st = perm_sender_types == st
-            mask_rt = perm_receiver_types == rt
-            perm_sum = sub_edge.loc[lr_mask & mask_st & mask_rt, "score"].sum()
-            if perm_sum >= obs_key_to_sum[key]:
-                perm_counts[key] += 1
+        counts += _group_sums(shuffled) >= obs_sums
 
     result = result.copy()
-    pvals = []
-    for _, row in result.iterrows():
-        mode = row["interaction_mode"] if has_mode else "paracrine"
-        key = (row["lr_name"], row["sender_type"], row["receiver_type"], mode)
-        p = (perm_counts.get(key, n_permutations) + 1) / (n_permutations + 1)
-        pvals.append(p)
-    result["pvalue"] = pvals
+    present = flat_of_row >= 0
+    row_counts = np.where(present, counts[np.clip(flat_of_row, 0, None)],
+                          n_permutations)
+    result["pvalue"] = (row_counts + 1) / (n_permutations + 1)
 
     return result
-
 
 def _benjamini_hochberg(pvalues: np.ndarray) -> np.ndarray:
     """Benjamini-Hochberg FDR correction."""
