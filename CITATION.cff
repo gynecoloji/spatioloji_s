@@ -25,8 +25,8 @@ keywords:
   - bioinformatics
 # `version` + `date-released` are bumped automatically by release-please on each
 # release (via the annotations below) — do not edit them by hand.
-version: "0.4.6" # x-release-please-version
-date-released: "2026-08-12" # x-release-please-date
+version: "0.4.7" # x-release-please-version
+date-released: "2026-08-22" # x-release-please-date
 # TODO(one-time): after enabling the Zenodo integration and publishing the first
 # GitHub Release, uncomment the block below and paste the *concept* DOI (the one
 # that always resolves to the latest version). See RELEASING.md.

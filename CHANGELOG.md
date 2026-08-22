@@ -10,6 +10,13 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.7](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.6...v0.4.7) (2026-08-22)
+
+
+### Performance
+
+* **ccc:** vectorize the permutation significance test ([#14](https://github.com/gynecoloji/spatioloji_s/issues/14)) ([03caaf1](https://github.com/gynecoloji/spatioloji_s/commit/03caaf1dfe526b0ba87cd20a1866afb0b5686085))
+
 ## [0.4.6](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.5...v0.4.6) (2026-08-12)
 
 
