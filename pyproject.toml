@@ -161,6 +161,7 @@ test = [
 all = [
     "leidenalg", "igraph", "pynndescent",
     "umap-learn",
+    "scikit-misc",
     "harmonypy", "combat", "statsmodels",
     "pydeseq2",
     "anndata", "scanpy",
