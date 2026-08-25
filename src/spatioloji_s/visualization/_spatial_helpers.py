@@ -14,25 +14,28 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize, TwoSlopeNorm
 
 
-def finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) -> plt.Figure:
-    """Shared save / show / close logic.
+def finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) -> plt.Figure | None:
+    """Shared save / show / close logic (scanpy-style semantics).
 
-    Always returns ``fig``, so the ~50 public plotting functions that delegate
-    here honour their documented ``Returns: matplotlib Figure`` contract on both
-    the interactive and the scripted path.
+    ``show=True`` displays the figure — ``plt.show()`` renders inline in
+    Jupyter and opens a window in GUI backends — then closes it and returns
+    ``None``. Returning the figure as well would render it twice in notebooks
+    (once from ``plt.show()``, once as the cell's result).
 
-    When ``show`` is False the figure is closed to drop it from pyplot's global
-    registry — this matters when plotting in a loop — but the returned object
-    remains usable for ``fig.savefig(...)`` or a later ``display(fig)``.
+    ``show=False`` closes the figure without displaying and returns it, so the
+    caller can ``fig.savefig(...)``, compose it, or ``display(fig)``
+    explicitly. The figure is always closed to drop it from pyplot's global
+    registry — this matters when plotting in a loop — and a closed figure
+    still renders and saves fine.
 
     Args:
         fig: The figure to finalize.
         save_path: If given, write the figure here before showing or closing.
         dpi: Resolution used when saving.
-        show: If True, call ``plt.show()``; otherwise close the figure.
+        show: If True, display the figure and return None; otherwise return it.
 
     Returns:
-        The same ``fig`` that was passed in.
+        ``None`` when ``show=True``, else the same ``fig`` that was passed in.
     """
     plt.tight_layout()
     if save_path is not None:
@@ -40,8 +43,9 @@ def finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) 
         print(f"Saved to {save_path}")
     if show:
         plt.show()
-    else:
         plt.close(fig)
+        return None
+    plt.close(fig)
     return fig
 
 

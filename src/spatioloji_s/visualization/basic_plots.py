@@ -25,15 +25,24 @@ from scipy import sparse
 # =============================================================================
 
 
-def _finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) -> plt.Figure:
-    """Shared save / show / close logic."""
+def _finalize_plot(fig: plt.Figure, save_path: str | None, dpi: int, show: bool) -> plt.Figure | None:
+    """Shared save / show / close logic (scanpy-style semantics).
+
+    ``show=True``  → display the figure (``plt.show()``: inline in Jupyter, a
+    window in GUI backends), close it, and return ``None``.
+    ``show=False`` → close the figure without displaying and return it, so the
+    caller can save, compose, or ``display(fig)`` explicitly. The figure is
+    always closed to keep pyplot's registry empty when plotting in loops;
+    a closed figure still renders and saves fine.
+    """
     plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
         print(f"Saved to {save_path}")
-    if not show:
+    if show:
+        plt.show()
         plt.close(fig)
-        return None  # Jupyter has no object to render
+        return None
     plt.close(fig)
     return fig
 
