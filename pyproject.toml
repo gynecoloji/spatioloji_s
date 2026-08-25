@@ -137,6 +137,8 @@ imputation = [
 
 test = [
     "coverage",
+    # zarr backs the from_xenium .zarr.zip reader (tests/unit/test_xenium_zarr.py)
+    "zarr",
     "pytest",
     "ruff",
     "ty",
