@@ -20,6 +20,8 @@ document covers the one-time setup and the day-to-day flow.
      and `CITATION.cff` (both `version:` and `date-released:`).
 4. The GitHub Release fires the Zenodo webhook, which archives the tarball and
    mints a **new version DOI** under the existing **concept DOI**.
+5. You upload to PyPI with one manual command (see [PyPI](#pypi)):
+   `gh workflow run publish.yml --ref vX.Y.Z -f tag=vX.Y.Z`
 
 You never edit `CHANGELOG.md` or a version number by hand.
 
@@ -107,9 +109,18 @@ workflow will run on each release and fail at the upload step.
 
 ## PyPI
 
-Publishing is automatic. `.github/workflows/publish.yml` runs on
-`release: published`, so merging a release PR uploads to PyPI as part of the
-same chain that tags the version and mints the DOI.
+Publishing is a deliberate manual step. After merging a release PR, run
+
+```bash
+gh workflow run publish.yml --ref vX.Y.Z -f tag=vX.Y.Z
+```
+
+`--ref vX.Y.Z` builds exactly the released commit; the `tag` input arms the
+version gate below. (The upload used to be chained from release-please.yml via
+`workflow_call`, but PyPI's attestation check rejects reusable workflows — the
+signing certificate names the caller workflow, not `publish.yml` — which
+blocked the v0.4.8 upload. A top-level dispatch matches the trusted publisher
+exactly, attestations included.)
 
 Authentication is [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/):
 PyPI accepts a short-lived OIDC identity token minted by GitHub for that one

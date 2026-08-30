@@ -1,9 +1,16 @@
 name: publish
 
-# Publishes to PyPI whenever a GitHub Release is published — which is exactly
-# what merging a release-please PR does. Together with release-please.yml this
-# closes the loop: merge the release PR → tag → GitHub Release → Zenodo DOI →
-# PyPI upload, with no manual step.
+# Publishes to PyPI. Run it MANUALLY after merging a release PR:
+#
+#     gh workflow run publish.yml --ref vX.Y.Z -f tag=vX.Y.Z
+#
+# --ref vX.Y.Z builds exactly the released commit; the tag input arms the
+# version-vs-tag gate below. Publishing is deliberately not chained from
+# release-please.yml: a workflow_call'd publish job fails PyPI's attestation
+# check — the signing certificate names the CALLER workflow, which PyPI
+# rejects against the publish.yml trusted publisher (this blocked the v0.4.8
+# upload). A top-level dispatch of this workflow matches the publisher
+# exactly, attestations included.
 #
 # Authentication uses PyPI Trusted Publishing (OIDC). No API token is stored in
 # this repository, in Actions secrets, or on any developer machine: PyPI accepts
@@ -24,15 +31,14 @@ name: publish
 on:
   # Kept so a release published by a human (or by a PAT-authenticated bot) still
   # publishes. It does NOT fire for release-please, because GitHub refuses to
-  # start workflows from events created with the default GITHUB_TOKEN — which is
-  # why release-please.yml calls this workflow directly instead.
+  # start workflows from events created with the default GITHUB_TOKEN — which
+  # is why publishing is a manual dispatch of this workflow.
   release:
     types: [published]
   workflow_dispatch:
-  workflow_call:
     inputs:
       tag:
-        description: "Release tag to verify the built version against, e.g. v0.4.3"
+        description: "Release tag to verify the built version against, e.g. v0.4.8"
         required: false
         type: string
         default: ""
@@ -78,9 +84,9 @@ jobs:
 
       - name: Confirm the built version matches the release tag
         env:
-          # On a `release` event the ref IS the tag. When called from
-          # release-please.yml the ref is the default branch, so the tag is
-          # passed in explicitly.
+          # On a `release` event the ref IS the tag. On workflow_dispatch,
+          # pass the `tag` input so this gate engages — a bare dispatch skips
+          # the check with a warning.
           EXPECTED_TAG: ${{ inputs.tag != '' && inputs.tag || (github.event_name == 'release' && github.ref_name || '') }}
         run: |
           BUILT=$(/tmp/verify/bin/python -c "import spatioloji_s; print(spatioloji_s.__version__)")

@@ -6,6 +6,13 @@ name: release-please
 # CITATION.cff) and updates CHANGELOG.md. Merging that PR tags the version and
 # publishes a GitHub Release — which triggers the Zenodo webhook to mint a DOI.
 #
+# PyPI upload is deliberately NOT chained here. A workflow_call'd publish job
+# fails PyPI's attestation check (the signing certificate names the caller
+# workflow, not publish.yml — this rejected the v0.4.8 upload), and release
+# events created with the default GITHUB_TOKEN cannot fire publish.yml's own
+# `release:` trigger. Publishing is a manual dispatch instead: see
+# RELEASING.md → "PyPI".
+#
 # One-time repo setting required: Settings → Actions → General →
 # "Allow GitHub Actions to create and approve pull requests" → enabled.
 #
@@ -28,12 +35,6 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    outputs:
-      released: ${{ steps.release.outputs.releases_created }}
-      # In manifest mode release-please prefixes per-package outputs with the
-      # package path, except for the root package which is unprefixed. Take the
-      # unprefixed name first and fall back, so this works either way.
-      tag: ${{ steps.release.outputs.tag_name || steps.release.outputs['.--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -42,20 +43,3 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # Publishing is chained here rather than left to publish.yml's own
-  # `release: published` trigger. GitHub will not start a workflow from an event
-  # created with the default GITHUB_TOKEN, so that trigger never fires for a
-  # release-please release — v0.4.3 was tagged and released but never uploaded.
-  # Calling the workflow directly sidesteps the restriction without introducing
-  # a long-lived PAT, which would undo the point of PyPI trusted publishing.
-  publish:
-    needs: release-please
-    if: needs.release-please.outputs.released == 'true'
-    permissions:
-      contents: read
-      # Reusable workflows can only narrow what the caller grants, so the OIDC
-      # permission the PyPI upload needs has to be granted here too.
-      id-token: write
-    uses: ./.github/workflows/publish.yml
-    with:
-      tag: ${{ needs.release-please.outputs.tag }}
