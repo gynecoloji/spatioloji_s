@@ -74,8 +74,14 @@ class CCCConfig:
         min_pct: Minimum fraction of cells expressing a gene for a pair to
             be kept after expression filtering. Default 0.05.
         secreted_radius: Radius (in coordinate units) for secreted
-            signaling graph. Default 200.0.
-        ecm_radius: Radius for ECM signaling graph. Default 200.0.
+            signaling graph. Default 200.0. Edge count — and with it run
+            time and memory — scales as ``n_cells × π × radius² × cell
+            density``: at 200 µm, a tissue at ~6,000 cells/mm² (a typical
+            Xenium tumor section) already yields ~740 neighbors per cell.
+            Scale the radius to your tissue's density (e.g. 100 µm there,
+            75 µm for a reactive lymph node at ~15,000 cells/mm²).
+        ecm_radius: Radius for ECM signaling graph. Default 200.0. The
+            same density scaling advice applies.
         buffer_distance: Buffer distance for juxtacrine contact graph.
             None = use 0 (touching cells only).
         sigma_secreted: Distance decay sigma for secreted pairs. None =

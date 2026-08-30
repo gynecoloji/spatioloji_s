@@ -122,6 +122,13 @@ spatioloji_s uses polygon geometry for biologically accurate CCC inference:
 | Secreted | `exp(-distance / sigma)` | Radius graph (default 200 um) |
 | ECM | `exp(-distance / sigma)` | Radius graph |
 
+> **Sizing the radius:** expected neighbors per cell ≈ π·r²·density, so edge
+> count (memory and run time) grows quadratically with the radius. The 200 µm
+> default suits sparse tissue — at ~6,000 cells/mm² (a typical Xenium tumor
+> section) it already means ~740 neighbors per cell; use ~100 µm there and
+> less for denser tissue (e.g. 75 µm for a reactive lymph node at
+> ~15,000 cells/mm²).
+
 Features:
 - **50 built-in LR pairs** + CellChatDB (3,234 interactions) support
 - **Analytical z-score** (fast) or **permutation** significance testing with BH-FDR

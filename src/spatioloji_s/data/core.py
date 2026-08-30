@@ -1849,9 +1849,10 @@ class spatioloji:
         - cell_id column (not 'cell')
 
         Supported expression matrix formats (auto-detected):
-        - cell_feature_matrix/       (MTX folder)
-        - cell_feature_matrix.zarr.zip
+        - cell_feature_matrix.zarr.zip   (10x 'cell_features' layout, or
+          AnnData-style 'X' layout; works with zarr 2 and zarr 3)
         - cell_feature_matrix.tar.gz
+        - cell_feature_matrix/       (MTX folder)
 
         Parameters
         ----------
@@ -1917,19 +1918,73 @@ class spatioloji:
             features.columns = ["gene_id", "gene_name", "feature_type"]
             return matrix, barcodes["cell_id"].astype(str).tolist(), features
 
+        def _open_zarr_group(path: Path):
+            """Open the root group of a ``.zarr.zip`` on both zarr 2 and zarr 3.
+
+            zarr 3 removed the implicit ZipStore that ``zarr.open(<path>.zip)``
+            relied on, so the store is constructed explicitly.
+            """
+            try:
+                from zarr.storage import ZipStore  # zarr >= 2.13, incl. zarr 3
+            except ImportError:  # pragma: no cover - very old zarr 2
+                ZipStore = zarr.ZipStore
+            store = ZipStore(str(path), mode="r")
+            return zarr.open_group(store, mode="r"), store
+
         def _load_zarr(path: Path):
-            z = zarr.open(str(path), mode="r")
-            data = z["X/data"][:]
-            indices = z["X/indices"][:]
-            indptr = z["X/indptr"][:]
-            shape = tuple(z["X"].attrs["shape"])
             import scipy.sparse as sp
 
-            matrix = sp.csc_matrix((data, indices, indptr), shape=shape).T.tocsr()
-            cell_ids = [str(c) for c in z["obs/cell_id"][:]]
-            gene_names = [str(g) for g in z["var/feature_name"][:]]
-            gene_ids = [str(g) for g in z["var/gene_ids"][:]]
-            features = pd.DataFrame({"gene_id": gene_ids, "gene_name": gene_names})
+            root, store = _open_zarr_group(path)
+            try:
+                if "cell_features" in root:
+                    # Real 10x XOA layout: a single 'cell_features' group with
+                    # a feature-major CSR matrix, integer-encoded cell IDs, and
+                    # the feature names in the group attributes.
+                    cf = root["cell_features"]
+                    features = pd.DataFrame(
+                        {
+                            "gene_id": [str(g) for g in cf.attrs["feature_ids"]],
+                            "gene_name": [str(g) for g in cf.attrs["feature_keys"]],
+                            "feature_type": [str(t) for t in cf.attrs["feature_types"]],
+                        }
+                    )
+                    indptr = cf["indptr"][:]
+                    n_features = len(indptr) - 1
+                    cell_id_arr = cf["cell_id"][:]
+                    n_cells = cell_id_arr.shape[0]
+                    matrix = sp.csr_matrix(
+                        (cf["data"][:], cf["indices"][:], indptr),
+                        shape=(n_features, n_cells),
+                    ).T.tocsr()
+                    cell_ids = _decode_xenium_cell_ids(cell_id_arr)
+                    # The zarr matrix carries synthetic 'aggregate_gene' rows
+                    # (per-cell totals over all genes) that the MTX/tar bundles
+                    # do not — keeping them would double-count every QC metric.
+                    keep = (features["feature_type"] != "aggregate_gene").to_numpy()
+                    if not keep.all():
+                        print(f"    Dropping {int((~keep).sum())} aggregate_gene feature(s)")
+                        matrix = matrix[:, keep]
+                        features = features.loc[keep].reset_index(drop=True)
+                elif "X" in root:
+                    # AnnData-style layout (X/data + obs/var groups).
+                    x = root["X"]
+                    shape = tuple(x.attrs["shape"])
+                    matrix = sp.csc_matrix(
+                        (x["data"][:], x["indices"][:], x["indptr"][:]), shape=shape
+                    ).T.tocsr()
+                    cell_ids = [str(c) for c in root["obs"]["cell_id"][:]]
+                    var = root["var"]
+                    gene_names = [str(g) for g in var["feature_name"][:]]
+                    gene_ids = [str(g) for g in var["gene_ids"][:]]
+                    features = pd.DataFrame({"gene_id": gene_ids, "gene_name": gene_names})
+                else:
+                    raise ValueError(
+                        f"Unrecognized zarr layout in {path}: expected a "
+                        "'cell_features' group (10x Xenium Onboard Analysis) or "
+                        "an 'X' group (AnnData-style)."
+                    )
+            finally:
+                store.close()
             return matrix, cell_ids, features
 
         def _load_tar(path: Path):
@@ -2211,3 +2266,33 @@ def extract_spatial_coords_from_polygons(polygons: pd.DataFrame, config: Spatiol
     coords.columns = ["x_local", "y_local", "x_global", "y_global"]
 
     return coords
+
+
+def _decode_xenium_cell_ids(cell_id_arr: np.ndarray) -> list[str]:
+    """Decode 10x Xenium integer cell IDs to their string form.
+
+    XOA's ``cell_feature_matrix.zarr.zip`` stores each cell ID as two
+    ``uint32`` values ``[id, version]``. The string form (as found in
+    ``cells.csv.gz``) writes the id as eight base-16 digits using the
+    alphabet ``a``–``p`` (``a`` = 0 … ``p`` = 15, most-significant nibble
+    first), followed by ``-{version}``.
+
+    Args:
+        cell_id_arr: ``(n_cells, 2)`` unsigned-integer array of
+            ``[encoded_id, version]`` rows.
+
+    Returns:
+        List of ``n_cells`` decoded string IDs.
+
+    Example:
+        >>> _decode_xenium_cell_ids(np.array([[992, 1]], dtype=np.uint32))
+        ['aaaaadoa-1']
+    """
+    arr = np.asarray(cell_id_arr)
+    ids = arr[:, 0].astype(np.uint64)
+    versions = arr[:, 1]
+    letters = np.frombuffer(b"abcdefghijklmnop", dtype=np.uint8)
+    shifts = np.arange(28, -4, -4, dtype=np.uint64)  # nibbles, MSB first
+    nibbles = ((ids[:, None] >> shifts[None, :]) & np.uint64(0xF)).astype(np.uint8)
+    chars = np.ascontiguousarray(letters[nibbles]).view("S8").ravel()
+    return [f"{c.decode('ascii')}-{v}" for c, v in zip(chars, versions, strict=True)]
