@@ -10,6 +10,21 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.8](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.7...v0.4.8) (2026-08-30)
+
+
+### Fixed
+
+* **data:** read the 10x cell_features zarr layout in from_xenium ([6a7efaf](https://github.com/gynecoloji/spatioloji_s/commit/6a7efaf4c79a09b5d0a89daa78ea98b04d0304f2))
+* **packaging:** include scikit-misc in the [all] extra ([3661964](https://github.com/gynecoloji/spatioloji_s/commit/3661964b01b9bfe5c9b21ec70bbce43629200795))
+* tutorial-driven fixes (zarr loader, ([f604edd](https://github.com/gynecoloji/spatioloji_s/commit/f604edd3e1b10359b5333041c6269dc84df1afb6))
+* **visualization:** display figures when show=True and return None ([abd508c](https://github.com/gynecoloji/spatioloji_s/commit/abd508c4cdd86a6ccb573b39f0052fe494661ae7))
+
+
+### Documentation
+
+* **ccc:** explain how radius and cell density set the CCC edge count ([7c3fe0b](https://github.com/gynecoloji/spatioloji_s/commit/7c3fe0bd4e78404734a42795fdb7d687b925a363))
+
 ## [0.4.7](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.6...v0.4.7) (2026-08-22)
 
 
