@@ -6,6 +6,7 @@ Scoring-based CCC framework:
   Database  — load LR pairs from builtin / CellChatDB CSV
   Scoring   — score edges, aggregate, test significance
   Zones     — interface zone comparison, gradient, morphology stratification
+  Radius    — per-cell-type contact-radius fitting for the juxtacrine graph
   Run       — full pipeline orchestrator (run_ccc)
 
 Typical usage
@@ -28,6 +29,15 @@ from .database import (
     load_lr_database,
     lr_pairs_to_dataframe,
 )
+from .halo import (
+    create_halo_subset,
+    filter_ccc_to_core,
+)
+from .radius import (
+    RadiusOptimizationResult,
+    build_typed_radius_graph,
+    optimize_contact_radius,
+)
 from .run import (
     CCCConfig,
     CCCResult,
@@ -42,10 +52,6 @@ from .zones import (
     communication_gradient,
     compare_morphology,
     compare_zones,
-)
-from .halo import (
-    create_halo_subset,
-    filter_ccc_to_core,
 )
 
 __all__ = [
@@ -70,4 +76,8 @@ __all__ = [
     # Halo
     "create_halo_subset",
     "filter_ccc_to_core",
+    # Radius optimization
+    "RadiusOptimizationResult",
+    "build_typed_radius_graph",
+    "optimize_contact_radius",
 ]
