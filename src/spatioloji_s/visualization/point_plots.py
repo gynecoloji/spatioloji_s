@@ -1519,7 +1519,8 @@ def plot_interface_point_map(
 
     labels = interface_result.cell_labels.reindex(spatioloji_obj.cell_index).fillna("other")
 
-    if ax is None:
+    own_fig = ax is None
+    if own_fig:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.get_figure()
@@ -1604,6 +1605,9 @@ def plot_interface_point_map(
 
     ax.set_title(title or f"Interface: {ra_label} vs {rb_label} ({interface_result.method})")
     clean_axes(ax)
+    # When ax was provided externally, don't show/close the figure — caller owns it
+    if not own_fig:
+        return fig
     return finalize_plot(fig, save_path, dpi, show)
 
 
