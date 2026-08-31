@@ -10,6 +10,14 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.4.9](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.8...v0.4.9) (2026-08-31)
+
+
+### Fixed
+
+* **visualization:** don't finalize the caller's figure when ax is provided ([11a37ad](https://github.com/gynecoloji/spatioloji_s/commit/11a37adecebde2d1158ec753e6c1a9523bfbc0e7))
+* **visualization:** don't finalize the caller's figure when ax is provided ([e5263f9](https://github.com/gynecoloji/spatioloji_s/commit/e5263f999b0ba51cb1e37f4cfba19fead25e70c9))
+
 ## [0.4.8](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.7...v0.4.8) (2026-08-30)
 
 
