@@ -1691,7 +1691,8 @@ def plot_interface_polygon_map(
     pc = _build_poly_collection(gdf, face_colors)
     pc.set_alpha(poly_alpha)
 
-    if ax is None:
+    own_fig = ax is None
+    if own_fig:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.get_figure()
@@ -1747,6 +1748,9 @@ def plot_interface_polygon_map(
     rb = interface_result.region_b
     ax.set_title(title or f"Interface: {ra} vs {rb} ({interface_result.method})")
     clean_axes(ax)
+    # When ax was provided externally, don't show/close the figure — caller owns it
+    if not own_fig:
+        return fig
     return finalize_plot(fig, save_path, dpi, show)
 
 

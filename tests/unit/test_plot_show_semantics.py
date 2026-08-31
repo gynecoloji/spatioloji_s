@@ -105,3 +105,41 @@ class TestPublicFunctions:
             result = xenium_plot_spatial(sp_basic, "cell_type", mode="dot", show=True)
         assert result is None
         assert plt.get_fignums() == []
+
+
+class TestCallerOwnedAxes:
+    """When the caller passes ``ax=``, the caller owns the figure: the function
+    must return that figure un-finalized — never shown, never closed — so
+    multi-panel compositions survive (regression for the interface map plots,
+    which closed the caller's figure mid-loop)."""
+
+    @staticmethod
+    def _interface_result(sp_interface):
+        from spatioloji_s.spatial.polygon import identify_interface
+
+        return identify_interface(
+            sp_interface, group_col="cell_type", region_a="TypeA", region_b="TypeB"
+        )
+
+    @pytest.mark.parametrize("show", [True, False])
+    @pytest.mark.parametrize("which", ["point_map", "polygon_map", "polygon_metrics"])
+    def test_ax_provided_keeps_caller_figure_open(self, sp_interface, which, show):
+        from spatioloji_s.visualization.point_plots import plot_interface_point_map
+        from spatioloji_s.visualization.polygon_plots import (
+            plot_interface_polygon_map,
+            plot_interface_polygon_metrics,
+        )
+
+        result = self._interface_result(sp_interface)
+        fig, axes = plt.subplots(1, 2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if which == "point_map":
+                ret = plot_interface_point_map(sp_interface, result, ax=axes[0], show=show)
+            elif which == "polygon_map":
+                ret = plot_interface_polygon_map(sp_interface, result, ax=axes[0], show=show)
+            else:
+                ret = plot_interface_polygon_metrics(result, ax=axes[0], show=show)
+        assert ret is fig, "with ax= the caller's figure must be returned un-finalized"
+        assert fig.number in plt.get_fignums(), "caller's figure must stay open"
+        plt.close("all")
