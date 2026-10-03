@@ -10,6 +10,19 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.5.1](https://github.com/gynecoloji/spatioloji_s/compare/v0.5.0...v0.5.1) (2026-10-03)
+
+
+### Fixed
+
+* **ccc:** give an empty CCC result the same schema as a populated one ([0faa896](https://github.com/gynecoloji/spatioloji_s/commit/0faa8960d6851297b4d01d2591a76718cb00047b))
+* **ccc:** keep every observed cell type in the fitted radius_map ([0435b51](https://github.com/gynecoloji/spatioloji_s/commit/0435b51f6b3aa3085f11ddf6a8e75e4ea9c4816d))
+
+
+### Documentation
+
+* **ccc:** document the fitted contact-radius workflow with measured results ([b5f84b6](https://github.com/gynecoloji/spatioloji_s/commit/b5f84b6d70223da26e27ca45803bbee197678e41))
+
 ## [0.5.0](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.9...v0.5.0) (2026-10-03)
 
 
