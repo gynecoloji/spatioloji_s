@@ -10,6 +10,14 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.5.0](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.9...v0.5.0) (2026-10-03)
+
+
+### Added
+
+* **ccc:** fit per-cell-type contact radii for the juxtacrine graph ([3b0e547](https://github.com/gynecoloji/spatioloji_s/commit/3b0e547c993e9d5a88f20dc16a42326eca428f75))
+* **ccc:** fit per-cell-type contact radii for the juxtacrine graph ([cfafd24](https://github.com/gynecoloji/spatioloji_s/commit/cfafd240e2668c9891dfbde14e07a8b255b35030))
+
 ## [0.4.9](https://github.com/gynecoloji/spatioloji_s/compare/v0.4.8...v0.4.9) (2026-08-31)
 
 
