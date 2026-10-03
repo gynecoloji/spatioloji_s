@@ -294,9 +294,23 @@ def run_ccc(
 
     if not pairs:
         _log("No expressed LR pairs found — returning empty result")
-        empty_scores = pd.DataFrame(
-            columns=["lr_name", "sender_type", "receiver_type", "mean_score", "sum_score", "n_edges"]
-        )
+        # Same schema as a populated result, so the documented idioms
+        # (`scores[scores["fdr"] < alpha]`, merges on interaction_mode) work on
+        # an empty result instead of raising KeyError.
+        empty_cols = [
+            "lr_name",
+            "sender_type",
+            "receiver_type",
+            "interaction_mode",
+            "mean_score",
+            "sum_score",
+            "n_edges",
+            "pvalue",
+            "fdr",
+        ]
+        if config.test_method == "analytical":
+            empty_cols.append("z_score")
+        empty_scores = pd.DataFrame(columns=empty_cols)
         return CCCResult(
             scores=empty_scores,
             cell_scores=pd.DataFrame(index=sp.cell_index),

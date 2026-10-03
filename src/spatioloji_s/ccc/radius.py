@@ -79,10 +79,15 @@ class RadiusOptimizationResult:
     """Result of :func:`optimize_contact_radius`.
 
     Attributes:
-        radius_map: ``{cell_type: best_radius}`` — pass straight to
-            :func:`build_typed_radius_graph` or ``CCCConfig.juxtacrine_radius_map``.
+        radius_map: ``{cell_type: radius}`` covering **every** observed cell
+            type — pass straight to :func:`build_typed_radius_graph` or
+            ``CCCConfig.juxtacrine_radius_map``. Types with fewer than
+            ``min_type_edges`` ground-truth contacts fall back to
+            ``global_best`` (see ``per_type.low_evidence``).
         per_type: One row per cell type: ``cell_type``, ``best_radius``,
-            ``jaccard``, ``n_truth_edges``, ``missed_rate``, ``false_rate``.
+            ``jaccard``, ``n_truth_edges``, ``missed_rate``, ``false_rate``,
+            ``radius_used`` (what ``radius_map`` holds) and ``low_evidence``
+            (True when the fit fell back to the global best).
         per_pair: One row per unordered cell-type pair (``"A|B"``): ``pair``,
             ``best_radius``, ``jaccard``, ``n_truth_edges``. Diagnostic — shows
             how far apart different pairs' optima sit.
@@ -183,7 +188,8 @@ def optimize_contact_radius(
             touching, and a zero buffer yields a mostly-isolated graph.
         coord_type: ``'global'`` or ``'local'``.
         min_type_edges: Cell types with fewer ground-truth contacts than this
-            are reported but excluded from ``radius_map`` (their optimum is noise).
+            keep the global best radius instead of their own noisy optimum;
+            they stay in ``radius_map`` and are flagged ``low_evidence``.
         min_pair_edges: Same threshold for the per-pair diagnostic table.
         verbose: Print the sweep and the fitted map.
 
@@ -314,18 +320,37 @@ def optimize_contact_radius(
         ["pair", "best_radius", "jaccard", "n_truth_edges"]
     ].reset_index(drop=True)
 
-    keep = per_type[per_type["n_truth_edges"] >= min_type_edges]
-    if keep.empty:
-        keep = per_type
-    radius_map = {str(r.cell_type): float(r.best_radius) for r in keep.itertuples(index=False)}
+    # ── radius_map must cover EVERY observed cell type ──────────────────────
+    # A type with too few ground-truth contacts has a meaningless optimum, but
+    # dropping it would make radius_map unusable with build_typed_radius_graph
+    # on the very object just fitted. Fall back to the global best for those,
+    # and flag them in per_type so the fallback is visible rather than implied.
+    fitted = {
+        str(r.cell_type): float(r.best_radius)
+        for r in per_type.itertuples(index=False)
+        if r.n_truth_edges >= min_type_edges
+    }
+    observed = sorted(set(types))
+    radius_map = {t: fitted.get(t, global_best) for t in observed}
+    fallback_types = [t for t in observed if t not in fitted]
+
+    per_type = per_type.set_index("cell_type").reindex(observed).reset_index()
+    per_type["cell_type"] = per_type["cell_type"].astype(str)
+    per_type["radius_used"] = per_type["cell_type"].map(radius_map)
+    per_type["low_evidence"] = per_type["cell_type"].isin(fallback_types)
+    per_type["n_truth_edges"] = per_type["n_truth_edges"].fillna(0).astype(int)
 
     if verbose:
         print(f"\n[radius] Global best: {global_best:g} um (Jaccard {global_jaccard:.3f})")
         print("[radius] Per cell type:")
         print(per_type.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
-        if radius_map:
-            lo, hi = min(radius_map.values()), max(radius_map.values())
-            print(f"[radius] Fitted map spans {lo:g}-{hi:g} um across {len(radius_map)} types")
+        lo, hi = min(radius_map.values()), max(radius_map.values())
+        print(f"[radius] Map spans {lo:g}-{hi:g} um across {len(radius_map)} types")
+        if fallback_types:
+            print(
+                f"[radius] {len(fallback_types)} type(s) had <{min_type_edges} contacts and "
+                f"use the global best ({global_best:g} um): {', '.join(fallback_types)}"
+            )
 
     best_type_jaccard = per_type["jaccard"].max() if len(per_type) else np.nan
     if np.isfinite(best_type_jaccard) and best_type_jaccard < WEAK_FIT_JACCARD:

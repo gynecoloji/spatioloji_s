@@ -211,3 +211,41 @@ class TestRunCCC:
         config = CCCConfig(group_col="cell_type", verbose=False)
         result = run_ccc(sp_ccc, config, lr_pairs=expressed_pairs)
         assert result.morphology_comparison is None
+
+
+class TestEmptyResultSchema:
+    """An empty result must carry the same columns as a populated one, so the
+    documented idioms work instead of raising KeyError (regression: the no-pairs
+    early return omitted interaction_mode, pvalue and fdr)."""
+
+    @staticmethod
+    def _no_pairs_result(sp, **kwargs):
+        from spatioloji_s.ccc import CCCConfig, run_ccc
+
+        # min_pct > 1 can never be satisfied, so every pair is filtered out.
+        config = CCCConfig(group_col="cell_type", min_pct=1.5, verbose=False, **kwargs)
+        return run_ccc(sp, config)
+
+    def test_fdr_filter_works_on_empty_result(self, sp_ccc):
+        result = self._no_pairs_result(sp_ccc)
+        assert len(result.scores) == 0
+        # the idiom straight out of the docstrings
+        assert len(result.scores[result.scores["fdr"] < 0.05]) == 0
+
+    def test_empty_result_has_documented_columns(self, sp_ccc):
+        result = self._no_pairs_result(sp_ccc)
+        expected = {
+            "lr_name", "sender_type", "receiver_type", "interaction_mode",
+            "mean_score", "sum_score", "n_edges", "pvalue", "fdr",
+        }
+        assert expected <= set(result.scores.columns)
+
+    def test_empty_results_are_mergeable(self, sp_ccc):
+        a = self._no_pairs_result(sp_ccc).scores
+        b = self._no_pairs_result(sp_ccc).scores
+        keys = ["lr_name", "sender_type", "receiver_type", "interaction_mode"]
+        assert len(a.merge(b, on=keys, how="outer", suffixes=("_x", "_y"))) == 0
+
+    def test_analytical_empty_result_has_z_score(self, sp_ccc):
+        result = self._no_pairs_result(sp_ccc, test_method="analytical")
+        assert "z_score" in result.scores.columns

@@ -135,6 +135,8 @@ Features:
 - **Interface zone comparison** --- interface vs. interior enrichment
 - **Communication gradient** --- OLS regression of score vs. signed distance
 - **Morphology stratification** --- CCC by sender cell shape (round/elongated)
+- **Fitted contact radii** --- per-cell-type centroid radius as a fast stand-in
+  for the polygon contact graph (see below)
 
 | Feature | CellChat | COMMOT | SpatialDM | spatioloji_s |
 |---------|----------|--------|-----------|--------------|
@@ -145,6 +147,50 @@ Features:
 | Communication gradient | No | No | No | **Yes** |
 | Morphology stratification | No | No | No | **Yes** |
 | Significance testing | Permutation | No | Permutation | Both |
+
+### Fitted contact radii (when polygons are missing or too slow)
+
+Juxtacrine signalling needs a contact graph, and polygons are the accurate
+source. Where they are unavailable — a sample whose boundaries were never
+exported — or too expensive, a centroid radius graph stands in. A *single*
+radius cannot serve a tissue whose cell types differ in size, so
+`optimize_contact_radius` fits one **per cell type** against the polygon graph:
+
+```python
+from spatioloji_s.ccc.radius import build_typed_radius_graph, optimize_contact_radius
+
+fit = optimize_contact_radius(sp_roi, group_col="cell_type")
+fit.radius_map            # {'Tumor': 12.0, 'Mast': 10.0, ...} — covers every type
+fit.per_type              # best_radius, jaccard, missed_rate, false_rate, low_evidence
+fit.per_pair              # the same optimum per cell-type pair
+
+# apply it: directly, or through the pipeline
+graph = build_typed_radius_graph(sp, fit.radius_map)          # d <= max(r_i, r_j)
+result = run_ccc(sp, CCCConfig(juxtacrine_radius_map=fit.radius_map))
+```
+
+**What it buys, measured** on two Xenium ROIs (ovarian carcinoma, 14k cells;
+reactive lymph node, 48k cells):
+
+| | Ovarian carcinoma | Reactive lymph node |
+|---|---|---|
+| fitted radii | 10–12 um (7 types) | 8 um (all 8 types) |
+| edge agreement with polygon contact (Jaccard) | 0.63 | 0.79 |
+| graph build time | **0.1 s** vs 15.3 s (polygon) | **0.2 s** vs 66.5 s (polygon) |
+
+The graph is built 100–300x faster, and the tissue difference is the point: in
+the dense, uniform lymph node one radius serves every cell type, while the
+morphologically heterogeneous tumour pulls the per-type optima apart and agrees
+less well with real contact.
+
+**Read the fit as a diagnosis, not a free win.** Agreement peaks at 0.67–0.80
+across tissues *even when the radius is fitted against the ground truth*, so
+the approximation is good, never exact — `optimize_contact_radius` warns when
+your tissue fits poorly. Downstream, juxtacrine scores keep their ranking
+(Spearman rho 0.92–0.95 against the polygon result) but significance is
+**conservative**: on these ROIs the radius graph recovered 22/32 and 19/48 of
+the polygon graph's significant calls. Use it for speed and for data without
+polygons; use the polygon graph when a call list is the deliverable.
 
 ---
 

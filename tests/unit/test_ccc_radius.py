@@ -249,3 +249,37 @@ class TestRunCCCIntegration:
         assert hasattr(sj.ccc, "optimize_contact_radius")
         assert hasattr(sj.ccc, "build_typed_radius_graph")
         assert hasattr(sj.ccc, "RadiusOptimizationResult")
+
+
+class TestLowEvidenceTypes:
+    """radius_map must cover every observed type, so the fit composes with the
+    graph builder on the object it was fitted on (regression: a rare type made
+    build_typed_radius_graph raise after a successful fit)."""
+
+    def test_map_covers_every_observed_type(self, sp_two_scales):
+        # min_type_edges far above what this tiny fixture can supply -> both
+        # types are low-evidence, and both must still be in the map.
+        res = optimize_contact_radius(
+            sp_two_scales, group_col="cell_type", radii=RADII,
+            min_type_edges=10_000, min_pair_edges=10_000, verbose=False,
+        )
+        assert set(res.radius_map) == {"Big", "Small"}
+        assert all(r == res.global_best for r in res.radius_map.values())
+        assert res.per_type["low_evidence"].all()
+
+    def test_fit_result_composes_with_graph_builder(self, sp_two_scales):
+        res = optimize_contact_radius(
+            sp_two_scales, group_col="cell_type", radii=RADII,
+            min_type_edges=10_000, min_pair_edges=1, verbose=False,
+        )
+        # must not raise: every observed type has a radius
+        g = build_typed_radius_graph(sp_two_scales, res.radius_map, group_col="cell_type")
+        assert g.n_edges > 0
+
+    def test_well_evidenced_types_are_not_flagged(self, sp_two_scales):
+        res = optimize_contact_radius(
+            sp_two_scales, group_col="cell_type", radii=RADII,
+            min_type_edges=1, min_pair_edges=1, verbose=False,
+        )
+        assert not res.per_type["low_evidence"].any()
+        assert res.per_type.set_index("cell_type")["radius_used"].to_dict() == res.radius_map
