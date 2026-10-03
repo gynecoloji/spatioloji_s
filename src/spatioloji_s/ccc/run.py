@@ -84,6 +84,17 @@ class CCCConfig:
             same density scaling advice applies.
         buffer_distance: Buffer distance for juxtacrine contact graph.
             None = use 0 (touching cells only).
+        juxtacrine_radius_map: ``{cell_type: radius}`` from
+            :func:`~spatioloji_s.ccc.radius.optimize_contact_radius`. When set,
+            the juxtacrine graph is a **typed centroid radius graph**
+            (:func:`~spatioloji_s.ccc.radius.build_typed_radius_graph`) instead
+            of the polygon contact graph — much cheaper, and usable where
+            polygons are unavailable, at the cost of approximating contact.
+            Edge weights are then uniform 1.0 rather than contact fractions.
+        juxtacrine_radius_combine: How to combine the two endpoint radii —
+            ``'union'`` (default, ``d <= max``), ``'intersection'``
+            (``d <= min``) or ``'sender'`` (``d <= r_sender``). Only used when
+            ``juxtacrine_radius_map`` is set.
         sigma_secreted: Distance decay sigma for secreted pairs. None =
             estimated as median edge distance.
         sigma_ecm: Distance decay sigma for ECM pairs. None = estimated
@@ -128,6 +139,8 @@ class CCCConfig:
     secreted_radius: float = 200.0
     ecm_radius: float = 200.0
     buffer_distance: float | None = None  # None = contact only (0 = touching)
+    juxtacrine_radius_map: dict[str, float] | None = None
+    juxtacrine_radius_combine: str = "union"
 
     # Scoring
     sigma_secreted: float | None = None
@@ -307,13 +320,30 @@ def run_ccc(
 
     # ── Step 3: Build graphs ──────────────────────────────────────────────
     if juxtacrine_pairs:
-        from spatioloji_s.spatial.polygon.boundaries import contact_fraction
-        from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+        if config.juxtacrine_radius_map:
+            from spatioloji_s.ccc.radius import build_typed_radius_graph
 
-        buf_dist = config.buffer_distance if config.buffer_distance is not None else 0
-        _log(f"Building juxtacrine contact graph (buffer_distance={buf_dist})")
-        graph_jux = build_buffer_graph(sp, buffer_distance=buf_dist, coord_type=config.coord_type)
-        graph_jux.contact_frac_df = contact_fraction(sp, graph_jux, coord_type=config.coord_type)
+            _log(
+                "Building juxtacrine typed radius graph "
+                f"({len(config.juxtacrine_radius_map)} cell types, "
+                f"combine={config.juxtacrine_radius_combine})"
+            )
+            graph_jux = build_typed_radius_graph(
+                sp,
+                radius_map=config.juxtacrine_radius_map,
+                group_col=config.group_col,
+                coord_type=config.coord_type,
+                combine=config.juxtacrine_radius_combine,
+                verbose=config.verbose,
+            )
+        else:
+            from spatioloji_s.spatial.polygon.boundaries import contact_fraction
+            from spatioloji_s.spatial.polygon.graph import build_buffer_graph
+
+            buf_dist = config.buffer_distance if config.buffer_distance is not None else 0
+            _log(f"Building juxtacrine contact graph (buffer_distance={buf_dist})")
+            graph_jux = build_buffer_graph(sp, buffer_distance=buf_dist, coord_type=config.coord_type)
+            graph_jux.contact_frac_df = contact_fraction(sp, graph_jux, coord_type=config.coord_type)
 
     if secreted_pairs:
         from spatioloji_s.spatial.point.graph import build_radius_graph
