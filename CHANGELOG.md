@@ -10,6 +10,14 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.5.2](https://github.com/gynecoloji/spatioloji_s/compare/v0.5.1...v0.5.2) (2026-10-05)
+
+
+### Fixed
+
+* **visualization:** invert the y-axis in plot_spatial_distance ([5d5ff53](https://github.com/gynecoloji/spatioloji_s/commit/5d5ff536b2101b1dbe7664eadeb6dda06e092275))
+* **visualization:** invert the y-axis in plot_spatial_distance ([85d5bfa](https://github.com/gynecoloji/spatioloji_s/commit/85d5bfa29699d0e936edf4851336a26219c668de))
+
 ## [0.5.1](https://github.com/gynecoloji/spatioloji_s/compare/v0.5.0...v0.5.1) (2026-10-03)
 
 
