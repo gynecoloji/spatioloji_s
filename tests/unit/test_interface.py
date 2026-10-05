@@ -282,3 +282,53 @@ class TestIntegration:
         from spatioloji_s.spatial.polygon import identify_interface as poly_ii
 
         assert pi is poly_ii
+
+
+class TestSpatialMapOrientation:
+    """Every spatial map must put the origin at the top-left.
+
+    Imaging platforms (Xenium, CosMx, MERSCOPE) index y downward from the top.
+    A map that does not invert its y-axis renders the tissue mirrored against
+    the maps it is meant to be read beside — which is exactly what
+    plot_spatial_distance did until this was pinned.
+    """
+
+    @staticmethod
+    def _y_is_inverted(fig):
+        ax = fig.axes[0]
+        lo, hi = ax.get_ylim()
+        return lo > hi
+
+    def test_spatial_distance_map_is_top_left_origin(self, sp_interface):
+        import pandas as pd
+
+        from spatioloji_s.spatial.polygon import identify_interface
+        from spatioloji_s.visualization.polygon_plots import plot_spatial_distance
+
+        result = identify_interface(sp_interface, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        distances = pd.Series(
+            range(sp_interface.n_cells), index=sp_interface.cell_index, dtype=float
+        )
+        fig = plot_spatial_distance(sp_interface, distances, interface_result=result,
+                                    show=False)
+        assert self._y_is_inverted(fig), "spatial distance map must invert the y-axis"
+        plt.close("all")
+
+    def test_orientation_matches_the_interface_map(self, sp_interface):
+        """The two maps are read side by side; they must not disagree."""
+        import pandas as pd
+
+        from spatioloji_s.spatial.polygon import identify_interface
+        from spatioloji_s.visualization.point_plots import plot_interface_point_map
+        from spatioloji_s.visualization.polygon_plots import plot_spatial_distance
+
+        result = identify_interface(sp_interface, group_col="cell_type",
+                                    region_a="TypeA", region_b="TypeB")
+        distances = pd.Series(
+            range(sp_interface.n_cells), index=sp_interface.cell_index, dtype=float
+        )
+        fig_map = plot_interface_point_map(sp_interface, result, show=False)
+        fig_dist = plot_spatial_distance(sp_interface, distances, show=False)
+        assert self._y_is_inverted(fig_map) == self._y_is_inverted(fig_dist)
+        plt.close("all")
