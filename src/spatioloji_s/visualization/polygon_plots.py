@@ -2015,6 +2015,11 @@ def plot_spatial_distance(
     ax.set_ylabel("Y")
     ax.set_title("Signed Distance from Interface")
     ax.set_aspect("equal")
+    # Imaging platforms put the origin at the TOP-left, so y grows downward.
+    # Every other spatial map in the package inverts the axis to match; without
+    # it this one renders the tissue mirrored against the interface map it is
+    # meant to be read beside.
+    ax.invert_yaxis()
     clean_axes(ax)
     return finalize_plot(fig, save_path, dpi, show)
 
