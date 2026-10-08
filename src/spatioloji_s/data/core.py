@@ -24,6 +24,24 @@ from .expression import ExpressionMatrix
 from .images import ImageHandler, load_fov_positions_from_images
 
 
+
+def _read_parquet(path, **kwargs):
+    """pd.read_parquet with an error that names the fix.
+
+    Without an engine installed pandas raises a generic "Unable to find a usable
+    engine" that does not say which package to install or why this loader wanted
+    parquet at all.
+    """
+    try:
+        return pd.read_parquet(path, **kwargs)
+    except ImportError as e:
+        raise ImportError(
+            f"Reading {Path(path).name} needs a parquet engine, which is not installed. "
+            f"Install pyarrow (pip install pyarrow) -- it is a declared dependency of "
+            f"spatioloji_s, so this usually means a partial environment."
+        ) from e
+
+
 class spatioloji:
     """
     Efficient spatial transcriptomics data structure.
@@ -1897,7 +1915,7 @@ class spatioloji:
             # try parquet
             cells_path = xenium_path / "cells.parquet"
             if cells_path.exists():
-                cells = pd.read_parquet(cells_path)
+                cells = _read_parquet(cells_path)
             else:
                 raise FileNotFoundError("cells.csv.gz / cells.parquet not found")
         else:
@@ -2088,6 +2106,477 @@ class spatioloji:
         obj._xenium_pixel_size = pixel_size
 
         return obj
+
+    @staticmethod
+    def from_cosmx(
+        cosmx_dir: str,
+        load_boundaries: bool = True,
+        drop_negative_probes: bool = True,
+        images_folder: str | None = "CellComposite",
+        pixel_size: float = 0.12028,
+        lazy_load_images: bool = True,
+    ) -> spatioloji:
+        """
+        Create spatioloji from a NanoString CosMx SMI flat-file export.
+
+        CosMx differs from Xenium and MERSCOPE in ways this loader handles:
+
+        - **``cell_ID`` is unique only within a FOV.** The global identifier is the
+          pair ``(fov, cell_ID)``; on the validation export 36,398 of 39,939 cell_ID
+          values recur across FOVs. Cells are therefore keyed ``"<fov>_<cell_ID>"``.
+        - **``cell_ID == 0`` is background, not a cell.** The expression matrix carries
+          one such row per FOV (20 extra rows on the validation export) and they are
+          dropped.
+        - **Coordinates are in pixels**, not microns; ``pixel_size`` records the scale
+          without rescaling the data, so coordinates stay in the units the polygons and
+          images use.
+        - **Negative probes.** ``NegPrb*``, ``SystemControl*`` and ``FalseCode*``
+          features are controls, not genes.
+
+        Files are discovered by their CosMx suffixes, so the run prefix does not
+        matter::
+
+            *_metadata_file.csv        fov, cell_ID, Area, CenterX_global_px, ...
+            *_exprMat_file.csv         fov, cell_ID, then one column per feature
+            *-polygons.csv             fov, cell_ID, x/y_local_px, x/y_global_px
+            *_fov_positions_file.csv   fov, x_global_px, y_global_px
+            CellComposite/             CellComposite_F001.jpg, ... (optional)
+
+        Parameters
+        ----------
+        cosmx_dir : str
+            Path to the CosMx export directory.
+        load_boundaries : bool
+            Load ``*-polygons.csv`` as polygon data.
+        drop_negative_probes : bool
+            Remove control features from the matrix. They are recorded in
+            ``gene_metadata`` via ``is_negative`` either way, and their per-cell totals
+            are written to ``cell_metadata['negprobe_counts']``.
+        images_folder : str, optional
+            Sub-directory of per-FOV composite images, or None to skip. Relative names
+            are resolved inside ``cosmx_dir``.
+        pixel_size : float
+            Microns per pixel, recorded on the object as ``_cosmx_pixel_size``
+            (default 0.12028, the CosMx SMI value).
+        lazy_load_images : bool
+            Defer image reads until requested.
+
+        Returns
+        -------
+        spatioloji
+            New spatioloji object with CosMx data.
+        """
+        cosmx_path = Path(cosmx_dir)
+        if not cosmx_path.exists():
+            raise FileNotFoundError(f"CosMx directory not found: {cosmx_path}")
+
+        def _find(pattern: str, what: str) -> Path:
+            hits = sorted(cosmx_path.glob(pattern))
+            if not hits:
+                raise FileNotFoundError(
+                    f"No {what} found in {cosmx_path} (looked for '{pattern}')"
+                )
+            if len(hits) > 1:
+                raise ValueError(
+                    f"Multiple {what} files match '{pattern}' in {cosmx_path}: "
+                    f"{[h.name for h in hits]}. Keep one export per directory."
+                )
+            return hits[0]
+
+        print("=" * 70)
+        print("Loading CosMx SMI export")
+        print("=" * 70)
+
+        config = SpatiolojiConfig()           # CosMx column names are the defaults
+
+        # ── 1. Expression ─────────────────────────────────────────────────────
+        expr_path = _find("*_exprMat_file.csv", "expression matrix")
+        expr = pd.read_csv(expr_path)
+        for col in ("fov", "cell_ID"):
+            if col not in expr.columns:
+                raise ValueError(f"{expr_path.name} has no '{col}' column")
+
+        n_bg = int((expr["cell_ID"] == 0).sum())
+        if n_bg:
+            expr = expr[expr["cell_ID"] != 0]
+        expr[config.cell_id_col] = (
+            expr["fov"].astype(int).astype(str) + "_" + expr["cell_ID"].astype(int).astype(str)
+        )
+        cell_ids = expr[config.cell_id_col].tolist()
+
+        features = pd.Index([c for c in expr.columns
+                             if c not in ("fov", "cell_ID", config.cell_id_col)], name="gene_name")
+        is_neg = features.str.lower().str.startswith(("negprb", "systemcontrol", "falsecode"))
+        gene_meta = pd.DataFrame(
+            {"feature_type": np.where(is_neg, "Negative Probe", "Gene Expression"),
+             "is_negative": is_neg},
+            index=features,
+        )
+        counts = expr[features]
+        neg_counts = counts.loc[:, is_neg].to_numpy().sum(axis=1) if is_neg.any() else None
+        if drop_negative_probes and is_neg.any():
+            counts = counts.loc[:, ~is_neg]
+            gene_meta = gene_meta.loc[~is_neg]
+        gene_names = counts.columns.astype(str).tolist()
+        matrix = sparse.csr_matrix(counts.to_numpy(dtype=np.float32))
+        print(f"[1] Expression: {matrix.shape[0]:,} cells x {matrix.shape[1]:,} genes"
+              + (f" ({int(is_neg.sum())} control probes separated)" if is_neg.any() else "")
+              + (f"; dropped {n_bg} cell_ID==0 background row(s)" if n_bg else ""))
+
+        # ── 2. Cell metadata, keyed the same way ──────────────────────────────
+        meta_path = _find("*_metadata_file.csv", "cell metadata")
+        cells = pd.read_csv(meta_path)
+        cells[config.cell_id_col] = (
+            cells["fov"].astype(int).astype(str) + "_" + cells["cell_ID"].astype(int).astype(str)
+        )
+        cells = cells.set_index(config.cell_id_col).reindex(cell_ids)
+        n_missing = int(cells["CenterX_global_px"].isna().sum()) if "CenterX_global_px" in cells else 0
+        if n_missing:
+            raise ValueError(
+                f"{n_missing:,} of {len(cell_ids):,} cells in {expr_path.name} have no row in "
+                f"{meta_path.name}. The two files do not describe the same run."
+            )
+        if neg_counts is not None:
+            cells["negprobe_counts"] = neg_counts
+        cells = cells.reset_index()
+        cells["fov"] = cells["fov"].astype(str)
+        print(f"[2] Cell metadata: {len(cells):,} cells across {cells['fov'].nunique()} FOVs")
+
+        # ── 3. Coordinates: pixels, with a genuine local/global distinction ───
+        spatial_coords = {
+            "x_local": cells["CenterX_local_px"].to_numpy(),
+            "y_local": cells["CenterY_local_px"].to_numpy(),
+            "x_global": cells["CenterX_global_px"].to_numpy(),
+            "y_global": cells["CenterY_global_px"].to_numpy(),
+        }
+
+        # ── 4. FOV positions ──────────────────────────────────────────────────
+        fov_positions = None
+        try:
+            fov_path = _find("*_fov_positions_file.csv", "FOV positions")
+            fov_positions = pd.read_csv(fov_path)
+            fov_positions["fov"] = fov_positions["fov"].astype(str)
+            print(f"[3] FOV positions: {len(fov_positions)} FOVs")
+        except FileNotFoundError:
+            print("[3] No FOV positions file - continuing without it")
+
+        # ── 5. Boundaries (already in spatioloji's column names) ──────────────
+        polygons = None
+        if load_boundaries:
+            try:
+                poly_path = _find("*-polygons.csv", "polygon file")
+            except FileNotFoundError:
+                poly_path = None
+                print("[4] No *-polygons.csv - skipping polygons")
+            if poly_path is not None:
+                polygons = pd.read_csv(poly_path)
+                polygons[config.cell_id_col] = (
+                    polygons["fov"].astype(int).astype(str) + "_"
+                    + polygons["cell_ID"].astype(int).astype(str)
+                )
+                polygons = polygons[polygons[config.cell_id_col].isin(set(cell_ids))]
+                print(f"[4] Cell boundaries: {len(polygons):,} vertices, "
+                      f"{polygons[config.cell_id_col].nunique():,} cells")
+
+        # ── 6. Per-FOV composite images ───────────────────────────────────────
+        img_dir = None
+        if images_folder:
+            cand = Path(images_folder)
+            cand = cand if cand.is_absolute() else cosmx_path / cand
+            if cand.is_dir():
+                img_dir = str(cand)
+                print(f"[5] Images: {cand.name}/ ({'lazy' if lazy_load_images else 'eager'})")
+            else:
+                print(f"[5] Images folder {cand.name}/ not found - skipping")
+
+        # ── 7. Assemble ───────────────────────────────────────────────────────
+        print("=" * 70)
+        obj = spatioloji(
+            expression=matrix,
+            cell_ids=cell_ids,
+            gene_names=gene_names,
+            cell_metadata=cells,
+            gene_metadata=gene_meta,
+            spatial_coords=spatial_coords,
+            polygons=polygons,
+            fov_positions=fov_positions,
+            images_folder=img_dir,
+            lazy_load_images=lazy_load_images,
+            config=config,
+        )
+        obj._cosmx_dir = str(cosmx_path)
+        obj._cosmx_pixel_size = pixel_size
+        return obj
+
+    @staticmethod
+    def from_merscope(
+        merscope_dir: str,
+        load_boundaries: bool = True,
+        z_index: int | str = "middle",
+        drop_blank_probes: bool = True,
+        boundary_file: str | None = None,
+    ) -> spatioloji:
+        """
+        Create spatioloji from a Vizgen MERSCOPE output directory.
+
+        MERSCOPE differs from Xenium in several ways that this loader handles:
+
+        - **Real FOVs.** ``cell_metadata.csv`` carries an ``fov`` column, so the FOV
+          system is populated from the data rather than with a dummy value.
+        - **Boundaries are 3D.** ``cell_boundaries.parquet`` stores one polygon per
+          cell *per z-plane* (commonly 7-8 planes), as WKB-encoded MultiPolygons.
+          spatioloji's polygon model is 2D, so exactly one plane is selected -- see
+          ``z_index``.
+        - **Blank probes.** MERSCOPE panels include ``Blank-*`` control features
+          used for background estimation. They are not genes.
+        - Coordinates are already in microns, and there is a single global frame,
+          so local and global coordinates are identical.
+
+        Expected files in ``merscope_dir``::
+
+            cell_by_gene.csv        cell x feature counts, first column 'cell'
+            cell_metadata.csv       EntityID, fov, center_x, center_y, volume, ...
+            cell_boundaries.parquet ID, EntityID, ZIndex, Geometry (WKB), ...
+
+        Older exports write per-FOV HDF5 under ``cell_boundaries/`` instead; pass
+        that directory via ``boundary_file`` is not supported -- convert to parquet
+        first, or load with ``load_boundaries=False`` and attach polygons yourself.
+
+        Parameters
+        ----------
+        merscope_dir : str
+            Path to the MERSCOPE output directory.
+        load_boundaries : bool
+            Parse ``cell_boundaries.parquet`` into polygon vertices.
+        z_index : int or str
+            Which z-plane to take boundaries from. ``'middle'`` (default) picks the
+            median available plane, which is the one most likely to cut through the
+            widest cross-section of each cell. ``'max_area'`` picks, per cell, the
+            plane whose polygon has the largest area -- more faithful but slower.
+            An integer selects that ``ZIndex`` directly.
+        drop_blank_probes : bool
+            Remove ``Blank-*`` control features from the expression matrix. They are
+            recorded in ``gene_metadata`` either way via the ``is_blank`` column, and
+            their per-cell totals are written to ``cell_metadata['blank_counts']``.
+        boundary_file : str, optional
+            Override the boundary file path.
+
+        Returns
+        -------
+        spatioloji
+            New spatioloji object with MERSCOPE data.
+        """
+        merscope_path = Path(merscope_dir)
+        if not merscope_path.exists():
+            raise FileNotFoundError(f"MERSCOPE directory not found: {merscope_path}")
+
+        print("=" * 70)
+        print("Loading MERSCOPE output")
+        print("=" * 70)
+
+        # The default config names the cell column "cell"; MERSCOPE metadata is keyed
+        # on EntityID, which this loader normalises to "cell_id". Declaring it here is
+        # what keeps cell_metadata and polygons joinable to the expression index --
+        # without it every row is silently dropped as unmatched.
+        config = SpatiolojiConfig(cell_id_col="cell_id")
+
+        # ── 1. Expression matrix ──────────────────────────────────────────────
+        cbg_path = merscope_path / "cell_by_gene.csv"
+        if not cbg_path.exists():
+            raise FileNotFoundError(f"cell_by_gene.csv not found in {merscope_path}")
+        cbg = pd.read_csv(cbg_path, index_col=0)
+        cbg.index = cbg.index.astype(str)
+        expr_cell_ids = cbg.index.tolist()
+        features = cbg.columns.astype(str)
+
+        is_blank = features.str.lower().str.startswith("blank")
+        gene_meta = pd.DataFrame(
+            {"feature_type": np.where(is_blank, "Blank", "Gene Expression"),
+             "is_blank": is_blank},
+            index=pd.Index(features, name="gene_name"),
+        )
+        blank_counts = cbg.loc[:, is_blank].to_numpy().sum(axis=1) if is_blank.any() else None
+
+        if drop_blank_probes and is_blank.any():
+            cbg = cbg.loc[:, ~is_blank]
+            gene_meta = gene_meta.loc[~is_blank]
+            print(f"[1] Expression: {cbg.shape[0]:,} cells x {cbg.shape[1]:,} genes "
+                  f"({int(is_blank.sum())} Blank control probes separated)")
+        else:
+            print(f"[1] Expression: {cbg.shape[0]:,} cells x {cbg.shape[1]:,} features")
+
+        gene_names = cbg.columns.astype(str).tolist()
+        matrix = sparse.csr_matrix(cbg.to_numpy(dtype=np.float32))
+
+        # ── 2. Cell metadata ──────────────────────────────────────────────────
+        meta_path = merscope_path / "cell_metadata.csv"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"cell_metadata.csv not found in {merscope_path}")
+        cells = pd.read_csv(meta_path, index_col=0)
+        cells.index = cells.index.astype(str)
+        cells.index.name = "cell_id"
+
+        missing = [c for c in ("center_x", "center_y") if c not in cells.columns]
+        if missing:
+            raise ValueError(
+                f"cell_metadata.csv is missing required column(s) {missing}. "
+                f"Found: {list(cells.columns)[:12]}"
+            )
+
+        # Align metadata to the expression cell order; a MERSCOPE export can carry
+        # metadata rows for cells that were dropped from the matrix.
+        n_before = len(cells)
+        cells = cells.reindex(expr_cell_ids)
+        n_missing = int(cells["center_x"].isna().sum())
+        if n_missing:
+            raise ValueError(
+                f"{n_missing:,} of {len(expr_cell_ids):,} cells in cell_by_gene.csv have no "
+                f"row in cell_metadata.csv. The two files do not describe the same run."
+            )
+        if n_before != len(cells):
+            print(f"[2] Cell metadata: {len(cells):,} cells aligned to expression "
+                  f"({n_before:,} rows in file)")
+        else:
+            print(f"[2] Cell metadata: {len(cells):,} cells")
+
+        if blank_counts is not None:
+            cells["blank_counts"] = blank_counts
+        cells = cells.reset_index()
+
+        # ── 3. Coordinates (microns, single global frame) ─────────────────────
+        spatial_coords = {
+            "x_local": cells["center_x"].to_numpy(),
+            "y_local": cells["center_y"].to_numpy(),
+            "x_global": cells["center_x"].to_numpy(),
+            "y_global": cells["center_y"].to_numpy(),
+        }
+
+        # ── 4. FOVs come from the data, unlike Xenium ─────────────────────────
+        if "fov" in cells.columns:
+            cells["fov"] = cells["fov"].astype(str)
+            print(f"[3] FOVs: {cells['fov'].nunique():,}")
+        else:
+            cells["fov"] = "merscope"
+            print("[3] No fov column; using a single dummy FOV")
+
+        # ── 5. Boundaries ─────────────────────────────────────────────────────
+        polygons = None
+        if load_boundaries:
+            bpath = Path(boundary_file) if boundary_file else merscope_path / "cell_boundaries.parquet"
+            if not bpath.exists():
+                legacy = merscope_path / "cell_boundaries"
+                if legacy.is_dir():
+                    raise FileNotFoundError(
+                        f"{bpath.name} not found, but a legacy per-FOV boundary directory "
+                        f"exists at {legacy}. This loader reads the parquet export only; "
+                        f"re-export from MERSCOPE, or pass load_boundaries=False."
+                    )
+                print(f"[4] {bpath.name} not found - skipping polygons")
+            else:
+                polygons = spatioloji._merscope_boundaries(bpath, z_index, set(expr_cell_ids))
+
+        # ── 6. Assemble ───────────────────────────────────────────────────────
+        print("=" * 70)
+        obj = spatioloji(
+            expression=matrix,
+            cell_ids=expr_cell_ids,
+            gene_names=gene_names,
+            cell_metadata=cells,
+            gene_metadata=gene_meta,
+            spatial_coords=spatial_coords,
+            polygons=polygons,
+            config=config,
+        )
+        obj._merscope_dir = str(merscope_path)
+        return obj
+
+    @staticmethod
+    def _merscope_boundaries(bpath: Path, z_index, keep_cells: set) -> pd.DataFrame:
+        """Parse a MERSCOPE cell_boundaries.parquet into spatioloji vertex rows.
+
+        Geometry is WKB-encoded and stored once per z-plane, so a plane has to be
+        chosen before the 3D stack can become a 2D polygon table.
+        """
+        try:
+            from shapely import wkb
+        except ImportError as e:
+            raise ImportError(
+                "shapely is required to read MERSCOPE boundaries "
+                "(pip install shapely), or pass load_boundaries=False"
+            ) from e
+
+        b = _read_parquet(bpath)
+        gcol = "Geometry" if "Geometry" in b.columns else "geometry"
+        idcol = "EntityID" if "EntityID" in b.columns else "cell_id"
+        if gcol not in b.columns or idcol not in b.columns:
+            raise ValueError(
+                f"Unexpected boundary schema in {bpath.name}: expected a geometry column "
+                f"and an EntityID column, found {list(b.columns)}"
+            )
+        b[idcol] = b[idcol].astype(str)
+        b = b[b[idcol].isin(keep_cells)]
+
+        planes = sorted(b["ZIndex"].unique()) if "ZIndex" in b.columns else [None]
+        if z_index == "max_area":
+            chosen = None                       # resolved per cell below
+        elif z_index == "middle":
+            chosen = planes[len(planes) // 2] if planes[0] is not None else None
+        else:
+            chosen = int(z_index)
+            if planes[0] is not None and chosen not in planes:
+                raise ValueError(f"z_index={chosen} not present; available ZIndex: {planes}")
+
+        if chosen is not None:
+            b = b[b["ZIndex"] == chosen]
+            print(f"[4] Boundaries: z-plane {chosen} of {planes} "
+                  f"({len(b):,} polygons)")
+
+        rows_cell, rows_x, rows_y = [], [], []
+        best_area: dict[str, float] = {}
+        best_coords: dict[str, tuple] = {}
+        for cid, blob in zip(b[idcol].to_numpy(), b[gcol].to_numpy(), strict=True):
+            try:
+                geom = wkb.loads(bytes(blob))
+            except Exception:
+                continue
+            # A MERSCOPE cell is a MultiPolygon, normally with one part; take the
+            # largest part rather than the first, so a fragment never wins.
+            parts = list(geom.geoms) if geom.geom_type.startswith("Multi") else [geom]
+            if not parts:
+                continue
+            part = max(parts, key=lambda p: p.area)
+            if z_index == "max_area":
+                if part.area <= best_area.get(cid, -1.0):
+                    continue
+                best_area[cid] = part.area
+                best_coords[cid] = part.exterior.coords
+                continue
+            xs, ys = part.exterior.coords.xy
+            rows_cell.extend([cid] * len(xs))
+            rows_x.extend(list(xs))
+            rows_y.extend(list(ys))
+
+        if z_index == "max_area":
+            print(f"[4] Boundaries: largest-area z-plane per cell ({len(best_coords):,} cells)")
+            for cid, coords in best_coords.items():
+                xs, ys = zip(*coords, strict=True)
+                rows_cell.extend([cid] * len(xs))
+                rows_x.extend(xs)
+                rows_y.extend(ys)
+
+        if not rows_cell:
+            print("[4] No boundary polygons could be parsed - skipping polygons")
+            return None
+
+        poly = pd.DataFrame({
+            "cell_id": rows_cell,
+            "x_local_px": rows_x,
+            "y_local_px": rows_y,
+        })
+        poly["x_global_px"] = poly["x_local_px"]
+        poly["y_global_px"] = poly["y_local_px"]
+        print(f"[4] Cell boundaries: {len(poly):,} vertices, {poly['cell_id'].nunique():,} cells")
+        return poly
 
     def get_xenium_image(self, level: str = "3") -> np.ndarray:
         """
