@@ -323,7 +323,13 @@ def build_buffer_graph(sp: spatioloji, buffer_distance: float, coord_type: str =
 
     print(f"  ✓ Buffer graph: {graph.n_cells} cells, {graph.n_edges} edges")
     print(f"    Mean degree: {graph.mean_degree:.1f}")
-    print(f"    Distance range: {dist_values.min():.1f} – {dist_values.max():.1f}")
+    # An empty graph is a legitimate outcome, not an error: at buffer 0 on data whose
+    # segmentation leaves a gap between every pair of cells (MERSCOPE does), no polygons
+    # intersect. Reporting a distance range over zero pairs raised ValueError here.
+    if dist_values.size:
+        print(f"    Distance range: {dist_values.min():.1f} – {dist_values.max():.1f}")
+    else:
+        print("    Distance range: n/a (no pairs within the buffer)")
 
     return graph
 
