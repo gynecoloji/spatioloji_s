@@ -48,6 +48,11 @@ dependencies = [
     "tqdm",
     "geopandas",
     "shapely",
+    # pandas can read/write parquet only with an engine installed, and neither
+    # pandas nor geopandas pulls one by default (both list it as an extra).
+    # from_merscope needs it for cell_boundaries.parquet, which is the ONLY form
+    # Vizgen ships boundaries in, and from_xenium needs it for cells.parquet.
+    "pyarrow",
     "joblib>=1.3",
     # numba is imported at module scope by spatial.point.patterns and
     # spatial.polygon.morphology (@njit decorators run at import time), so it

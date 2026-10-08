@@ -24,6 +24,24 @@ from .expression import ExpressionMatrix
 from .images import ImageHandler, load_fov_positions_from_images
 
 
+
+def _read_parquet(path, **kwargs):
+    """pd.read_parquet with an error that names the fix.
+
+    Without an engine installed pandas raises a generic "Unable to find a usable
+    engine" that does not say which package to install or why this loader wanted
+    parquet at all.
+    """
+    try:
+        return pd.read_parquet(path, **kwargs)
+    except ImportError as e:
+        raise ImportError(
+            f"Reading {Path(path).name} needs a parquet engine, which is not installed. "
+            f"Install pyarrow (pip install pyarrow) -- it is a declared dependency of "
+            f"spatioloji_s, so this usually means a partial environment."
+        ) from e
+
+
 class spatioloji:
     """
     Efficient spatial transcriptomics data structure.
@@ -1897,7 +1915,7 @@ class spatioloji:
             # try parquet
             cells_path = xenium_path / "cells.parquet"
             if cells_path.exists():
-                cells = pd.read_parquet(cells_path)
+                cells = _read_parquet(cells_path)
             else:
                 raise FileNotFoundError("cells.csv.gz / cells.parquet not found")
         else:
@@ -2487,7 +2505,7 @@ class spatioloji:
                 "(pip install shapely), or pass load_boundaries=False"
             ) from e
 
-        b = pd.read_parquet(bpath)
+        b = _read_parquet(bpath)
         gcol = "Geometry" if "Geometry" in b.columns else "geometry"
         idcol = "EntityID" if "EntityID" in b.columns else "cell_id"
         if gcol not in b.columns or idcol not in b.columns:

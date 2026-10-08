@@ -159,3 +159,18 @@ def test_largest_polygon_part_wins(merscope_dir):
     first = str(sorted(int(c) for c in sp.polygons.cell_id.unique())[0])
     g = sp.polygons[sp.polygons.cell_id == first]
     assert g["x_global_px"].max() - g["x_global_px"].min() == pytest.approx(10.0)
+
+
+def test_missing_parquet_engine_gives_an_actionable_error(merscope_dir, monkeypatch):
+    """pandas' own message says 'Unable to find a usable engine' without naming the
+    package or the reason. CI hit exactly this when pyarrow was undeclared."""
+    import pandas as _pd
+
+    from spatioloji_s.data import core
+
+    def _boom(*a, **k):
+        raise ImportError("Unable to find a usable engine; tried using: 'pyarrow', 'fastparquet'.")
+
+    monkeypatch.setattr(core.pd, "read_parquet", _boom)
+    with pytest.raises(ImportError, match="pip install pyarrow"):
+        spatioloji.from_merscope(str(merscope_dir))
