@@ -10,6 +10,17 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [1.0.0](https://github.com/gynecoloji/spatioloji_s/compare/v0.6.0...v1.0.0) (2026-10-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* spatioloji.from_merscope() is removed. It shipped in 0.6.0, so anyone who adopted it should pin <0.7 or load MERSCOPE exports through the generic from_files() path.
+
+### Added
+
+* remove from_merscope; support Xenium and CosMx only ([9a98bbd](https://github.com/gynecoloji/spatioloji_s/commit/9a98bbddd234a62bd6197433a60cc7bb09a95936))
+
 ## [0.6.0](https://github.com/gynecoloji/spatioloji_s/compare/v0.5.2...v0.6.0) (2026-10-08)
 
 
