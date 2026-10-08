@@ -10,6 +10,20 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [0.6.0](https://github.com/gynecoloji/spatioloji_s/compare/v0.5.2...v0.6.0) (2026-10-08)
+
+
+### Added
+
+* **data:** add from_cosmx loader for NanoString CosMx SMI exports ([10e678f](https://github.com/gynecoloji/spatioloji_s/commit/10e678ff79aee2e4ae8086125276179c9a6ae0f8))
+* **data:** add from_merscope loader for Vizgen MERSCOPE output ([d2e79fc](https://github.com/gynecoloji/spatioloji_s/commit/d2e79fca937f787af8ae33832bcc7fca5743386f))
+* **data:** MERSCOPE and CosMx loaders ([dfdda0b](https://github.com/gynecoloji/spatioloji_s/commit/dfdda0b9b6e3299419e2d40fc38c24030489ebf8))
+
+
+### Fixed
+
+* **deps:** declare pyarrow; both parquet readers lacked an engine ([f0663e6](https://github.com/gynecoloji/spatioloji_s/commit/f0663e603095f247e22a9ea6f90a8f349065ff1e))
+
 ## [0.5.2](https://github.com/gynecoloji/spatioloji_s/compare/v0.5.1...v0.5.2) (2026-10-05)
 
 
