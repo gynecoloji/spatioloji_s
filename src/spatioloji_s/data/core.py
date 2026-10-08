@@ -2090,6 +2090,207 @@ class spatioloji:
         return obj
 
     @staticmethod
+    def from_cosmx(
+        cosmx_dir: str,
+        load_boundaries: bool = True,
+        drop_negative_probes: bool = True,
+        images_folder: str | None = "CellComposite",
+        pixel_size: float = 0.12028,
+        lazy_load_images: bool = True,
+    ) -> spatioloji:
+        """
+        Create spatioloji from a NanoString CosMx SMI flat-file export.
+
+        CosMx differs from Xenium and MERSCOPE in ways this loader handles:
+
+        - **``cell_ID`` is unique only within a FOV.** The global identifier is the
+          pair ``(fov, cell_ID)``; on the validation export 36,398 of 39,939 cell_ID
+          values recur across FOVs. Cells are therefore keyed ``"<fov>_<cell_ID>"``.
+        - **``cell_ID == 0`` is background, not a cell.** The expression matrix carries
+          one such row per FOV (20 extra rows on the validation export) and they are
+          dropped.
+        - **Coordinates are in pixels**, not microns; ``pixel_size`` records the scale
+          without rescaling the data, so coordinates stay in the units the polygons and
+          images use.
+        - **Negative probes.** ``NegPrb*``, ``SystemControl*`` and ``FalseCode*``
+          features are controls, not genes.
+
+        Files are discovered by their CosMx suffixes, so the run prefix does not
+        matter::
+
+            *_metadata_file.csv        fov, cell_ID, Area, CenterX_global_px, ...
+            *_exprMat_file.csv         fov, cell_ID, then one column per feature
+            *-polygons.csv             fov, cell_ID, x/y_local_px, x/y_global_px
+            *_fov_positions_file.csv   fov, x_global_px, y_global_px
+            CellComposite/             CellComposite_F001.jpg, ... (optional)
+
+        Parameters
+        ----------
+        cosmx_dir : str
+            Path to the CosMx export directory.
+        load_boundaries : bool
+            Load ``*-polygons.csv`` as polygon data.
+        drop_negative_probes : bool
+            Remove control features from the matrix. They are recorded in
+            ``gene_metadata`` via ``is_negative`` either way, and their per-cell totals
+            are written to ``cell_metadata['negprobe_counts']``.
+        images_folder : str, optional
+            Sub-directory of per-FOV composite images, or None to skip. Relative names
+            are resolved inside ``cosmx_dir``.
+        pixel_size : float
+            Microns per pixel, recorded on the object as ``_cosmx_pixel_size``
+            (default 0.12028, the CosMx SMI value).
+        lazy_load_images : bool
+            Defer image reads until requested.
+
+        Returns
+        -------
+        spatioloji
+            New spatioloji object with CosMx data.
+        """
+        cosmx_path = Path(cosmx_dir)
+        if not cosmx_path.exists():
+            raise FileNotFoundError(f"CosMx directory not found: {cosmx_path}")
+
+        def _find(pattern: str, what: str) -> Path:
+            hits = sorted(cosmx_path.glob(pattern))
+            if not hits:
+                raise FileNotFoundError(
+                    f"No {what} found in {cosmx_path} (looked for '{pattern}')"
+                )
+            if len(hits) > 1:
+                raise ValueError(
+                    f"Multiple {what} files match '{pattern}' in {cosmx_path}: "
+                    f"{[h.name for h in hits]}. Keep one export per directory."
+                )
+            return hits[0]
+
+        print("=" * 70)
+        print("Loading CosMx SMI export")
+        print("=" * 70)
+
+        config = SpatiolojiConfig()           # CosMx column names are the defaults
+
+        # ── 1. Expression ─────────────────────────────────────────────────────
+        expr_path = _find("*_exprMat_file.csv", "expression matrix")
+        expr = pd.read_csv(expr_path)
+        for col in ("fov", "cell_ID"):
+            if col not in expr.columns:
+                raise ValueError(f"{expr_path.name} has no '{col}' column")
+
+        n_bg = int((expr["cell_ID"] == 0).sum())
+        if n_bg:
+            expr = expr[expr["cell_ID"] != 0]
+        expr[config.cell_id_col] = (
+            expr["fov"].astype(int).astype(str) + "_" + expr["cell_ID"].astype(int).astype(str)
+        )
+        cell_ids = expr[config.cell_id_col].tolist()
+
+        features = pd.Index([c for c in expr.columns
+                             if c not in ("fov", "cell_ID", config.cell_id_col)], name="gene_name")
+        is_neg = features.str.lower().str.startswith(("negprb", "systemcontrol", "falsecode"))
+        gene_meta = pd.DataFrame(
+            {"feature_type": np.where(is_neg, "Negative Probe", "Gene Expression"),
+             "is_negative": is_neg},
+            index=features,
+        )
+        counts = expr[features]
+        neg_counts = counts.loc[:, is_neg].to_numpy().sum(axis=1) if is_neg.any() else None
+        if drop_negative_probes and is_neg.any():
+            counts = counts.loc[:, ~is_neg]
+            gene_meta = gene_meta.loc[~is_neg]
+        gene_names = counts.columns.astype(str).tolist()
+        matrix = sparse.csr_matrix(counts.to_numpy(dtype=np.float32))
+        print(f"[1] Expression: {matrix.shape[0]:,} cells x {matrix.shape[1]:,} genes"
+              + (f" ({int(is_neg.sum())} control probes separated)" if is_neg.any() else "")
+              + (f"; dropped {n_bg} cell_ID==0 background row(s)" if n_bg else ""))
+
+        # ── 2. Cell metadata, keyed the same way ──────────────────────────────
+        meta_path = _find("*_metadata_file.csv", "cell metadata")
+        cells = pd.read_csv(meta_path)
+        cells[config.cell_id_col] = (
+            cells["fov"].astype(int).astype(str) + "_" + cells["cell_ID"].astype(int).astype(str)
+        )
+        cells = cells.set_index(config.cell_id_col).reindex(cell_ids)
+        n_missing = int(cells["CenterX_global_px"].isna().sum()) if "CenterX_global_px" in cells else 0
+        if n_missing:
+            raise ValueError(
+                f"{n_missing:,} of {len(cell_ids):,} cells in {expr_path.name} have no row in "
+                f"{meta_path.name}. The two files do not describe the same run."
+            )
+        if neg_counts is not None:
+            cells["negprobe_counts"] = neg_counts
+        cells = cells.reset_index()
+        cells["fov"] = cells["fov"].astype(str)
+        print(f"[2] Cell metadata: {len(cells):,} cells across {cells['fov'].nunique()} FOVs")
+
+        # ── 3. Coordinates: pixels, with a genuine local/global distinction ───
+        spatial_coords = {
+            "x_local": cells["CenterX_local_px"].to_numpy(),
+            "y_local": cells["CenterY_local_px"].to_numpy(),
+            "x_global": cells["CenterX_global_px"].to_numpy(),
+            "y_global": cells["CenterY_global_px"].to_numpy(),
+        }
+
+        # ── 4. FOV positions ──────────────────────────────────────────────────
+        fov_positions = None
+        try:
+            fov_path = _find("*_fov_positions_file.csv", "FOV positions")
+            fov_positions = pd.read_csv(fov_path)
+            fov_positions["fov"] = fov_positions["fov"].astype(str)
+            print(f"[3] FOV positions: {len(fov_positions)} FOVs")
+        except FileNotFoundError:
+            print("[3] No FOV positions file - continuing without it")
+
+        # ── 5. Boundaries (already in spatioloji's column names) ──────────────
+        polygons = None
+        if load_boundaries:
+            try:
+                poly_path = _find("*-polygons.csv", "polygon file")
+            except FileNotFoundError:
+                poly_path = None
+                print("[4] No *-polygons.csv - skipping polygons")
+            if poly_path is not None:
+                polygons = pd.read_csv(poly_path)
+                polygons[config.cell_id_col] = (
+                    polygons["fov"].astype(int).astype(str) + "_"
+                    + polygons["cell_ID"].astype(int).astype(str)
+                )
+                polygons = polygons[polygons[config.cell_id_col].isin(set(cell_ids))]
+                print(f"[4] Cell boundaries: {len(polygons):,} vertices, "
+                      f"{polygons[config.cell_id_col].nunique():,} cells")
+
+        # ── 6. Per-FOV composite images ───────────────────────────────────────
+        img_dir = None
+        if images_folder:
+            cand = Path(images_folder)
+            cand = cand if cand.is_absolute() else cosmx_path / cand
+            if cand.is_dir():
+                img_dir = str(cand)
+                print(f"[5] Images: {cand.name}/ ({'lazy' if lazy_load_images else 'eager'})")
+            else:
+                print(f"[5] Images folder {cand.name}/ not found - skipping")
+
+        # ── 7. Assemble ───────────────────────────────────────────────────────
+        print("=" * 70)
+        obj = spatioloji(
+            expression=matrix,
+            cell_ids=cell_ids,
+            gene_names=gene_names,
+            cell_metadata=cells,
+            gene_metadata=gene_meta,
+            spatial_coords=spatial_coords,
+            polygons=polygons,
+            fov_positions=fov_positions,
+            images_folder=img_dir,
+            lazy_load_images=lazy_load_images,
+            config=config,
+        )
+        obj._cosmx_dir = str(cosmx_path)
+        obj._cosmx_pixel_size = pixel_size
+        return obj
+
+    @staticmethod
     def from_merscope(
         merscope_dir: str,
         load_boundaries: bool = True,
