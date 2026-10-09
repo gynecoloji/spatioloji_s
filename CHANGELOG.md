@@ -10,6 +10,17 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [2.0.0](https://github.com/gynecoloji/spatioloji_s/compare/v1.0.0...v2.0.0) (2026-10-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **qc:** CosmxQCConfig with explicit percent units; default neg-probe cut 10%
+
+### Fixed
+
+* **qc:** CosmxQCConfig with explicit percent units; default neg-probe cut 10% ([ffcdb64](https://github.com/gynecoloji/spatioloji_s/commit/ffcdb64fb911b71df6e35e649ca1ab2f6ab2436d))
+
 ## [1.0.0](https://github.com/gynecoloji/spatioloji_s/compare/v0.6.0...v1.0.0) (2026-10-08)
 
 

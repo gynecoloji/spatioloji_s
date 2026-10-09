@@ -18,7 +18,7 @@ from .data.core import spatioloji
 from .data.qc import CosmxQCConfig, QCConfig, XeniumQCConfig, spatioloji_qc, xenium_qc
 
 # Bumped automatically by release-please on each release — do not edit by hand.
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 __all__ = [
     # Core classes
