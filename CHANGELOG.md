@@ -10,6 +10,14 @@ New entries are generated automatically by
 [Conventional Commit](https://www.conventionalcommits.org) messages — do not edit
 released sections by hand.
 
+## [2.0.1](https://github.com/gynecoloji/spatioloji_s/compare/v2.0.0...v2.0.1) (2026-10-09)
+
+
+### Fixed
+
+* **qc:** take the gene percentile across control probes, not their sum ([#33](https://github.com/gynecoloji/spatioloji_s/pull/33))
+* **qc:** treat an empty control set as no baseline, not a crash ([#33](https://github.com/gynecoloji/spatioloji_s/pull/33))
+
 ## [2.0.0](https://github.com/gynecoloji/spatioloji_s/compare/v1.0.0...v2.0.0) (2026-10-09)
 
 
