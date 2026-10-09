@@ -936,7 +936,13 @@ class spatioloji_qc:
         if method == "percentile":
             # Use provided threshold or config default
             percentile = threshold if threshold is not None else self.config.gene_percentile_threshold
-            neg_threshold = np.percentile(neg_counts.sum(), percentile)
+            # `neg_counts` is already one total per control probe, so the percentile is
+            # taken across probes. Calling .sum() first collapsed it to a single number,
+            # which np.percentile returns unchanged -- making the cut the grand total of
+            # every probe and so proportional to how many controls the panel carries.
+            # On a 19-probe CosMx panel that inflated the threshold ~19x and kept 72 of
+            # 960 genes, surfacing only as cell typing that could not find most lineages.
+            neg_threshold = np.percentile(neg_counts, percentile)
             keep_genes_bool = gene_counts > neg_threshold
             description = f"{percentile}th percentile of neg probes"
 
