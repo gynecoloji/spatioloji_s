@@ -942,7 +942,11 @@ class spatioloji_qc:
             # every probe and so proportional to how many controls the panel carries.
             # On a 19-probe CosMx panel that inflated the threshold ~19x and kept 72 of
             # 960 genes, surfacing only as cell typing that could not find most lineages.
-            neg_threshold = np.percentile(neg_counts, percentile)
+            # An empty control set means "no baseline", not a crash: np.percentile of an
+            # empty array raises. Reachable by default, since drop_negative_probes=True is
+            # the default loader setting and this is the default gene_filter_method.
+            # Mirrors the guard in xenium_qc.filter_genes below.
+            neg_threshold = float(np.percentile(neg_counts, percentile)) if neg_counts.size else 0.0
             keep_genes_bool = gene_counts > neg_threshold
             description = f"{percentile}th percentile of neg probes"
 

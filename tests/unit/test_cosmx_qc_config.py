@@ -199,3 +199,21 @@ def test_gene_percentile_threshold_is_independent_of_probe_count():
     assert kept[3] == kept[12], (
         f"the gene cut moved when only the probe count changed: {kept}"
     )
+
+
+def test_gene_percentile_survives_a_panel_with_no_control_probes():
+    """An empty control set must mean "no baseline", not a crash.
+
+    `from_cosmx(drop_negative_probes=True)` is the default and `gene_filter_method
+    ="percentile"` is the default, so a panel whose controls were already dropped -- or any
+    non-CosMx object -- reaches this path with `neg_counts` empty. `np.percentile` of an
+    empty array raises IndexError. The Xenium twin guards exactly this (qc.py:2382-2384).
+    """
+    sp = _panel_toy(gene_totals=[15, 25, 50, 100], neg_totals=[])
+    q = spatioloji_qc(sp, CosmxQCConfig(gene_filter_method="percentile",
+                                        gene_percentile_threshold=50, save_plots=False))
+    mask = q.filter_genes(plot=False)      # must not raise
+    kept = [g for g in sp.gene_index[np.asarray(mask)]]
+    assert kept == ["G0", "G1", "G2", "G3"], (
+        f"with no controls the baseline is 0, so every expressed gene survives; got {kept}"
+    )
