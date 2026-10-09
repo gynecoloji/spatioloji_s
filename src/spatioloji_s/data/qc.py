@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from spatioloji_s.data.core import spatioloji
 import os
+import warnings
 from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
@@ -23,38 +24,110 @@ from scipy import stats
 
 
 @dataclass
-class QCConfig:
-    """Configuration for QC thresholds and parameters."""
+class CosmxQCConfig:
+    """Configuration for CosMx SMI QC thresholds and parameters.
+
+    **Percentages are on a 0-100 scale, not 0-1.** ``spatioloji_qc`` computes
+    ``pct_counts_NegProbe`` as ``neg_counts * 100 / total_counts``, so a value of ``10.0``
+    here means "exclude cells whose negative probes are more than 10% of their counts".
+    The previous default of ``0.1`` was read as 0.1% rather than the documented 10%, which
+    on a 39,939-cell section was the difference between keeping 25,368 cells and 38,045.
+    Values in the open interval (0, 1) are legal but warn, because they are almost always
+    a fraction someone meant as a percentage.
+
+    Attributes
+    ----------
+    alpha_neg_probe, alpha_cell_area : float
+        Significance level for the Grubbs outlier tests.
+    pct_counts_neg_max : float
+        Maximum percent (0-100) of a cell's counts coming from negative probes.
+    pct_counts_mt_max : float
+        Maximum percent (0-100) of mitochondrial counts. Note that CosMx panels
+        frequently carry no MT- genes at all, in which case this filter is inert.
+    ratio_counts_genes_min : float
+        Minimum total_counts / n_genes_by_counts.
+    total_counts_min : float
+        Minimum transcripts per cell. 20 suits a 1K panel; use ~50 for 6K.
+    area_outlier_method : str
+        How ``qc_cell_area`` flags outliers:
+
+        * ``'grubbs'`` (default) -- the classic single-outlier test. Flags **at most one
+          cell** however large the dataset, so it identifies the most extreme cell rather
+          than filtering a tail.
+        * ``'esd'`` -- generalized ESD, iterated Grubbs; removes up to
+          ``area_esd_max_outliers``.
+        * ``'percentile'`` -- keep cells inside ``area_percentile``.
+        * ``'none'`` -- skip the area filter.
+    area_esd_max_outliers : int
+        Upper bound on outliers for ``'esd'``.
+    area_percentile : tuple[float, float]
+        Lower/upper percentile window for ``'percentile'``.
+    gene_filter_method : str
+        ``'percentile'``, ``'absolute'`` or ``'min_cells'``.
+    gene_percentile_threshold : float
+        Percentile of the negative-probe total distribution used as the gene cut-off.
+    """
 
     # Negative probe QC
     alpha_neg_probe: float = 0.01
-    pct_counts_neg_max: float = 0.1
+    pct_counts_neg_max: float = 10.0        # percent, 0-100
 
     # Cell area QC
     alpha_cell_area: float = 0.01
+    area_outlier_method: str = "grubbs"     # 'grubbs' | 'esd' | 'percentile' | 'none'
+    area_esd_max_outliers: int = 50
+    area_percentile: tuple[float, float] = (1.0, 99.0)
 
     # Cell metrics QC
-    pct_counts_mt_max: float = 0.25
+    pct_counts_mt_max: float = 25.0         # percent, 0-100
     ratio_counts_genes_min: float = 1.0
     total_counts_min: float = 20
 
     # Gene filtering
-    gene_filter_method: str = "percentile"  # NEW: 'percentile', 'absolute', or 'min_cells'
-    gene_percentile_threshold: float = 50  # For 'percentile' method
-    gene_absolute_threshold: float | None = None  # For 'absolute' method
-    gene_min_cells: int | None = None  # For 'min_cells' method
+    gene_filter_method: str = "percentile"
+    gene_percentile_threshold: float = 50
+    gene_absolute_threshold: float | None = None
+    gene_min_cells: int | None = None
 
     # Output settings
     output_dir: str = "./output/"
     save_plots: bool = True
 
+    _PCT_FIELDS = ("pct_counts_neg_max", "pct_counts_mt_max")
+    _AREA_METHODS = ("grubbs", "esd", "percentile", "none")
+
     def __post_init__(self):
-        """Create output directories."""
+        """Validate units and methods, then create output directories."""
+        for name in self._PCT_FIELDS:
+            v = getattr(self, name)
+            if 0 < v < 1:
+                warnings.warn(
+                    f"{name}={v} is being read as {v}% (percent, 0-100). "
+                    f"If you meant {v * 100:.1f}%, pass {v * 100:.1f} instead. "
+                    f"Pass {v} only if you really want a {v}% cut-off.",
+                    UserWarning, stacklevel=3,
+                )
+        if self.area_outlier_method not in self._AREA_METHODS:
+            raise ValueError(
+                f"area_outlier_method={self.area_outlier_method!r} is not one of "
+                f"{self._AREA_METHODS}"
+            )
         self.data_dir = os.path.join(self.output_dir, "data")
         self.analysis_dir = os.path.join(self.output_dir, "analysis")
         if self.save_plots:
             os.makedirs(self.data_dir, exist_ok=True)
             os.makedirs(self.analysis_dir, exist_ok=True)
+
+
+@dataclass
+class QCConfig(CosmxQCConfig):
+    """Deprecated alias for :class:`CosmxQCConfig`.
+
+    Kept so code written against the pre-0.7 name keeps working. Note that the
+    ``pct_counts_neg_max`` and ``pct_counts_mt_max`` defaults changed from 0.1/0.25 to
+    10.0/25.0 when the percent units were made explicit; an explicitly passed value is
+    interpreted exactly as before.
+    """
 
 
 class spatioloji_qc:
@@ -227,6 +300,44 @@ class spatioloji_qc:
 
     # ========== Negative Probe QC ==========
 
+    @staticmethod
+    def generalized_esd(data: np.ndarray, alpha: float = 0.05, max_outliers: int = 50) -> list[int]:
+        """Generalized ESD: iterated Grubbs, returning up to ``max_outliers`` indices.
+
+        Classic Grubbs tests the hypothesis "there is exactly one outlier" and so can never
+        flag more than one point. Rosner's generalized ESD removes the most extreme point,
+        recomputes, and repeats, reporting the largest i for which the i-th statistic
+        exceeds its critical value.
+        """
+        from scipy import stats as _st
+
+        x = np.asarray(data, dtype=float)
+        n = len(x)
+        max_outliers = int(min(max_outliers, max(n // 2 - 1, 0)))
+        if n < 3 or max_outliers < 1:
+            return []
+        keep = np.ones(n, dtype=bool)
+        order, stats_, crits = [], [], []
+        for i in range(1, max_outliers + 1):
+            sub = x[keep]
+            sd = sub.std(ddof=1)
+            if sd == 0:
+                break
+            dev = np.abs(sub - sub.mean())
+            j_local = int(np.argmax(dev))
+            j_global = int(np.flatnonzero(keep)[j_local])
+            stats_.append(dev[j_local] / sd)
+            order.append(j_global)
+            m = n - i + 1
+            tcrit = _st.t.ppf(1 - alpha / (2 * m), m - 2)
+            crits.append(((m - 1) * tcrit) / np.sqrt((m - 2 + tcrit**2) * m))
+            keep[j_global] = False
+        n_out = 0
+        for i, (s, c) in enumerate(zip(stats_, crits, strict=True), start=1):
+            if s > c:
+                n_out = i
+        return order[:n_out]
+
     def qc_negative_probes(self, plot: bool = True) -> pd.DataFrame:
         """
         Perform QC on negative probes using Grubbs test.
@@ -312,22 +423,40 @@ class spatioloji_qc:
         # Get areas (already aligned to cell_index)
         areas = self.sp.cell_meta[area_column].values
 
-        # Detect outliers
-        idx_area = self.grubbs_test(np.log1p(areas), alpha=self.config.alpha_cell_area)
-
-        # Store results
+        # Detect outliers. Classic Grubbs returns a single index however large the
+        # dataset, so it identifies the most extreme cell rather than filtering a tail;
+        # 'esd' and 'percentile' exist for when a tail is actually what you want.
+        logs = np.log1p(areas)
+        method = self.config.area_outlier_method
         results = pd.DataFrame(
-            {"cell_area": areas, "log1p_area": np.log1p(areas), "is_outlier": False}, index=self.sp.cell_index
+            {"cell_area": areas, "log1p_area": logs, "is_outlier": False}, index=self.sp.cell_index
         )
 
-        if idx_area != -1:
-            outlier_cell = self.sp.cell_index[idx_area]
-            results.loc[outlier_cell, "is_outlier"] = True
-            self.sp.cell_meta["QC_Area_outlier"] = results["is_outlier"].values
-            print(f"  ✗ Detected outlier: {outlier_cell}")
-        else:
-            self.sp.cell_meta["QC_Area_outlier"] = False
-            print("  ✓ No outliers detected")
+        if method == "none":
+            print("  area_outlier_method='none' - skipping")
+        elif method == "percentile":
+            lo, hi = np.percentile(areas, self.config.area_percentile)
+            mask = (areas < lo) | (areas > hi)
+            results.loc[mask, "is_outlier"] = True
+            print(f"  ✗ {int(mask.sum()):,} cells outside the "
+                  f"{self.config.area_percentile} percentile window ({lo:.0f}-{hi:.0f})")
+        elif method == "esd":
+            idx = self.generalized_esd(logs, alpha=self.config.alpha_cell_area,
+                                       max_outliers=self.config.area_esd_max_outliers)
+            if idx:
+                results.iloc[idx, results.columns.get_loc("is_outlier")] = True
+            print(f"  ✗ generalized ESD flagged {len(idx):,} cell(s)")
+        else:                                            # 'grubbs'
+            idx_area = self.grubbs_test(logs, alpha=self.config.alpha_cell_area)
+            if idx_area != -1:
+                outlier_cell = self.sp.cell_index[idx_area]
+                results.loc[outlier_cell, "is_outlier"] = True
+                print(f"  ✗ Detected outlier: {outlier_cell} "
+                      f"(classic Grubbs flags at most one cell)")
+            else:
+                print("  ✓ No area outlier detected")
+
+        self.sp.cell_meta["QC_Area_outlier"] = results["is_outlier"].values
 
         # Plot
         if plot:
@@ -336,7 +465,8 @@ class spatioloji_qc:
                 title="Cell Area (log1p)",
                 xlabel="log1p(Area)",
                 filename="QC_cell_area_log1p.png",
-                outlier_idx=idx_area if idx_area != -1 else None,
+                outlier_idx=(int(np.flatnonzero(results["is_outlier"].to_numpy())[0])
+                             if results["is_outlier"].any() else None),
             )
 
         self.qc_metrics["cell_area"] = results
@@ -599,6 +729,23 @@ class spatioloji_qc:
         """
         print("\n[QC] Filtering Cells")
 
+        # The default filters read columns that earlier QC steps create. Missing one gave
+        # a bare pandas KeyError naming a column, which does not tell the caller which step
+        # to run; say it plainly instead.
+        required = {
+            "pct_counts_NegProbe": "qc_negative_probes() or the constructor",
+            "pct_counts_mt": "the constructor",
+            "ratio_counts_genes": "qc_cell_metrics()",
+            "total_counts": "the constructor",
+        }
+        missing = {c: s for c, s in required.items() if c not in self.sp.cell_meta.columns}
+        if missing:
+            raise RuntimeError(
+                "filter_cells() needs QC metrics that have not been computed: "
+                + ", ".join(f"{c!r} (run {s})" for c, s in missing.items())
+                + ". run_qc_pipeline() performs the steps in order."
+            )
+
         # Default filters
         mask = (
             (self.sp.cell_meta["pct_counts_NegProbe"] < self.config.pct_counts_neg_max)
@@ -608,6 +755,13 @@ class spatioloji_qc:
         )
 
         # Add area filter if available
+        if "QC_Area_outlier" not in self.sp.cell_meta.columns:
+            warnings.warn(
+                "filter_cells(): no 'QC_Area_outlier' column, so the area filter is being "
+                "skipped silently. Call qc_cell_area() first, or set "
+                "area_outlier_method='none' to say so explicitly.",
+                UserWarning, stacklevel=2,
+            )
         if "QC_Area_outlier" in self.sp.cell_meta.columns:
             mask &= ~self.sp.cell_meta["QC_Area_outlier"]
 
