@@ -141,3 +141,79 @@ def test_filter_cells_names_the_missing_step():
     q = spatioloji_qc(_toy(), CosmxQCConfig(save_plots=False))
     with pytest.raises(RuntimeError, match="qc_cell_metrics"):
         q.filter_cells()
+
+
+# ------------------------------------------------- gene percentile threshold (units bug)
+def _panel_toy(gene_totals, neg_totals, n=100):
+    """A spatioloji whose per-gene column sums are exactly `gene_totals` / `neg_totals`.
+
+    filter_genes only reads column sums, so pinning them exactly makes the threshold
+    arithmetic unambiguous.
+    """
+    genes = [f"G{i}" for i in range(len(gene_totals))] + \
+            [f"NegPrb{i}" for i in range(len(neg_totals))]
+    X = np.zeros((n, len(genes)))
+    for j, tot in enumerate(list(gene_totals) + list(neg_totals)):
+        tot = int(tot)
+        X[:tot % n, j] = tot // n + 1
+        X[tot % n:, j] = tot // n
+        X[:, j] *= tot / X[:, j].sum() if X[:, j].sum() else 1
+    ids = [f"1_{i}" for i in range(n)]
+    meta = pd.DataFrame({"cell": ids, "fov": "1", "Area": np.full(n, 5000.0)}, index=ids)
+    return spatioloji(
+        expression=X, cell_ids=ids, gene_names=genes, cell_metadata=meta,
+        spatial_coords={"x_local": np.arange(n, dtype=float), "y_local": np.zeros(n),
+                        "x_global": np.arange(n, dtype=float), "y_global": np.zeros(n)},
+    )
+
+
+def test_gene_percentile_uses_the_percentile_not_the_total():
+    """The threshold is a percentile ACROSS negative probes, not their sum.
+
+    `np.percentile(neg_counts.sum(), 50)` collapses the per-probe totals to one number and
+    returns it, so the cut scales with the NUMBER of control probes. With 19 NegPrb probes
+    on a real CosMx panel that inflated the threshold ~19x and kept 72 of 960 genes, which
+    is only visible later as cell typing that cannot find most lineages.
+    """
+    # per-probe neg totals 10/20/30 -> median 20 (intended) vs sum 60 (shipped bug)
+    sp = _panel_toy(gene_totals=[15, 25, 50, 100], neg_totals=[10, 20, 30])
+    q = spatioloji_qc(sp, CosmxQCConfig(gene_filter_method="percentile",
+                                        gene_percentile_threshold=50, save_plots=False))
+    mask = q.filter_genes(plot=False)
+    kept = [g for g in sp.gene_index[np.asarray(mask)] if not g.startswith("NegPrb")]
+    assert kept == ["G1", "G2", "G3"], (
+        f"expected the genes above the 20-count median (25/50/100), got {kept}. "
+        f"Only G3 surviving means the threshold was the 60-count sum."
+    )
+
+
+def test_gene_percentile_threshold_is_independent_of_probe_count():
+    """Adding control probes must not make the gene filter stricter."""
+    kept = {}
+    for n_probes in (3, 12):
+        sp = _panel_toy(gene_totals=[15, 25, 50, 100], neg_totals=[20] * n_probes)
+        q = spatioloji_qc(sp, CosmxQCConfig(gene_filter_method="percentile",
+                                            gene_percentile_threshold=50, save_plots=False))
+        mask = q.filter_genes(plot=False)
+        kept[n_probes] = sum(1 for g in sp.gene_index[np.asarray(mask)] if not g.startswith("NegPrb"))
+    assert kept[3] == kept[12], (
+        f"the gene cut moved when only the probe count changed: {kept}"
+    )
+
+
+def test_gene_percentile_survives_a_panel_with_no_control_probes():
+    """An empty control set must mean "no baseline", not a crash.
+
+    `from_cosmx(drop_negative_probes=True)` is the default and `gene_filter_method
+    ="percentile"` is the default, so a panel whose controls were already dropped -- or any
+    non-CosMx object -- reaches this path with `neg_counts` empty. `np.percentile` of an
+    empty array raises IndexError. The Xenium twin guards exactly this (qc.py:2382-2384).
+    """
+    sp = _panel_toy(gene_totals=[15, 25, 50, 100], neg_totals=[])
+    q = spatioloji_qc(sp, CosmxQCConfig(gene_filter_method="percentile",
+                                        gene_percentile_threshold=50, save_plots=False))
+    mask = q.filter_genes(plot=False)      # must not raise
+    kept = [g for g in sp.gene_index[np.asarray(mask)]]
+    assert kept == ["G0", "G1", "G2", "G3"], (
+        f"with no controls the baseline is 0, so every expressed gene survives; got {kept}"
+    )
